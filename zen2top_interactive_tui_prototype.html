@@ -252,23 +252,17 @@
     min-width: 0;
   }
   .core-spark-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-  .core-cells {
-    display: flex;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: 92px repeat(3, minmax(0, 1fr));
+    gap: 0 10px;
     align-items: baseline;
-    flex-wrap: nowrap;
-    overflow: hidden;
+    white-space: nowrap;
   }
   .smt-pair {
     white-space: nowrap;
     font-size: 11.8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* Main content viewport */
@@ -2225,7 +2219,7 @@
     // Ordered for Two-Line CPI Stack: Flush/FE left -> MLP Memory right
     const cpiTiers = [
       // Flush / Front-End
-      { key: 'branch',   name: 'Branch',     short: 'Branch', group: 'flush', mpki: brMiss,    cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', avail: ['full', 'ipc-mem'] },
+      { key: 'branch',   name: 'Branch',     short: 'Br',     group: 'flush', mpki: brMiss,    cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', avail: ['full', 'ipc-mem'] },
       { key: 'l2icExcl', name: 'L2 I-Cache', short: 'L2I',    group: 'flush', mpki: l2icExcl,  cpi: (l2icExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-blue',    barColor: 'var(--blue)',    hex: '#6b96d6', avail: ['full'] },
       { key: 'l2itlb',   name: 'L2 iTLB',    short: 'iTLB',   group: 'flush', mpki: l2Itlb,    cpi: (l2Itlb / 1000) * CONFIG.latencies.l2ItlbWalk,       colorClass: 'c-orange',  barColor: 'var(--orange)',  hex: '#d98d59', avail: ['full', 'tlb'] },
       // MLP-Overlappable Memory
@@ -3373,7 +3367,6 @@
       </tr>
     `).join('');
 
-    const blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     const fmtThread = (cpuId) => {
       const duty = hasCore ? snap.coreC0[cpuId] : snap.coreRelInstPct[cpuId];
       const ipcVal = snap.coreIpc[cpuId];
@@ -3381,11 +3374,10 @@
         return `<span class="c-muted" title="CPU ${cpuId}: idle (${duty.toFixed(1)}%)">idle</span>`;
       }
       if (!hasCore) {
-        return `<span title="CPU ${cpuId}: ${duty.toFixed(1)}% relative instruction share">${Math.round(duty)}%</span>`;
+        return `<span class="${duty >= 15.0 ? 'c-green' : 'c-dim'}" title="CPU ${cpuId}: ${duty.toFixed(1)}% relative instruction share">${Math.round(duty)}%</span>`;
       }
-      const bIdx = Math.max(0, Math.min(7, Math.floor((ipcVal / 2.2) * 8)));
-      const ipcCls = ipcVal >= 1.25 ? 'c-green' : (ipcVal >= 0.85 ? '' : 'c-yellow');
-      return `<span class="${ipcCls}" title="CPU ${cpuId}: IPC ${ipcVal.toFixed(2)}, C0 ${duty.toFixed(1)}%">${ipcVal.toFixed(2)}${blocks[bIdx]}</span><span class="c-dim">(${Math.round(duty)}%)</span>`;
+      const ipcCls = ipcVal >= 1.25 ? 'c-green' : 'c-dim';
+      return `<span class="${ipcCls}" title="CPU ${cpuId}: IPC ${ipcVal.toFixed(2)}, C0 ${duty.toFixed(1)}%">${ipcVal.toFixed(2)}</span><span class="c-dim">(${Math.round(duty)}%)</span>`;
     };
 
     const makeCcxCoreRow = (ccxId) => {
@@ -3407,7 +3399,7 @@
       return `
         <div class="core-spark-row">
           <span class="c-dim">CCX${ccxId} ${modeTag}</span>
-          <span class="core-cells">${cells}</span>
+          ${cells}
         </div>
       `;
     };
@@ -3482,7 +3474,8 @@
         modHtml += `<span class="cpi-group-gap"></span>`;
       }
       const pct = Math.round((t.cpi / totalMod) * 100);
-      const label = w >= 46 ? `${t.short} ${pct}%` : (w >= 26 ? `${pct}%` : '');
+      const minLblW = t.short.length * 7 + 22;
+      const label = w >= minLblW ? `${t.short} ${pct}%` : (w >= 26 ? `${pct}%` : '');
       modHtml += `<span class="cpi-seg" style="width:${w}px; background:${t.hex};" title="${t.name} (${t.group.toUpperCase()}): ${t.cpi.toFixed(3)} CPI (${pct}% of modeled stalls)">${label}</span>`;
     }
     modeledEl.innerHTML = modHtml;
