@@ -2,7 +2,22 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, PROCESSES, BASELINE_PRESETS, state, getActiveMux, buildUprofMetricSpec, computeMicroArchMetrics, parseReportCoreCsv, deserializeBaselineJson, makeWin32Profile, getAttachedProcess, showToast, generateSample, resetHistoryAndSeed, evaluateDiagnostics, runGroupADiagnosticTests, renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderHelpModal, renderAll, getFilteredProcesses, switchTab, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode, cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline, startTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle, openModal, closeModal, cyclePickerSort, cycleModSort, runAndShowGroupATests, toggleTargetLockPriv } = Z;
+  const {
+    CONFIG, MUX_PRESETS, PROCESSES, BASELINE_PRESETS, state,
+    getActiveMux, buildUprofMetricSpec, computeMicroArchMetrics, parseReportCoreCsv,
+    deserializeBaselineJson, makeWin32Profile, getAttachedProcess, showToast,
+    generateSample, resetHistoryAndSeed, evaluateDiagnostics, runGroupADiagnosticTests,
+    renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderTab6Threads, renderTab7Profiler, renderHelpModal, renderAll,
+    getFilteredProcesses, switchTab, jumpToFindingTab, attachProcess, detachProcess,
+    startWaitingMode, cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline,
+    startTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle,
+    openModal, closeModal, cyclePickerSort, cycleModSort, cycleThreadSort,
+    toggleVaMapView, toggleProtectedProcess, openAffinityModal, applyAffinityPreset,
+    applyCustomAffinityMask, revertAllSessionAffinities, runAndShowGroupATests, toggleTargetLockPriv,
+    toggleProfilerOnOffCpu, toggleProfilerViewMode, toggleProfilerScope, toggleProfilerEtwPause,
+    clearProfilerData, toggleProfilerSidecarMap, toggleBurstDuration,
+    startHardwareBurst, cancelHardwareBurst, getActiveProfilerRows
+  } = Z;
 
   // =========================================================================
   // 9. EVENT LISTENERS (Keyboard-first + Clickable Chrome)
@@ -22,13 +37,17 @@
   document.querySelectorAll('.key-btn').forEach(btn => {
     btn.onclick = () => {
       const act = btn.dataset.action;
-      if (act === 'tabs') switchTab((state.activeTab % 5) + 1);
+      if (act === 'tabs') switchTab((state.activeTab % 7) + 1);
       else if (act === 'picker') openModal('picker');
       else if (act === 'mux') cycleMux();
       else if (act === 'baseline') openModal('baseline');
       else if (act === 'ccx') { state.ccxOpen = !state.ccxOpen; renderAll(); }
       else if (act === 'help') openModal('help');
-      else if (act === 'quit') openModal('quit');
+      else if (act === 'quit') {
+        cancelHardwareBurst(true);
+        if (state.profiler && state.profiler.etwSession) state.profiler.etwSession.stop();
+        openModal('quit');
+      }
     };
   });
 
@@ -36,24 +55,43 @@
     bg.onclick = e => { if (e.target === bg) closeModal(); };
   });
 
-  ['modal-picker-input', 't4-picker-input'].forEach(id => {
+  ['modal-picker-input', 't4-picker-input', 't6-picker-input', 't7-picker-input'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('input', () => {
       state.pickerFilter = el.value;
       state.pickerSelectedIdx = 0;
-      const other = id === 'modal-picker-input' ? 't4-picker-input' : 'modal-picker-input';
-      const otherEl = document.getElementById(other);
-      if (otherEl && otherEl.value !== el.value) otherEl.value = el.value;
+      ['modal-picker-input', 't4-picker-input', 't6-picker-input', 't7-picker-input'].forEach(otherId => {
+        if (otherId === id) return;
+        const otherEl = document.getElementById(otherId);
+        if (otherEl && otherEl.value !== el.value) otherEl.value = el.value;
+      });
       renderAll();
     });
   });
 
+  const profFilterInp = document.getElementById('prof-filter-input');
+  if (profFilterInp) {
+    profFilterInp.addEventListener('input', () => {
+      state.profiler.filter = profFilterInp.value;
+      state.profiler.selectedIdx = 0;
+      renderTab7Profiler();
+    });
+  }
+
   document.getElementById('modal-sort-label').onclick = cyclePickerSort;
   document.getElementById('t4-sort-label').onclick = cyclePickerSort;
+  const t6Sort = document.getElementById('t6-sort-label');
+  if (t6Sort) t6Sort.onclick = cyclePickerSort;
+  const t7Sort = document.getElementById('t7-sort-label');
+  if (t7Sort) t7Sort.onclick = cyclePickerSort;
   document.getElementById('btn-modal-detach').onclick = () => { detachProcess(); closeModal(); };
   document.getElementById('btn-modal-wait').onclick = startWaitingMode;
   document.getElementById('btn-t4-wait').onclick = startWaitingMode;
+  const t6Wait = document.getElementById('btn-t6-wait');
+  if (t6Wait) t6Wait.onclick = startWaitingMode;
+  const t7Wait = document.getElementById('btn-t7-wait');
+  if (t7Wait) t7Wait.onclick = startWaitingMode;
 
   document.querySelectorAll('[data-mod-sort]').forEach(th => {
     th.onclick = () => {
@@ -61,6 +99,34 @@
       renderTab3Tlb();
     };
   });
+
+  document.querySelectorAll('[data-thread-sort]').forEach(th => {
+    th.onclick = () => {
+      state.threadSort = th.dataset.threadSort;
+      renderTab6Threads();
+    };
+  });
+  const threadSortLbl = document.getElementById('threads-sort-label');
+  if (threadSortLbl) threadSortLbl.onclick = cycleThreadSort;
+  const btnThreadAff = document.getElementById('btn-thread-affinity');
+  if (btnThreadAff) btnThreadAff.onclick = () => openAffinityModal();
+  const btnThreadRev = document.getElementById('btn-thread-revert');
+  if (btnThreadRev) btnThreadRev.onclick = () => revertAllSessionAffinities();
+
+  document.querySelectorAll('[data-aff-act]').forEach(btn => {
+    btn.onclick = () => {
+      const a = btn.dataset.affAct;
+      if (a === 'revert') revertAllSessionAffinities();
+      else applyAffinityPreset(a);
+    };
+  });
+  const btnAffHex = document.getElementById('btn-affinity-apply-hex');
+  if (btnAffHex) {
+    btnAffHex.onclick = () => {
+      const inp = document.getElementById('affinity-hex-input');
+      applyCustomAffinityMask(inp ? inp.value : '');
+    };
+  }
 
 
   document.querySelectorAll('[data-b-act]').forEach(btn => {
@@ -99,6 +165,7 @@
         renderAll();
       }
       else if (a === 'toggle-lock-priv') { toggleTargetLockPriv(); }
+      else if (a === 'toggle-prot-proc') { toggleProtectedProcess(); }
       else if (a === 'run-tests') { runAndShowGroupATests(); }
       else if (a === 'calibrate') { startCalibration(); }
     };
@@ -125,21 +192,55 @@
 
     if (e.key === 'Escape') {
       if (inInput) {
+        const activeId = document.activeElement.id;
         document.activeElement.blur();
-        if (state.pickerFilter) {
+        if (activeId === 'prof-filter-input') {
+          state.profiler.filter = '';
+          state.profiler.filterOpen = false;
+          const pf = document.getElementById('prof-filter-input');
+          if (pf) pf.value = '';
+          renderTab7Profiler();
+          return;
+        }
+        if (activeId !== 'affinity-hex-input' && state.pickerFilter) {
           state.pickerFilter = '';
-          document.getElementById('modal-picker-input').value = '';
-          document.getElementById('t4-picker-input').value = '';
+          ['modal-picker-input', 't4-picker-input', 't6-picker-input', 't7-picker-input'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+          });
           renderAll();
           return;
         }
       }
       if (state.openModal) { closeModal(); return; }
+      if (state.profiler && state.profiler.burstCapture) { cancelHardwareBurst(); return; }
+      if (state.activeTab === 7 && (state.profiler.filterOpen || state.profiler.filter)) {
+        state.profiler.filter = '';
+        state.profiler.filterOpen = false;
+        const pf = document.getElementById('prof-filter-input');
+        if (pf) pf.value = '';
+        renderTab7Profiler();
+        return;
+      }
       if (state.waitingTarget) { detachProcess(); return; }
       return;
     }
 
     if (inInput) {
+      if (document.activeElement.id === 'affinity-hex-input') {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          applyCustomAffinityMask(document.activeElement.value);
+        }
+        return;
+      }
+      if (document.activeElement.id === 'prof-filter-input') {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.activeElement.blur();
+        }
+        return;
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         state.pickerSelectedIdx += 1;
@@ -156,6 +257,33 @@
           closeModal();
         }
       }
+      return;
+    }
+
+    if (state.openModal === 'burst') {
+      const dur = state.profiler.burstDurationSec || 5;
+      if (e.key === '1') { startHardwareBurst('ibs_op', dur); }
+      else if (e.key === '2') { startHardwareBurst('dram_l3', dur); }
+      else if (e.key === '3') { startHardwareBurst('branch_miss', dur); }
+      else if (e.key === '4') { startHardwareBurst('tlb_walk', dur); }
+      else if (e.key === 'd' || e.key === 'D') { toggleBurstDuration(); }
+      else if (e.key === 'm' || e.key === 'M') { toggleProfilerSidecarMap(); }
+      else if (e.key === 'u' || e.key === 'U') { state.simUprofCliAvailable = !state.simUprofCliAvailable; renderAll(); }
+      else if (e.key === 'f') { closeModal(); }
+      return;
+    }
+
+    if (state.openModal === 'affinity') {
+      if (e.key === '1') { applyAffinityPreset('ccx0'); }
+      else if (e.key === '2') { applyAffinityPreset('ccx1'); }
+      else if (e.key === '3') { applyAffinityPreset('phys'); }
+      else if (e.key === '4') { applyAffinityPreset('single-phys'); }
+      else if (e.key === '5') {
+        e.preventDefault();
+        const inp = document.getElementById('affinity-hex-input');
+        if (inp) { inp.focus(); inp.select(); }
+      }
+      else if (e.key === 'R' || e.key === 'r') { revertAllSessionAffinities(); }
       return;
     }
 
@@ -197,6 +325,7 @@
       else if (e.key === 'g' || e.key === 'G') { state.simGpuAvailable = !state.simGpuAvailable; generateSample(false); renderAll(); }
       else if (e.key === 'o' || e.key === 'O') { state.simEcoQosSupported = !state.simEcoQosSupported; generateSample(false); renderAll(); }
       else if (e.key === 'l' || e.key === 'L') { toggleTargetLockPriv(); }
+      else if (e.key === 'x' || e.key === 'X') { toggleProtectedProcess(); }
       else if (e.key === 'v' || e.key === 'V') { runAndShowGroupATests(); }
       else if (e.key === 'C' || e.key === 'c') { startCalibration(); }
       else if (e.key === 'b') closeModal();
@@ -221,14 +350,19 @@
       return;
     }
 
-    // Main TUI hotkeys
-    if (['1', '2', '3', '4', '5'].includes(e.key)) { switchTab(Number(e.key)); return; }
+    // Main TUI hotkeys (1-7)
+    if (['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) { switchTab(Number(e.key)); return; }
     if (e.key === 'p') { openModal('picker'); return; }
     if (e.key === 'm') { cycleMux(); return; }
     if (e.key === 'b') { openModal('baseline'); return; }
     if (e.key === 'c') { state.ccxOpen = !state.ccxOpen; renderAll(); return; }
     if (e.key === '?') { openModal('help'); return; }
-    if (e.key === 'q') { openModal('quit'); return; }
+    if (e.key === 'q') {
+      cancelHardwareBurst(true);
+      if (state.profiler && state.profiler.etwSession) state.profiler.etwSession.stop();
+      openModal('quit');
+      return;
+    }
     if (e.key === 'd') { detachProcess(); return; }
     if (e.key === 'u' && state.pmcLocked) { unlockPmc(); return; }
 
@@ -252,23 +386,29 @@
       }
     }
 
-    // Tab 4 unattached shortcuts
-    if (state.activeTab === 4 && !getAttachedProcess()) {
-      if (e.key === '/') { e.preventDefault(); document.getElementById('t4-picker-input').focus(); return; }
-      if (e.key === 's') { cyclePickerSort(); return; }
-      if (e.key === 'w') { startWaitingMode(); return; }
-      if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); state.pickerSelectedIdx += 1; renderTab4Memory(); return; }
-      if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); state.pickerSelectedIdx = Math.max(0, state.pickerSelectedIdx - 1); renderTab4Memory(); return; }
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const list = getFilteredProcesses();
-        if (list[state.pickerSelectedIdx]) attachProcess(list[state.pickerSelectedIdx].pid);
+    // Tab 4 shortcuts (unattached picker OR attached 'v' VA map toggle)
+    if (state.activeTab === 4) {
+      if (!getAttachedProcess()) {
+        if (e.key === '/') { e.preventDefault(); document.getElementById('t4-picker-input').focus(); return; }
+        if (e.key === 's') { cyclePickerSort(); return; }
+        if (e.key === 'w') { startWaitingMode(); return; }
+        if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); state.pickerSelectedIdx += 1; renderTab4Memory(); return; }
+        if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); state.pickerSelectedIdx = Math.max(0, state.pickerSelectedIdx - 1); renderTab4Memory(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const list = getFilteredProcesses();
+          if (list[state.pickerSelectedIdx]) attachProcess(list[state.pickerSelectedIdx].pid);
+          return;
+        }
+      } else if (e.key === 'v' || e.key === 'V') {
+        toggleVaMapView();
         return;
       }
     }
 
     // Tab 5 Advisor shortcuts
     if (state.activeTab === 5) {
+      if (e.key === 'f' || e.key === 'F') { openModal('burst'); return; }
       const diag = state.lastDiag;
       if (diag && diag.ready && diag.findings.length > 0) {
         if (e.key === 'j' || e.key === 'ArrowDown') {
@@ -291,6 +431,86 @@
       }
     }
 
+    // Tab 6 Threads & Frame Pacing shortcuts
+    if (state.activeTab === 6) {
+      if (!getAttachedProcess()) {
+        if (e.key === '/') { e.preventDefault(); document.getElementById('t6-picker-input').focus(); return; }
+        if (e.key === 's') { cyclePickerSort(); return; }
+        if (e.key === 'w') { startWaitingMode(); return; }
+        if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); state.pickerSelectedIdx += 1; renderTab6Threads(); return; }
+        if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); state.pickerSelectedIdx = Math.max(0, state.pickerSelectedIdx - 1); renderTab6Threads(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const list = getFilteredProcesses();
+          if (list[state.pickerSelectedIdx]) attachProcess(list[state.pickerSelectedIdx].pid);
+          return;
+        }
+      } else {
+        if (e.key === 's') { cycleThreadSort(); return; }
+        if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); state.threadSelectedIdx += 1; renderTab6Threads(); return; }
+        if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); state.threadSelectedIdx = Math.max(0, state.threadSelectedIdx - 1); renderTab6Threads(); return; }
+        if (e.key === 'a' || e.key === 'Enter') { e.preventDefault(); openAffinityModal(); return; }
+        if (e.key === 'R') { revertAllSessionAffinities(); return; }
+      }
+    }
+
+    // Tab 7 Profiler shortcuts (Live ETW On/Off-CPU + AMDuProfCLI Burst)
+    if (state.activeTab === 7) {
+      const proc = getAttachedProcess();
+      if (!proc) {
+        if (e.key === '/') { e.preventDefault(); document.getElementById('t7-picker-input').focus(); return; }
+        if (e.key === 's') { cyclePickerSort(); return; }
+        if (e.key === 'w') { startWaitingMode(); return; }
+        if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); state.pickerSelectedIdx += 1; renderTab7Profiler(); return; }
+        if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); state.pickerSelectedIdx = Math.max(0, state.pickerSelectedIdx - 1); renderTab7Profiler(); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const list = getFilteredProcesses();
+          if (list[state.pickerSelectedIdx]) attachProcess(list[state.pickerSelectedIdx].pid);
+          return;
+        }
+      } else {
+        if (e.key === 'o' || e.key === 'O') { toggleProfilerOnOffCpu(); return; }
+        if (e.key === 'f' || e.key === 'F') { openModal('burst'); return; }
+        if (e.key === 'v' || e.key === 'V') { toggleProfilerViewMode(); return; }
+        if (e.key === 't' || e.key === 'T') { toggleProfilerScope(); return; }
+        if (e.key === 'e' || e.key === 'E') { toggleProfilerEtwPause(); return; }
+        if (e.key === 'r' || e.key === 'R') { clearProfilerData(); return; }
+        if (e.key === 'M') { toggleProfilerSidecarMap(); return; }
+        if (e.key === '/') {
+          e.preventDefault();
+          state.profiler.filterOpen = true;
+          renderTab7Profiler();
+          const inp = document.getElementById('prof-filter-input');
+          if (inp) { inp.value = state.profiler.filter; inp.focus(); }
+          return;
+        }
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          state.profiler.selectedIdx += 1;
+          renderTab7Profiler();
+          return;
+        }
+        if (e.key === 'k' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          state.profiler.selectedIdx = Math.max(0, state.profiler.selectedIdx - 1);
+          renderTab7Profiler();
+          return;
+        }
+        if (e.key === 'Enter' && state.profiler.viewMode === 'tree' && state.profiler.source !== 'etw_offcpu') {
+          e.preventDefault();
+          const data = getActiveProfilerRows(proc);
+          const row = data.rows[state.profiler.selectedIdx];
+          if (row && row.hasChildren) {
+            if (state.profiler.expandedIds.has(row.id)) state.profiler.expandedIds.delete(row.id);
+            else state.profiler.expandedIds.add(row.id);
+            renderTab7Profiler();
+          }
+          return;
+        }
+      }
+    }
+
     if (e.key === ' ') {
       e.preventDefault();
       togglePause();
@@ -305,6 +525,12 @@
     if (timerId) clearInterval(timerId);
     timerId = setInterval(() => {
       if (state.paused || state.pmcLocked) return;
+      if (state.profiler && state.profiler.pcmPausedForBurst) {
+        // Hardware PMCs paused for AMDuProfCLI burst; Live Zero-PMC ETW still streams!
+        if (typeof Z.feedEtwTick === 'function') Z.feedEtwTick(1);
+        renderAll();
+        return;
+      }
       generateSample(true);
       renderAll();
     }, state.intervalSec * 1000);
@@ -329,12 +555,23 @@
     makeWin32Profile,
     evaluateDiagnostics,
     runGroupADiagnosticTests,
+    runDeepDiveTests: Z.runDeepDiveTests,
+    runProfilerTests: Z.runProfilerTests,
+    runAllDiagnosticTests: Z.runAllDiagnosticTests,
+    SymbolResolver: Z.SymbolResolver,
+    CallTreeAggregator: Z.CallTreeAggregator,
+    OffCpuAggregator: Z.OffCpuAggregator,
+    PmuCoordinator: Z.PmuCoordinator,
+    parseUprofBurstReportCsv: Z.parseUprofBurstReportCsv,
+    EtwProfilerSession: Z.EtwProfilerSession,
     generateSample,
     resetHistoryAndSeed,
     cycleMux,
     switchTab,
     attachProcess,
     captureBaseline,
+    startHardwareBurst,
+    cancelHardwareBurst,
     renderAll,
     openModal,
     closeModal

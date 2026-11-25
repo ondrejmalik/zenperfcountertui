@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, state, getActiveMux, getAttachedProcess, renderChrome, renderCcxStrip, renderTab1Overview, renderTab2Cache, renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderPickerTable } = Z;
+  const { CONFIG, state, getActiveMux, getAttachedProcess, renderChrome, renderCcxStrip, renderTab1Overview, renderTab2Cache, renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderTab6Threads, renderTab7Profiler, renderAffinityModal, renderBurstModal, renderPickerTable } = Z;
 
   function renderBaselineModal() {
     const info = document.getElementById('baseline-current-info');
@@ -53,6 +53,14 @@
         ? `<span class="c-green">Present</span>`
         : `<span class="c-red">Missing</span>`;
     }
+    const protValEl = document.getElementById('modal-prot-val');
+    if (protValEl) {
+      const p = getAttachedProcess();
+      const isProt = Boolean(state.simProtectedProcess || (p && p.protectedProcess));
+      protValEl.innerHTML = isProt
+        ? `<span class="c-red">Protected (Access Denied)</span>`
+        : `<span class="c-green">Editable</span>`;
+    }
     document.getElementById('modal-cal-val').innerHTML = CONFIG.calibrated
       ? `<span class="c-green">Calibrated (${CONFIG.latencies.dramFallback.toFixed(0)} cyc DRAM)</span>`
       : `~1s pointer-chase + branch`;
@@ -68,12 +76,14 @@
       body.innerHTML = `
         <div class="section-label"><span>Global Keybinds</span></div>
         <table class="kv-table" style="margin-bottom: 10px; font-size: 12px;">
-          <tr><td class="k c-bright">1 / 2 / 3 / 4 / 5</td><td class="v">Switch tabs (Overview, Cache, TLB &amp; Pages, Memory, Advisor)</td></tr>
+          <tr><td class="k c-bright">1 / 2 / 3 / 4 / 5 / 6 / 7</td><td class="v">Switch tabs (Overview, Cache, TLB, Memory, Advisor, Threads, Profiler)</td></tr>
           <tr><td class="k c-bright">p / d</td><td class="v">Open native Win32 Process Picker ('/' filter, 's' sort, 'Enter' attach) / Detach to System-Wide</td></tr>
           <tr><td class="k c-bright">m</td><td class="v">Cycle PMU Mux preset: Full (3-Mux) -&gt; TLB-Only (0-Mux) -&gt; IPC+Cache/DRAM (0-Mux) -&gt; Micro-Arch (0-Mux) -&gt; No-PMU (Win32)</td></tr>
           <tr><td class="k c-bright">c</td><td class="v">Toggle global CCX0 vs CCX1 + physical-core SMT sibling IPC/C0% strip (above all tabs)</td></tr>
-          <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', Timed 'T', Exact Ret 'e', Calibrate 'C', Admin 'a', Group A 'g/o/l/v', Reset 'r')</td></tr>
-          <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate PE modules (Tab 3), Advisor findings (Tab 5), or Process Picker</td></tr>
+          <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', Timed 'T', Exact Ret 'e', Calibrate 'C', Admin 'a', Zero-PMC 'g/o/l/x/v', Reset 'r')</td></tr>
+          <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate PE modules (Tab 3), Advisor findings (Tab 5), Threads (Tab 6), Profiler (Tab 7), or Picker</td></tr>
+          <tr><td class="k c-bright">o / f / v / t / e / r / M</td><td class="v">Tab 7 Profiler: On/Off-CPU ('o'), HW Burst ('f', also Tab 5), Flat/Tree ('v'), Thread Scope ('t'), Pause ETW ('e'), Clear ('r'), Sidecar Map ('M')</td></tr>
+          <tr><td class="k c-bright">a / R / v</td><td class="v">Edit thread affinity (Tab 6 'a') │ Revert all session affinity edits (Tab 6 'R') │ Toggle VA/JIT Map (Tab 4 'v')</td></tr>
           <tr><td class="k c-bright">Space / Enter / U</td><td class="v">Pause (global) │ Toggle DLL IFEO (Tab 3) │ Toggle Master UseLargePages ('U', Tab 3) │ Jump (Tab 5)</td></tr>
           <tr><td class="k c-bright">? / q</td><td class="v">Open this reference modal / Exit cleanly</td></tr>
         </table>
@@ -162,17 +172,21 @@ Active Zen 2 Latencies (${CONFIG.calibrated ? 'Calibrated via --calibrate' : 'De
         <pre class="code-block">zen2top/src/
   main.rs                 # clap CLI (incl. --no-pmu), RAII terminal guard, ~20 FPS ratatui loop
   config/mod.rs           # Auto-generated config.toml (latencies, retiring, advisor, module threshold)
-  pmu/{mod,uprof,csv}.rs  # PmuBackend trait, AMDuProfPcm runner, report_core/l3 parser, SHS-* unlock
-  win32/{handle,process,topology,ifeo,gpu,sys_perf,memory,privileges}.rs
+  pmu/{mod,uprof,uprof_burst,csv}.rs
+                          # PmuBackend, PmuCoordinator (Pause->Burst->Report->Resume), AMDuProfCLI IBS/stall parser
+  symbols/mod.rs          # 4-Tier x64 SymbolResolver (PDB &gt; PE Export &gt; Sidecar .zen2sym.json &gt; PE .pdata)
+  etw/{present,profiler}.rs
+                          # Non-blocking DXGI Present ETW + Live Zero-PMC ETW SampledProfile/CSwitch/ReadyThread/StackWalk
+  win32/{handle,process,topology,ifeo,gpu,sys_perf,memory,privileges,threads,va_map,io}.rs
                           # RAII HANDLEs, Toolhelp32, RelationProcessorCore, HKLM IFEO,
-                          # Group A Zero-PMC: D3DKMT GPU 3D (gdi32.dll), NtQuerySystemInformation
-                          # DPC/IRQ &amp; Thread Wait/CtxSw, EcoQoS/Priority, PDH Page Reads/s, SeLockMemoryPrivilege
+                          # Zero-PMC Win32: D3DKMT GPU 3D, NtQuerySystemInformation DPC/IRQ &amp; Per-Thread Inspector,
+                          # SetThreadAffinityMask editor, VirtualQueryEx+QueryWorkingSetEx VA/JIT map, GetProcessIoCounters
   allocator/{mod,tier0_mimalloc,generic_mimalloc}.rs  # PE byte-pattern RVA resolver + bitmap reader
   metrics/{cpi_stack,history}.rs   # Two-line Exclusive CPI Stack, Retiring %, rolling buffers
-  diagnostics/mod.rs      # Deterministic DiagnosticEngine (22 rules: 10 core/OS + 5 Micro-Arch + 7 Group A Zero-PMC)
+  diagnostics/mod.rs      # Deterministic DiagnosticEngine (26 rules + Tab 7 ETW/Burst function attribution)
   calibrate/mod.rs        # --calibrate ~1s pointer-chase + 50/50 branch probe
   baseline/mod.rs         # Raw cumulative totals JSON persistence + #[serde(default)] uarch fields
-  ui/{chrome,overview,cache,tlb,memory,advisor,modals}.rs</pre>
+  ui/{chrome,overview,cache,tlb,memory,advisor,threads,profiler,modals}.rs</pre>
         <div class="section-label"><span>config.toml &amp; Baseline JSON Schema (Raw Cumulative Totals)</span></div>
         <pre class="code-block">[latencies]
 l1_hit = ${CONFIG.latencies.l1Hit.toFixed(1)}
@@ -215,10 +229,14 @@ min_inst_per_sec = 1500000000
     else if (state.activeTab === 3) renderTab3Tlb();
     else if (state.activeTab === 4) renderTab4Memory();
     else if (state.activeTab === 5) renderTab5Advisor();
+    else if (state.activeTab === 6) renderTab6Threads();
+    else if (state.activeTab === 7) renderTab7Profiler();
 
     if (state.openModal === 'picker') renderPickerTable('modal-picker-tbody', 'modal-sort-label');
     if (state.openModal === 'baseline') renderBaselineModal();
     if (state.openModal === 'help') renderHelpModal();
+    if (state.openModal === 'affinity') renderAffinityModal();
+    if (state.openModal === 'burst') renderBurstModal();
   }
 
   Object.assign(Z, { renderBaselineModal, renderHelpModal, renderAll });

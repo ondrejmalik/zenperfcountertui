@@ -753,6 +753,7 @@ table.tui-table tr.selected {
 .sev-hi { color: var(--red); font-weight: 700; }
 .sev-md { color: var(--yellow); font-weight: 700; }
 .sev-lo { color: var(--cyan); font-weight: 700; }
+.sev-info { color: var(--blue); font-weight: 700; }
 
 /* Filter bar for process picker */
 .filter-bar {
@@ -1000,4 +1001,183 @@ table.tui-table tr.selected {
 }
 .quit-lead {
   margin-bottom: 8px;
+}
+
+/* Tab 6 (Threads) & Tab 7 (Profiler) */
+.prof-control-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.prof-ctrl-left,
+.prof-ctrl-right {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+}
+
+.prof-ctrl-right {
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.prof-pill {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 1px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.prof-pill:hover {
+  border-color: var(--fg-dim);
+}
+.pill-oncpu {
+  color: var(--green);
+  border-color: rgba(93, 194, 127, 0.4);
+}
+.pill-offcpu {
+  color: var(--yellow);
+  border-color: rgba(223, 176, 82, 0.45);
+}
+.pill-burst {
+  color: var(--cyan);
+  border-color: rgba(95, 180, 201, 0.45);
+}
+.pill-paused {
+  color: var(--fg-dim);
+}
+.pill-warn {
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+
+.prof-filter-bar {
+  padding: 3px 0 4px 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.prof-tree-toggle {
+  display: inline-block;
+  width: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.prof-tier {
+  font-size: 11px;
+  margin-left: 5px;
+  font-weight: 400;
+}
+.tier-pdb { color: var(--green); }
+.tier-exp { color: var(--cyan); }
+.tier-map { color: var(--magenta); }
+.tier-pdata { color: var(--fg-dim); }
+.tier-raw { color: var(--fg-muted); }
+
+.prof-context-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.prof-ctx-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prof-ctx-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-banner.burst {
+  background: rgba(95, 180, 201, 0.10);
+  color: var(--cyan);
+}
+
+.modal-action-row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Tab 6 Threads & Frame Pacing */
+.threads-present-graph {
+  flex: 0 0 25%;
+  min-height: 92px;
+  max-height: 170px;
+}
+
+.threads-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 4px 2px;
+  font-size: 12px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.affinity-baseline-cmp {
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  padding: 5px 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.affinity-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+
+.affinity-hex-input {
+  width: 110px;
+  flex: 0 0 auto;
+}
+
+.affinity-note {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-dim);
+  font-size: 11.5px;
+}
+
+.va-summary-wrap {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-dim);
 }

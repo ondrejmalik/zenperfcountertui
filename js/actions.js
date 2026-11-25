@@ -2,7 +2,16 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, state, computeMicroArchMetrics, deserializeBaselineJson, getActiveMux, getAttachedProcess, showToast, generateSample, resetHistoryAndSeed, evaluateDiagnostics, runGroupADiagnosticTests, renderAll } = Z;
+  const {
+    CONFIG, MUX_PRESETS, state, computeMicroArchMetrics, deserializeBaselineJson,
+    getActiveMux, getAttachedProcess, showToast, generateSample, resetHistoryAndSeed,
+    evaluateDiagnostics, runGroupADiagnosticTests, renderAll,
+    getCcxMask, getPrimaryPhysicalCoresMask, formatAffinityHex,
+    applyThreadAffinityEdit, revertAllThreadAffinities,
+    EtwProfilerSession, getBurstProfile, locateUprofCli, parseUprofBurstReportCsv,
+    PROCESS_THREADS, buildResolverForProcess, getEtwTemplatesForPid,
+    generateBurstCsvForProcess, getSidecarForPid
+  } = Z;
 
   // =========================================================================
   // 8. ACTIONS, IFEO GUARDRAILS, CALIBRATION & TIMED CAPTURE
@@ -20,10 +29,17 @@
   }
 
   function attachProcess(pid) {
+    cancelHardwareBurst(true);
     state.waitingTarget = null;
     state.attachedPid = pid;
     state.advisorSelectedIdx = 0;
     state.modSelectedIdx = 0;
+    state.threadSelectedIdx = 0;
+    state.affinityModalTid = null;
+    state.profiler.selectedIdx = 0;
+    state.profiler.expandedIds = new Set();
+    state.profiler.scopeMode = 'all';
+    if (state.profiler.source === 'burst') state.profiler.source = 'etw_oncpu';
     resetHistoryAndSeed(160);
     const p = getAttachedProcess();
     if (p) showToast(`Attached to ${p.name} (PID ${p.pid})`);
@@ -31,10 +47,16 @@
   }
 
   function detachProcess() {
+    cancelHardwareBurst(true);
+    if (state.profiler.etwSession) {
+      state.profiler.etwSession.stop();
+      state.profiler.etwSession.attach(null, null);
+    }
+    state.profiler.resolver = null;
     state.waitingTarget = null;
     state.attachedPid = null;
     resetHistoryAndSeed(160);
-    showToast('Detached to System-Wide PMU mode');
+    showToast('Detached to System-Wide PMU mode (ETW stopped)');
     renderAll();
   }
 
@@ -96,6 +118,8 @@
       ifeoEnabled: proc ? proc.ifeoEnabled : false,
       ipc: state.cum.ipc / n,
       cpi: state.cum.actualCpi / n,
+      fps: state.cum.presentSamples > 0 ? state.cum.fpsSum / state.cum.presentSamples : null,
+      avgFrameMs: state.cum.presentSamples > 0 ? state.cum.avgFrameMsSum / state.cum.presentSamples : null,
       dramMpki: state.cum.dram / n,
       l3HitMpki: state.cum.l3Hit / n,
       l2dcExclMpki: state.cum.l2dcExcl / n,
@@ -185,6 +209,8 @@
       ifeoEnabled: proc ? proc.ifeoEnabled : false,
       ipc: avgIpc,
       cpi: 1.0 / Math.max(0.01, avgIpc),
+      fps: tc.presentSamples > 0 ? tc.fpsSum / tc.presentSamples : null,
+      avgFrameMs: tc.presentSamples > 0 ? tc.avgFrameMsSum / tc.presentSamples : null,
       dramMpki: tc.dram / n,
       l3HitMpki: tc.l3Hit / n,
       l2dcExclMpki: tc.l2dcExcl / n,
@@ -311,6 +337,7 @@
   function closeModal(rerender = true) {
     state.openModal = null;
     state.pendingIfeoAction = null;
+    state.affinityModalTid = null;
     document.querySelectorAll('.modal-backdrop').forEach(m => m.classList.remove('open'));
     if (rerender) renderAll();
   }
@@ -327,15 +354,157 @@
     renderAll();
   }
 
+  function cycleThreadSort() {
+    const order = ['cpu', 'ctxsw', 'tid'];
+    state.threadSort = order[(order.indexOf(state.threadSort) + 1) % order.length];
+    renderAll();
+  }
+
+  function toggleVaMapView() {
+    state.memShowVaMap = !state.memShowVaMap;
+    renderAll();
+  }
+
+  function toggleProtectedProcess() {
+    const p = getAttachedProcess();
+    if (p) {
+      p.protectedProcess = !p.protectedProcess;
+      showToast(`${p.name} Protected Process: ${p.protectedProcess ? 'ON (ERROR_ACCESS_DENIED)' : 'OFF (Editable)'}`);
+    } else {
+      state.simProtectedProcess = !state.simProtectedProcess;
+      showToast(`Global Protected Process Simulation: ${state.simProtectedProcess ? 'ON' : 'OFF'}`);
+    }
+    renderAll();
+  }
+
+  function openAffinityModal(tid = null) {
+    const proc = getAttachedProcess();
+    if (!proc || !Array.isArray(proc.threads) || proc.threads.length === 0) {
+      showToast('Attach a process with active threads first');
+      return;
+    }
+    let targetTid = tid;
+    if (!targetTid) {
+      const sorted = Z.getSortedThreads(state.lastSnap, proc);
+      const sel = sorted[state.threadSelectedIdx];
+      if (!sel) return;
+      targetTid = sel.tid;
+    }
+    state.affinityModalTid = targetTid;
+    openModal('affinity');
+    const hexEl = document.getElementById('affinity-hex-input');
+    const thread = proc.threads.find(t => t.tid === targetTid);
+    if (hexEl && thread) {
+      hexEl.value = formatAffinityHex(thread.affinityMask);
+    }
+  }
+
+  function applyAffinityPreset(preset) {
+    const proc = getAttachedProcess();
+    if (!proc || !state.affinityModalTid) return;
+    const thread = (proc.threads || []).find(t => t.tid === state.affinityModalTid);
+    if (!thread) return;
+
+    if (!state.originalAffinityByPid[proc.pid]) {
+      state.originalAffinityByPid[proc.pid] = {};
+    }
+    const origMap = state.originalAffinityByPid[proc.pid];
+    const accessDenied = Boolean(proc.protectedProcess || state.simProtectedProcess);
+
+    let newMask = 0;
+    let excludeSiblingFromOthers = false;
+    let label = '';
+
+    if (preset === 'ccx0') {
+      newMask = getCcxMask(0, CONFIG.physicalCores);
+      label = 'CCX0 (0x003F)';
+    } else if (preset === 'ccx1') {
+      newMask = getCcxMask(1, CONFIG.physicalCores);
+      label = 'CCX1 (0x0FC0)';
+    } else if (preset === 'phys') {
+      newMask = getPrimaryPhysicalCoresMask(CONFIG.physicalCores);
+      label = `Physical Cores (${formatAffinityHex(newMask)})`;
+    } else if (preset === 'single-phys') {
+      const pc = CONFIG.physicalCores.find(p => p.siblings.includes(thread.currentCpu)) || CONFIG.physicalCores[0];
+      const s0 = pc.siblings[0];
+      newMask = (1 << s0) >>> 0;
+      excludeSiblingFromOthers = true;
+      label = `Single Core C${String(s0).padStart(2, '0')} (${formatAffinityHex(newMask)})`;
+    } else {
+      return;
+    }
+
+    const res = applyThreadAffinityEdit(proc, thread.tid, newMask, origMap, {
+      accessDenied,
+      excludeSiblingFromOthers,
+      logicalCpus: CONFIG.logicalCpus,
+      physicalCores: CONFIG.physicalCores
+    });
+
+    if (!res.ok) {
+      showToast(res.message);
+      renderAll();
+      return;
+    }
+    const exclNote = res.excludedSiblingsCount > 0 ? ` (excluded SMT sibling on ${res.excludedSiblingsCount} threads)` : '';
+    generateSample(false);
+    showToast(`TID ${thread.tid} -> ${label}${exclNote}`);
+    closeModal(false);
+    renderAll();
+  }
+
+  function applyCustomAffinityMask(rawHex) {
+    const proc = getAttachedProcess();
+    if (!proc || !state.affinityModalTid) return;
+    const cleaned = String(rawHex || '').trim();
+    const parsed = parseInt(cleaned.replace(/^0x/i, ''), 16);
+    if (!cleaned || !isFinite(parsed) || parsed <= 0) {
+      showToast('Invalid hex affinity mask (example: 0x003F)');
+      return;
+    }
+    if (!state.originalAffinityByPid[proc.pid]) {
+      state.originalAffinityByPid[proc.pid] = {};
+    }
+    const res = applyThreadAffinityEdit(proc, state.affinityModalTid, parsed, state.originalAffinityByPid[proc.pid], {
+      accessDenied: Boolean(proc.protectedProcess || state.simProtectedProcess),
+      logicalCpus: CONFIG.logicalCpus,
+      physicalCores: CONFIG.physicalCores
+    });
+    if (!res.ok) {
+      showToast(res.message);
+      renderAll();
+      return;
+    }
+    generateSample(false);
+    showToast(`TID ${state.affinityModalTid} -> Custom Mask ${formatAffinityHex(res.newMask)}`);
+    closeModal(false);
+    renderAll();
+  }
+
+  function revertAllSessionAffinities() {
+    const proc = getAttachedProcess();
+    if (!proc) return;
+    const origMap = state.originalAffinityByPid[proc.pid];
+    const count = revertAllThreadAffinities(proc, origMap);
+    if (count === 0) {
+      showToast('No session affinity edits to revert');
+      return;
+    }
+    generateSample(false);
+    showToast(`Reverted ${count} session thread affinity edit${count === 1 ? '' : 's'}`);
+    if (state.openModal === 'affinity') closeModal(false);
+    renderAll();
+  }
+
 
   function runAndShowGroupATests() {
-    const report = runGroupADiagnosticTests();
+    const report = Z.runAllDiagnosticTests ? Z.runAllDiagnosticTests() : runGroupADiagnosticTests();
     const out = document.getElementById('calibrate-output');
     if (out) {
       out.style.display = 'block';
       const lines = report.results.map(r => `${r.pass ? '[PASS]' : '[FAIL]'} ${r.name}: ${r.detail}`).join('\n');
       const cls = report.passed === report.total ? 'c-green' : 'c-red';
-      out.innerHTML = `<pre class="code-block ${cls}">Group A Zero-PMC Win32 Diagnostics Self-Test: ${report.passed}/${report.total} PASSED\n${lines}</pre>`;
+      out.innerHTML = `<pre class="code-block ${cls}">Zero-PMC Diagnostics &amp; Deep-Dive Self-Test: ${report.passed}/${report.total} PASSED\n${lines}</pre>`;
     }
     const badge = document.getElementById('modal-tests-val');
     if (badge) {
@@ -343,7 +512,300 @@
         ? `<span class="c-green">${report.passed}/${report.total} PASS</span>`
         : `<span class="c-red">${report.passed}/${report.total} FAIL</span>`;
     }
-    showToast(`Group A tests: ${report.passed}/${report.total} passed`);
+    showToast(`Self-tests: ${report.passed}/${report.total} passed`);
+  }
+
+  function getSelectedThreadForProcess(proc) {
+    if (!proc) return null;
+    if (typeof Z.getSortedThreads === 'function') {
+      const sorted = Z.getSortedThreads(state.lastSnap, proc);
+      if (sorted.length > 0) {
+        const idx = Math.max(0, Math.min(sorted.length - 1, state.threadSelectedIdx || 0));
+        const th = sorted[idx] || sorted[0];
+        return {
+          tid: th.tid,
+          name: (th.description && th.description.trim())
+            ? th.description.trim()
+            : (typeof Z.formatThreadEntry === 'function' ? Z.formatThreadEntry(th, proc.modules) : `TID ${th.tid}`)
+        };
+      }
+    }
+    const threads = Z.getThreadsForProcess ? Z.getThreadsForProcess(proc) : [];
+    if (threads.length === 0) return null;
+    const idx = Math.max(0, Math.min(threads.length - 1, state.threadSelectedIdx || 0));
+    return threads[idx] || threads[0];
+  }
+
+  function initProfilerForAttachedProcess(seedTicks = 0) {
+    const proc = getAttachedProcess();
+    if (!state.profiler.etwSession) {
+      state.profiler.etwSession = new EtwProfilerSession({
+        sampleRateKhz: CONFIG.profiler.sampleRateKhz,
+        maxNodes: CONFIG.profiler.maxNodes
+      });
+    }
+    if (!proc) {
+      state.profiler.etwSession.stop();
+      state.profiler.etwSession.attach(null, null);
+      state.profiler.resolver = null;
+      return;
+    }
+    const resolver = buildResolverForProcess(proc, state.profiler.sidecarLoaded);
+    state.profiler.resolver = resolver;
+    state.profiler.etwSession.attach(proc.pid, resolver);
+    if (!CONFIG.profiler.autoStartEtw) {
+      state.profiler.etwSession.paused = true;
+    }
+    if (seedTicks > 0) {
+      feedEtwTick(seedTicks);
+    }
+  }
+
+  let etwSimClockUs = 1000000;
+  function feedEtwTick(ticks = 1) {
+    const proc = getAttachedProcess();
+    const etw = state.profiler.etwSession;
+    if (!proc || !etw || !etw.running || etw.paused) return;
+    const tpl = getEtwTemplatesForPid(proc.pid, proc);
+    const rateMult = Math.max(1, CONFIG.profiler.sampleRateKhz || 1);
+
+    for (let t = 0; t < ticks; t++) {
+      for (const item of tpl.onCpu) {
+        const jitterW = Math.max(1, Math.round(item.weight * rateMult * (0.85 + Math.random() * 0.30)));
+        etw.ingestSampledProfile({
+          pid: proc.pid,
+          tid: item.tid,
+          weight: jitterW,
+          stack: item.stack
+        });
+      }
+      for (const waitItem of tpl.offCpu) {
+        const durUs = Math.max(100, Math.round(waitItem.durUs * (0.80 + Math.random() * 0.40)));
+        const outTs = etwSimClockUs;
+        const readyTs = outTs + Math.round(durUs * 0.92);
+        const inTs = outTs + durUs;
+        etwSimClockUs += durUs + 50;
+        etw.ingestOffCpuPair(
+          { pid: proc.pid, tid: waitItem.tid, threadName: waitItem.threadName, tsUs: outTs, stack: waitItem.stack },
+          { targetPid: proc.pid, targetTid: waitItem.tid, wakerPid: proc.pid, wakerTid: waitItem.wakerTid, wakerName: waitItem.wakerName, tsUs: readyTs },
+          { pid: proc.pid, tid: waitItem.tid, tsUs: inTs }
+        );
+      }
+    }
+  }
+
+  function toggleProfilerOnOffCpu() {
+    if (state.profiler.source === 'etw_offcpu') {
+      state.profiler.source = 'etw_oncpu';
+      showToast('Profiler source: LIVE ETW On-CPU');
+    } else {
+      state.profiler.source = 'etw_offcpu';
+      showToast('Profiler source: LIVE ETW Off-CPU Wait Chains');
+    }
+    state.profiler.selectedIdx = 0;
+    renderAll();
+  }
+
+  function toggleProfilerViewMode() {
+    state.profiler.viewMode = state.profiler.viewMode === 'flat' ? 'tree' : 'flat';
+    state.profiler.selectedIdx = 0;
+    showToast(`Profiler view: ${state.profiler.viewMode === 'tree' ? 'Call Tree' : 'Flat Hotspots'}`);
+    renderAll();
+  }
+
+  function toggleProfilerScope() {
+    const proc = getAttachedProcess();
+    if (!proc) return;
+    if (state.profiler.scopeMode === 'all') {
+      const th = getSelectedThreadForProcess(proc);
+      if (!th) {
+        showToast('No thread available to filter');
+        return;
+      }
+      state.profiler.scopeMode = 'thread';
+      showToast(`Profiler scope: TID ${th.tid} (${th.name})`);
+    } else {
+      state.profiler.scopeMode = 'all';
+      showToast('Profiler scope: All Threads');
+    }
+    state.profiler.selectedIdx = 0;
+    renderAll();
+  }
+
+  function toggleProfilerEtwPause() {
+    const etw = state.profiler.etwSession;
+    if (!etw) return;
+    const paused = etw.togglePause();
+    showToast(paused ? 'Live ETW sampling paused (zero overhead)' : `Live ETW sampling resumed (${etw.sampleRateKhz} kHz)`);
+    renderAll();
+  }
+
+  function clearProfilerData() {
+    const proc = getAttachedProcess();
+    if (state.profiler.etwSession) {
+      state.profiler.etwSession.clear();
+    }
+    if (proc && state.profiler.lastBurstByPid[proc.pid]) {
+      delete state.profiler.lastBurstByPid[proc.pid];
+    }
+    if (state.profiler.source === 'burst') {
+      state.profiler.source = 'etw_oncpu';
+    }
+    state.profiler.selectedIdx = 0;
+    state.profiler.expandedIds = new Set();
+    state.lastDiag = evaluateDiagnostics();
+    showToast('Cleared ETW & burst profiler samples');
+    renderAll();
+  }
+
+  function toggleProfilerSidecarMap() {
+    const proc = getAttachedProcess();
+    state.profiler.sidecarLoaded = !state.profiler.sidecarLoaded;
+    if (proc && state.profiler.resolver) {
+      if (state.profiler.sidecarLoaded) {
+        const count = state.profiler.resolver.loadSidecarJson(getSidecarForPid(proc.pid));
+        showToast(`Loaded sidecar .zen2sym.json (${count} RVA ranges -> Tier 3 [MAP])`);
+      } else {
+        state.profiler.resolver.clearSidecarMaps();
+        showToast('Unloaded sidecar map (fallback to Tier 4 [.pdata])');
+      }
+      // Re-resolve live ETW samples and any cached bursts cleanly
+      if (state.profiler.etwSession) {
+        state.profiler.etwSession.clear();
+        feedEtwTick(18);
+      }
+      const cached = state.profiler.lastBurstByPid[proc.pid];
+      if (cached && cached.latest) {
+        const bType = cached.latest.burstType;
+        const csv = generateBurstCsvForProcess(proc, bType);
+        const rep = parseUprofBurstReportCsv(csv, state.profiler.resolver, {
+          burstType: bType,
+          burstLabel: cached.latest.burstLabel,
+          durationSec: cached.latest.durationSec,
+          capturedAt: cached.latest.capturedAt,
+          command: cached.latest.command
+        });
+        cached[bType] = rep;
+        cached.latest = rep;
+      }
+      state.lastDiag = evaluateDiagnostics();
+    }
+    renderAll();
+  }
+
+  function toggleBurstDuration() {
+    state.profiler.burstDurationSec = state.profiler.burstDurationSec === 5 ? 10 : 5;
+    renderAll();
+  }
+
+  function startHardwareBurst(burstType = 'ibs_op', durationSec = state.profiler.burstDurationSec || 5) {
+    const proc = getAttachedProcess();
+    if (!proc) {
+      showToast('Attach a process first (press p) before starting a hardware burst');
+      return;
+    }
+    if (state.profiler.burstCapture) {
+      showToast('Hardware burst capture already running');
+      return;
+    }
+    const cli = locateUprofCli({ available: state.simUprofCliAvailable });
+    if (!cli.found) {
+      showToast(cli.error);
+      renderAll();
+      return;
+    }
+    const profile = getBurstProfile(burstType);
+    const tmpDir = `C:\\Temp\\zen2top_burst_${proc.pid}_${profile.id}`;
+    const cmd = profile.primaryArgs(proc.pid, durationSec, tmpDir);
+
+    // PmuCoordinator: Pause AMDuProfPcm cleanly to release Zen 2 hardware PMCs
+    state.profiler.pcmPausedForBurst = true;
+    const capture = {
+      burstType: profile.id,
+      label: profile.shortLabel,
+      remainingSec: durationSec,
+      totalSec: durationSec,
+      pid: proc.pid,
+      procName: proc.name,
+      tmpDir,
+      command: cmd,
+      timerId: null
+    };
+    state.profiler.burstCapture = capture;
+    closeModal(false);
+    showToast(`Paused AMDuProfPcm -> running ${profile.shortLabel} burst (${durationSec}s)`);
+    renderAll();
+
+    capture.timerId = setInterval(() => {
+      if (!state.profiler.burstCapture || state.profiler.burstCapture !== capture) {
+        clearInterval(capture.timerId);
+        return;
+      }
+      capture.remainingSec -= 1;
+      if (capture.remainingSec <= 0) {
+        clearInterval(capture.timerId);
+        finishHardwareBurst(capture);
+      } else {
+        renderAll();
+      }
+    }, 1000);
+  }
+
+  function finishHardwareBurst(capture) {
+    try {
+      const proc = getAttachedProcess();
+      if (proc && proc.pid === capture.pid) {
+        const csvText = generateBurstCsvForProcess(proc, capture.burstType);
+        const capturedAt = new Date().toTimeString().slice(0, 8);
+        const report = parseUprofBurstReportCsv(csvText, state.profiler.resolver, {
+          burstType: capture.burstType,
+          burstLabel: capture.label,
+          durationSec: capture.totalSec,
+          capturedAt,
+          command: capture.command
+        });
+        if (!state.profiler.lastBurstByPid[proc.pid]) {
+          state.profiler.lastBurstByPid[proc.pid] = {};
+        }
+        state.profiler.lastBurstByPid[proc.pid][capture.burstType] = report;
+        state.profiler.lastBurstByPid[proc.pid].latest = report;
+        state.profiler.source = 'burst';
+        state.profiler.selectedIdx = 0;
+        state.activeTab = 7;
+        state.lastDiag = evaluateDiagnostics();
+        showToast(`${capture.label} burst complete (${report.totalSamples.toLocaleString()} samples) -> AMDuProfPcm resumed`);
+      }
+    } finally {
+      // Guaranteed resume of AMDuProfPcm & cleanup of tmpDir
+      state.profiler.burstCapture = null;
+      state.profiler.pcmPausedForBurst = false;
+      renderAll();
+    }
+  }
+
+  function cancelHardwareBurst(silent = false) {
+    const cap = state.profiler.burstCapture;
+    if (!cap) return;
+    if (cap.timerId) clearInterval(cap.timerId);
+    state.profiler.burstCapture = null;
+    state.profiler.pcmPausedForBurst = false;
+    if (!silent) {
+      showToast(`Cancelled ${cap.label} burst -> AMDuProfPcm resumed`);
+      renderAll();
+    }
+  }
+
+  function selectThreadAndProfile(tid) {
+    const proc = getAttachedProcess();
+    if (!proc) return;
+    const threads = Z.getThreadsForProcess ? Z.getThreadsForProcess(proc) : [];
+    const idx = threads.findIndex(t => t.tid === tid);
+    if (idx >= 0) state.threadSelectedIdx = idx;
+    state.profiler.scopeMode = 'thread';
+    state.profiler.selectedIdx = 0;
+    state.activeTab = 7;
+    showToast(`Tab 7 Profiler scoped to TID ${tid}`);
+    renderAll();
   }
 
   function toggleTargetLockPriv() {
@@ -358,5 +820,16 @@
     renderAll();
   }
 
-  Object.assign(Z, { switchTab, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode, cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline, startTimedCapture, finishTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle, openModal, closeModal, cyclePickerSort, cycleModSort, runAndShowGroupATests, toggleTargetLockPriv });
+  Object.assign(Z, {
+    switchTab, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode,
+    cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline, startTimedCapture,
+    finishTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle, openModal,
+    closeModal, cyclePickerSort, cycleModSort, cycleThreadSort, toggleVaMapView,
+    toggleProtectedProcess, openAffinityModal, applyAffinityPreset,
+    applyCustomAffinityMask, revertAllSessionAffinities, runAndShowGroupATests, toggleTargetLockPriv,
+    getSelectedThreadForProcess, initProfilerForAttachedProcess, feedEtwTick,
+    toggleProfilerOnOffCpu, toggleProfilerViewMode, toggleProfilerScope, toggleProfilerEtwPause,
+    clearProfilerData, toggleProfilerSidecarMap, toggleBurstDuration,
+    startHardwareBurst, finishHardwareBurst, cancelHardwareBurst, selectThreadAndProfile
+  });
 })();

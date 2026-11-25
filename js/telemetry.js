@@ -2,7 +2,13 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, SYSTEM_WIDE_PROFILE, SYSTEM_WIDE_WIN32, HISTORY_LEN, state, computeMicroArchMetrics, getAttachedProcess, pushRing } = Z;
+  const {
+    CONFIG, MUX_PRESETS, SYSTEM_WIDE_PROFILE, SYSTEM_WIDE_WIN32, HISTORY_LEN, state,
+    computeMicroArchMetrics, getAttachedProcess, pushRing,
+    PRESENT_RING_LEN, firstSetBit, isThreadSmtContended,
+    computeFrametimeStats, recordFrametimeSpikeIfMatched, analyzeSpikeCorrelations,
+    aggregateVaRegions, buildSimulatedVaRegionsForProcess
+  } = Z;
 
   let noisePhase = 0;
   function jitter(base, relAmp, phaseOffset = 0) {
@@ -222,6 +228,106 @@
     const commitPct = Math.min(99.5, Math.max(5.0, jitter(w32.commitPct, 0.02, 24.3)));
     const seLockMemoryPrivilege = w32.seLockMemoryPrivilege || 'Present';
 
+    // Deep-Dive Zero-PMC Collectors (Threads, Present ETW, VA/JIT Map, Disk I/O)
+    // 1. Process Disk & Asset-Streaming I/O (GetProcessIoCounters deltas)
+    const ioProf = proc && proc.ioProfile ? proc.ioProfile : null;
+    const ioBurst = (ioProf && proc.presentProfile && proc.presentProfile.spikeCulprit === 'disk_read' && (noisePhase % 14 === 0)) ? 1.45 : burst;
+    const diskIo = ioProf ? {
+      readMbS: Math.max(0, jitter(ioProf.readMbS * ioBurst, 0.14, 25.1)),
+      writeMbS: Math.max(0, jitter(ioProf.writeMbS, 0.14, 25.5)),
+      readIops: Math.max(0, Math.round(jitter(ioProf.readIops * ioBurst, 0.14, 25.9))),
+      writeIops: Math.max(0, Math.round(jitter(ioProf.writeIops, 0.14, 26.3)))
+    } : null;
+
+    // 2. Per-Thread live CPU%, CtxSw/s, and SMT contention awareness
+    let threadSnapshots = [];
+    if (proc && Array.isArray(proc.threads)) {
+      threadSnapshots = proc.threads.map((t, idx) => {
+        const mask = (t.affinityMask >>> 0) || 0x0FFF;
+        if (((1 << t.currentCpu) & mask) === 0) {
+          t.currentCpu = firstSetBit(mask, CONFIG.logicalCpus);
+        }
+        const liveCpu = Math.min(100.0, Math.max(0.1, jitter(t.baseCpuPct, 0.075, 27 + idx * 0.6)));
+        const liveCtx = Math.max(10, Math.round(jitter(t.baseCtxSw, 0.09, 28 + idx * 0.5)));
+        if (commitToHistory) {
+          t.cpuPct = liveCpu;
+          t.ctxSwPerSec = liveCtx;
+        }
+        return {
+          ...t,
+          cpuPct: commitToHistory ? liveCpu : t.cpuPct,
+          ctxSwPerSec: commitToHistory ? liveCtx : t.ctxSwPerSec,
+          smtContended: isThreadSmtContended(t, coreC0, CONFIG.physicalCores)
+        };
+      });
+    }
+
+    // 3. Virtual Address Space & Private Executable / JIT Map (2-3s slower cadence)
+    let vaMap = null;
+    if (proc) {
+      if (!state.vaMapCache || state.vaMapCache.pid !== proc.pid || (commitToHistory && state.vaMapTickCounter % 3 === 0)) {
+        const regions = buildSimulatedVaRegionsForProcess(proc);
+        state.vaMapCache = { pid: proc.pid, data: aggregateVaRegions(regions) };
+      }
+      if (commitToHistory) state.vaMapTickCounter += 1;
+      vaMap = state.vaMapCache.data;
+    } else {
+      state.vaMapCache = null;
+    }
+
+    // 4. Present / Frame-Time & Presentation Path ETW Consumer (300-frame ring + spike correlation)
+    let presentStats = null;
+    let spikeCorrelation = null;
+    let tickPeakFrameMs = null;
+    if (proc && proc.presentProfile) {
+      const pp = proc.presentProfile;
+      if (commitToHistory) {
+        const prevStats = computeFrametimeStats(state.presentFrames);
+        const rollingMed = prevStats ? prevStats.medianMs : pp.baseFrameMs;
+        // Generate ~8-12 representative frames per tick into the 300-frame ring
+        const framesThisTick = 10;
+        let maxTickFrame = 0;
+        const triggerSpikeThisTick = (pp.spikeChance > 0) && (
+          (pp.spikeCulprit && (noisePhase % 14 === 0)) ||
+          (!pp.spikeCulprit && Math.random() < pp.spikeChance)
+        );
+        for (let f = 0; f < framesThisTick; f++) {
+          let ft = Math.max(1.8, jitter(pp.baseFrameMs, pp.jitterRel, 30 + f * 0.37));
+          if (triggerSpikeThisTick && f === 5) {
+            ft = Math.max(17.5, pp.baseFrameMs * (pp.spikeMultiplier || 2.3) * (0.95 + Math.random() * 0.25));
+          } else if (Math.random() < 0.015) {
+            ft *= 1.45;
+          }
+          if (ft > maxTickFrame) maxTickFrame = ft;
+          const isComp = Math.random() < (pp.composedShare || 0);
+          const mode = isComp
+            ? (pp.presentMode && pp.presentMode.startsWith('Composed') ? pp.presentMode : 'Composed: Flip')
+            : (pp.presentMode && !pp.presentMode.startsWith('Composed') ? pp.presentMode : 'Hardware: Independent Flip');
+          state.presentFrames.push({ frametimeMs: ft, presentMode: mode });
+          if (state.presentFrames.length > PRESENT_RING_LEN) state.presentFrames.shift();
+        }
+        tickPeakFrameMs = maxTickFrame;
+        let maxHotDpcIrq = 0;
+        for (let i = 0; i < coreC0.length; i++) {
+          if (coreC0[i] >= 55.0) {
+            const d = (coreDpcPct[i] || 0) + (coreIrqPct[i] || 0);
+            if (d > maxHotDpcIrq) maxHotDpcIrq = d;
+          }
+        }
+        recordFrametimeSpikeIfMatched(state.spikeRing, maxTickFrame, rollingMed, {
+          readMbS: diskIo ? diskIo.readMbS : 0,
+          readIops: diskIo ? diskIo.readIops : 0,
+          maxHotDpcIrq,
+          pfRate,
+          hardPageReadsPerSec,
+          l3LatNs,
+          ctxSwPerSec
+        });
+      }
+      presentStats = computeFrametimeStats(state.presentFrames);
+      spikeCorrelation = analyzeSpikeCorrelations(state.spikeRing);
+    }
+
     const snap = {
       effGhz, ipc, actualCpi, instPerSec, cycPerSec, aperfPerSec, mperfPerSec,
       retiringPct, retiringExact, retUopsPerSec,
@@ -238,7 +344,8 @@
       gpu3dPct, gpuProc3dPct, coreDpcPct, coreIrqPct, coreIrqPerSec,
       noisyNeighbors, ctxSwPerSec, syncWaitPct, topWaitReason,
       priorityClass, ecoQos, hardPageReadsPerSec, availPhysPct, commitPct,
-      seLockMemoryPrivilege
+      seLockMemoryPrivilege,
+      diskIo, threadSnapshots, vaMap, presentStats, spikeCorrelation
     };
 
     if (commitToHistory) {
@@ -305,6 +412,17 @@
       state.cum.commitPctSum += commitPct;
       state.cum.ctxSwSum += ctxSwPerSec;
       state.cum.syncWaitPctSum += syncWaitPct;
+      if (diskIo) {
+        state.cum.readMbSSum += diskIo.readMbS;
+        state.cum.writeMbSSum += diskIo.writeMbS;
+        state.cum.readIopsSum += diskIo.readIops;
+        state.cum.writeIopsSum += diskIo.writeIops;
+      }
+      if (presentStats) {
+        state.cum.fpsSum += presentStats.fps;
+        state.cum.avgFrameMsSum += presentStats.avgMs;
+        state.cum.presentSamples += 1;
+      }
       for (const bg of noisyNeighbors) {
         const key = `${bg.name}|${bg.pid}`;
         if (!state.cum.bgProcCpuSum[key]) {
@@ -320,6 +438,11 @@
       pushRing(state.history.l2itlb, l2Itlb);
       pushRing(state.history.l2dtlb, l2Dtlb);
       pushRing(state.history.pfRate, pfRate);
+      if (presentStats) {
+        pushRing(state.history.frametimeMs, tickPeakFrameMs !== null && tickPeakFrameMs > presentStats.medianMs * 1.8 ? tickPeakFrameMs : presentStats.avgMs);
+      } else {
+        pushRing(state.history.frametimeMs, 0);
+      }
       pushRing(state.history.dcCrossCcx, uarchDerived.dcCrossCcxMpki);
       pushRing(state.history.locksSerial, uarchDerived.locksSerialMpki);
       pushRing(state.history.legacyDecodePct, uarchDerived.legacyDecodePct);
@@ -357,6 +480,11 @@
         tc.l2dc += l2dc;
         tc.l2pfL3 += l2pfL3;
         tc.l2pfDram += l2pfDram;
+        if (presentStats) {
+          tc.fpsSum = (tc.fpsSum || 0) + presentStats.fps;
+          tc.avgFrameMsSum = (tc.avgFrameMsSum || 0) + presentStats.avgMs;
+          tc.presentSamples = (tc.presentSamples || 0) + 1;
+        }
         tc.remainingSec -= state.intervalSec;
         if (tc.remainingSec <= 0) {
           Z.finishTimedCapture();
@@ -365,6 +493,9 @@
     }
 
     state.lastSnap = snap;
+    if (commitToHistory && typeof Z.feedEtwTick === 'function') {
+      Z.feedEtwTick(1);
+    }
     state.lastDiag = Z.evaluateDiagnostics();
     return snap;
   }
@@ -377,7 +508,14 @@
       else if (state.cum[k] && typeof state.cum[k] === 'object') state.cum[k] = {};
       else state.cum[k] = 0;
     }
+    state.presentFrames = [];
+    state.spikeRing = [];
+    state.vaMapCache = null;
+    state.vaMapTickCounter = 0;
     state.sampleCount = 0;
+    if (typeof Z.initProfilerForAttachedProcess === 'function') {
+      Z.initProfilerForAttachedProcess(0);
+    }
     for (let i = 0; i < count; i++) {
       generateSample(true);
     }

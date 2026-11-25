@@ -6,11 +6,13 @@
 
   function evaluateGroupARules(ctx) {
     const {
-      proc, hasTlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0,
+      proc, hasTlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
       avgGpu3dPct, avgCoreDpc, avgCoreIrq, avgCoreIrqRate,
       avgHardPageReads, avgAvailPhysPct, avgCommitPct,
       avgCtxSw, avgSyncWaitPct, topWaitReason,
       priorityClass, ecoQos, seLockMemoryPrivilege, bgList,
+      presentStats, spikeCorrelation, vaMap,
+      avgReadMbS, avgReadIops,
       pushFinding, pushHealthy
     } = ctx;
 
@@ -274,7 +276,114 @@
     }
 
 
-    return { gpuBound, hottestCpuC0, hottestCpuTag, largePageFailureTriggered };
+    // --- GROUP A RULE 8: DWM Composed Flip Presentation Path (Present ETW) ---
+    if (proc && presentStats) {
+      if (presentStats.composedPct >= 80.0) {
+        pushFinding({
+          id: 'composed_flip_mode',
+          category: 'OsKernelChurn',
+          severity: 'MD',
+          scope: '[OS / TUI]',
+          confidence: 'HIGH',
+          impact: 0.21,
+          title: `DWM Composed presentation path (${presentStats.presentMode} on ${presentStats.composedPct.toFixed(0)}% of frames)`,
+          keyMetric: `${presentStats.presentMode} | ${presentStats.composedPct.toFixed(0)}%`,
+          estGain: {
+            kind: 'qualitative',
+            label: '-DWM latency',
+            detail: 'Qualitative: bypasses DWM compositor copy/queue to cut display latency and DWM GPU/CPU overhead'
+          },
+          why: `Microsoft-Windows-DXGI / DxgKrnl Present ETW reports ${presentStats.composedPct.toFixed(0)}% of recent frames (>=80%) routing through ${presentStats.presentMode} instead of Hardware: Independent Flip.`,
+          action: `Switch ${proc.name} to Exclusive Fullscreen or Borderless Flip Model (Optimizations for Windowed Games), disable hooking overlays, or force Hardware: Independent Flip.`,
+          cascade: `Cuts presentation latency by 1-2 frames and removes DWM compositor GPU/CPU overhead.`,
+          quickJumpTab: 6
+        });
+      } else {
+        pushHealthy('Independent Flip', `${presentStats.fps.toFixed(0)} FPS (${presentStats.presentMode})`);
+      }
+    }
+
+    // --- GROUP A RULE 9: Residual 4 KiB JIT iTLB Misses (PE Already >=75% 2 MiB) ---
+    let jitResidualTriggered = false;
+    if (proc && hasTlb && avgL2Itlb >= 0.35 && vaMap && vaMap.imageLarge2mPct >= 75.0 && vaMap.privateJitExec4kMiB >= 8.0) {
+      jitResidualTriggered = true;
+      pushFinding({
+        id: 'jit_4k_itlb_residual',
+        category: 'TlbTranslationBound',
+        severity: 'MD',
+        scope: '[OS / Code]',
+        confidence: 'HIGH',
+        impact: 0.20 + avgTierCpi.l2Itlb,
+        title: `Residual iTLB misses from 4 KiB JIT/RWX code (${vaMap.privateJitExec4kMiB.toFixed(1)} MiB, PE already ${vaMap.imageLarge2mPct.toFixed(0)}% 2 MiB)`,
+        keyMetric: `iTLB ${avgL2Itlb.toFixed(2)} | JIT ${vaMap.privateJitExec4kMiB.toFixed(1)} MiB`,
+        estGain: {
+          kind: 'qualitative',
+          label: 'Avoids futile IFEO',
+          detail: 'Qualitative: proves residual iTLB walks originate in 4 KiB dynamic JIT code that Windows IFEO cannot map with 2 MiB pages'
+        },
+        why: `L2 iTLB walks remain ${avgL2Itlb.toFixed(2)} MPKI (>=0.35) even though ${vaMap.imageLarge2mPct.toFixed(0)}% (>=75%) of loaded PE image bytes are already backed by 2 MiB large pages. VirtualQueryEx identifies ${vaMap.privateJitExec4kMiB.toFixed(1)} MiB (>=8 MiB) of 4 KiB private executable (RX/RWX) dynamic JIT code.`,
+        action: `Stop tuning Windows IFEO PE registry entries (they only apply to static PE images). Address dynamic JIT code locality or runtime large-page JIT flags (e.g. V8/CoreCLR/JVM code-cache tuning).`,
+        cascade: `Prevents wasted IFEO registry troubleshooting and focuses effort on dynamic code-cache locality.`,
+        quickJumpTab: 3
+      });
+    }
+
+    // --- GROUP A RULE 10: Disk I/O Asset-Streaming / Shader-Cache Stall ---
+    const hasFrametimeSpikes = Boolean(spikeCorrelation && spikeCorrelation.totalSpikes > 0);
+    if (proc && (avgReadMbS >= 50.0 || avgReadIops >= 1000.0) && (hasFrametimeSpikes || avgSys >= 15.0 || topWaitReason === 'WrPageIn')) {
+      const triggerNote = hasFrametimeSpikes
+        ? `${spikeCorrelation.totalSpikes} frametime spike(s) >2x median`
+        : (topWaitReason === 'WrPageIn' ? 'WrPageIn wait dominance' : `elevated sys ${avgSys.toFixed(1)}%`);
+      pushFinding({
+        id: 'disk_io_streaming_stall',
+        category: 'OsKernelChurn',
+        severity: 'MD',
+        scope: '[OS / HW]',
+        confidence: 'HIGH',
+        impact: 0.24,
+        title: `Asset-streaming disk I/O stall (${avgReadMbS.toFixed(0)} MB/s, ${Math.round(avgReadIops).toLocaleString()} read IOPS)`,
+        keyMetric: `Read ${avgReadMbS.toFixed(0)} MB/s | ${Math.round(avgReadIops).toLocaleString()} IOPS`,
+        estGain: {
+          kind: 'qualitative',
+          label: 'Isolates I/O hitch',
+          detail: 'Qualitative: separates storage streaming / shader-cache hitches from CPU/RAM micro-arch stalls'
+        },
+        why: `GetProcessIoCounters shows ${proc.name} reading ${avgReadMbS.toFixed(1)} MB/s (${Math.round(avgReadIops).toLocaleString()} read IOPS) coinciding with ${triggerNote}.`,
+        action: `Treat these hitches as storage asset-streaming or shader-cache compilation stalls rather than CPU IPC or RAM timing bottlenecks. Move game/shader cache to NVMe SSD, pre-compile shaders, or check antivirus I/O exclusions.`,
+        cascade: `Prevents misattributing storage I/O hitches to CPU/RAM timings and eliminates streaming stutter.`,
+        quickJumpTab: 4
+      });
+    }
+
+    // --- GROUP A RULE 11: Frametime Spike Correlator (INFO / MD) ---
+    if (proc && spikeCorrelation && spikeCorrelation.totalSpikes >= 5 && spikeCorrelation.dominantSharePct >= 60.0 && spikeCorrelation.dominantCulprit) {
+      const sc = spikeCorrelation;
+      const sev = (sc.dominantSharePct >= 75.0 || sc.avgSpikeMs >= 25.0) ? 'MD' : 'INFO';
+      const conf = (sc.dominantSharePct >= 75.0 || sc.totalSpikes >= 8) ? 'HIGH' : 'MED';
+      const floorMs = Math.max(17, Math.round(sc.minSpikeMs));
+      const summarySentence = `${sc.dominantCount} of ${sc.totalSpikes} frame spikes (>${floorMs} ms) coincided with ${sc.culpritSummary}`;
+      pushFinding({
+        id: 'frametime_spike_correlator',
+        category: 'OsKernelChurn',
+        severity: sev,
+        scope: sc.culpritMeta ? sc.culpritMeta.scope : '[OS / TUI]',
+        confidence: conf,
+        impact: sev === 'MD' ? 0.22 : 0.08,
+        title: summarySentence,
+        keyMetric: `${sc.dominantCount}/${sc.totalSpikes} (${sc.dominantSharePct.toFixed(0)}%) | avg ${sc.avgSpikeMs.toFixed(1)} ms`,
+        estGain: {
+          kind: 'qualitative',
+          label: '1% / 0.1% lows',
+          detail: 'Qualitative: directly attributes session frame-time hitches (>2x median & >16.7 ms) to the dominant concurrent telemetry burst'
+        },
+        why: `The Present ETW spike correlation ring captured ${sc.totalSpikes} frame spikes (>2.0x rolling median and >16.7 ms; avg ${sc.avgSpikeMs.toFixed(1)} ms). ${sc.dominantCount}/${sc.totalSpikes} (${sc.dominantSharePct.toFixed(0)}%) occurred in the exact 1s bucket as ${sc.culpritSummary}.`,
+        action: `Target the correlated culprit directly: ${summarySentence}. Inspect Tab 6 frame pacing alongside the matching subsystem tab.`,
+        cascade: `Directly cuts 1% and 0.1% low frame-time spikes without guessing across unrelated subsystems.`,
+        quickJumpTab: 6
+      });
+    }
+
+    return { gpuBound, hottestCpuC0, hottestCpuTag, largePageFailureTriggered, jitResidualTriggered };
   }
 
   Object.assign(Z, { evaluateGroupARules });

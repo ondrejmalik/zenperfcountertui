@@ -213,6 +213,29 @@
           return { name: b.name, pid: b.pid, sysCpuPct, singleCorePct: sysCpuPct * CONFIG.logicalCpus };
         });
 
+    // Deep-Dive Zero-PMC telemetry context (Present ETW, Spike Correlation, VA/JIT Map, Disk I/O)
+    const presentStats = (ov && ('presentStats' in ov))
+      ? ov.presentStats
+      : (state.lastSnap ? state.lastSnap.presentStats : null);
+    const spikeCorrelation = (ov && ('spikeCorrelation' in ov))
+      ? ov.spikeCorrelation
+      : (state.lastSnap ? state.lastSnap.spikeCorrelation : null);
+    const vaMap = (ov && ('vaMap' in ov))
+      ? ov.vaMap
+      : (state.lastSnap ? state.lastSnap.vaMap : null);
+    const avgReadMbS = (ov && ov.avgReadMbS !== undefined)
+      ? ov.avgReadMbS
+      : (state.cum.readMbSSum / n);
+    const avgWriteMbS = (ov && ov.avgWriteMbS !== undefined)
+      ? ov.avgWriteMbS
+      : (state.cum.writeMbSSum / n);
+    const avgReadIops = (ov && ov.avgReadIops !== undefined)
+      ? ov.avgReadIops
+      : (state.cum.readIopsSum / n);
+    const avgWriteIops = (ov && ov.avgWriteIops !== undefined)
+      ? ov.avgWriteIops
+      : (state.cum.writeIopsSum / n);
+
     const dramLatForCpi = avgL3LatCyc > 0 ? avgL3LatCyc : CONFIG.latencies.dramFallback;
     const avgTierCpi = {
       dram:   hasCacheCore ? (avgDram * dramLatForCpi) / 1000.0 : 0,
@@ -243,6 +266,8 @@
       avgHardPageReads, avgAvailPhysPct, avgCommitPct,
       avgCtxSw, avgSyncWaitPct, topWaitReason,
       priorityClass, ecoQos, seLockMemoryPrivilege, bgList,
+      presentStats, spikeCorrelation, vaMap,
+      avgReadMbS, avgWriteMbS, avgReadIops, avgWriteIops,
       avgTierCpi, sumModeledCpi, pushFinding, pushHealthy
     };
 
@@ -371,12 +396,20 @@
       }
     }
 
-    const sevRank = { HI: 3, MD: 2, LO: 1 };
+    const sevRank = { HI: 3, MD: 2, LO: 1, INFO: 0 };
     findings.sort((a, b) => {
       if (sevRank[b.severity] !== sevRank[a.severity]) return sevRank[b.severity] - sevRank[a.severity];
       if (Boolean(b.isPrimaryAnchor) !== Boolean(a.isPrimaryAnchor)) return b.isPrimaryAnchor ? 1 : -1;
       return b.impact - a.impact;
     });
+
+    // Tab 5 Advisor Attribution Upgrade: enrich matching findings with fresh Tab 7 ETW / Burst hotspots
+    const profCtx = (ov && ('profiler' in ov))
+      ? ov.profiler
+      : buildLiveProfilerContext(proc);
+    if (profCtx) {
+      enrichFindingsWithProfiler(findings, profCtx);
+    }
 
     let winningStallLine = '';
     let proofLine = '';
@@ -438,5 +471,110 @@
     };
   }
 
-  Object.assign(Z, { VERDICT_LABELS, estimateAmdahlGain, formatEstGainCell, evaluateDiagnostics });
+  function buildLiveProfilerContext(proc) {
+    if (!proc || !state.profiler) return null;
+    const etw = state.profiler.etwSession;
+    const bursts = (state.profiler.lastBurstByPid && state.profiler.lastBurstByPid[proc.pid]) || null;
+    const onCpuRows = (etw && etw.targetPid === proc.pid && etw.onCpu.totalSamples > 0)
+      ? etw.onCpu.getFlatHotspots()
+      : [];
+    const offCpuRows = (etw && etw.targetPid === proc.pid && etw.offCpu.totalWakes > 0)
+      ? etw.offCpu.getWaitRows()
+      : [];
+    if (onCpuRows.length === 0 && offCpuRows.length === 0 && !bursts) return null;
+    return {
+      pid: proc.pid,
+      onCpuTop: onCpuRows[0] || null,
+      offCpuTop: offCpuRows[0] || null,
+      bursts: bursts || {}
+    };
+  }
+
+  function formatFnName(row) {
+    if (!row) return '';
+    if (row.name && row.name.includes('!')) return row.name;
+    return row.module ? `${row.module}!${row.displayName || row.name}` : (row.displayName || row.name);
+  }
+
+  function enrichFindingsWithProfiler(findings, profCtx) {
+    if (!Array.isArray(findings) || !profCtx) return;
+    const bursts = profCtx.bursts || {};
+    const topFromBurst = (type) => {
+      const b = bursts[type];
+      if (!b) return null;
+      if (Array.isArray(b.flatRows) && b.flatRows.length > 0) return b.flatRows[0];
+      if (b.aggregator && typeof b.aggregator.getFlatHotspots === 'function') {
+        return b.aggregator.getFlatHotspots()[0] || null;
+      }
+      return null;
+    };
+
+    const ibsTop = topFromBurst('ibs_op');
+    const dramTop = topFromBurst('dram_l3');
+    const branchTop = topFromBurst('branch_miss');
+    const tlbTop = topFromBurst('tlb_walk');
+    const onCpuTop = profCtx.onCpuTop || null;
+    const offCpuTop = profCtx.offCpuTop || null;
+
+    for (const f of findings) {
+      let note = null;
+
+      if (f.id === 'branch_mispredict_bound' || f.id === 'branch_mispredicts') {
+        if (branchTop) {
+          note = `Top branch-mispredict burst contributor: ${formatFnName(branchTop)} (${branchTop.selfPct.toFixed(1)}%).`;
+        } else if (onCpuTop) {
+          note = `Top On-CPU hotspot: ${formatFnName(onCpuTop)} (${onCpuTop.selfPct.toFixed(1)}% self).`;
+        }
+      } else if (
+        f.id === 'dram_queueing_inflation' ||
+        f.id === 'demand_dram_pointer_chase' ||
+        f.id === 'primary_dram_latency' ||
+        f.id === 'primary_l3_capacity'
+      ) {
+        if (ibsTop) {
+          const latStr = ibsTop.avgLatencyCyc ? `, avg ${Math.round(ibsTop.avgLatencyCyc)} cyc` : '';
+          const srcStr = ibsTop.topDataSource ? ` ${ibsTop.topDataSource}` : '';
+          note = `Top IBS Op load-latency contributor: ${formatFnName(ibsTop)} (${ibsTop.selfPct.toFixed(1)}%${latStr}${srcStr}).`;
+        } else if (dramTop) {
+          note = `Top DRAM/L3 miss burst contributor: ${formatFnName(dramTop)} (${dramTop.selfPct.toFixed(1)}%).`;
+        } else if (onCpuTop) {
+          note = `Top On-CPU hotspot: ${formatFnName(onCpuTop)} (${onCpuTop.selfPct.toFixed(1)}% self).`;
+        }
+      } else if (
+        f.id === 'pe_itlb_4k_modules' ||
+        f.id === 'crt_heap_dtlb' ||
+        f.id === 'mimalloc_spillover' ||
+        f.id === 'primary_tlb_bound' ||
+        f.id === 'large_page_failure_root_cause'
+      ) {
+        if (tlbTop) {
+          note = `Top TLB-walk burst contributor: ${formatFnName(tlbTop)} (${tlbTop.selfPct.toFixed(1)}%).`;
+        } else if (onCpuTop) {
+          note = `Top On-CPU hotspot: ${formatFnName(onCpuTop)} (${onCpuTop.selfPct.toFixed(1)}% self).`;
+        }
+      } else if (f.id === 'context_switch_storm') {
+        if (offCpuTop) {
+          note = `Top Off-CPU sleep stack: ${offCpuTop.displayName || offCpuTop.name} (${offCpuTop.blockedPct.toFixed(1)}% blocked, woken ${Math.round(offCpuTop.topWakerPct)}% by ${offCpuTop.topWakerName}).`;
+        }
+      } else if (
+        f.id === 'icache_capacity_pressure' ||
+        f.id === 'opcache_thrashing' ||
+        f.id === 'serialized_lock_contention' ||
+        f.id === 'cross_ccx_cache_bouncing' ||
+        f.id === 'stlf_interlocks' ||
+        f.id === 'cache_line_splits'
+      ) {
+        if (onCpuTop) {
+          note = `Top On-CPU hotspot: ${formatFnName(onCpuTop)} (${onCpuTop.selfPct.toFixed(1)}% self).`;
+        }
+      }
+
+      if (note) {
+        f.why = `${f.why} ${note}`;
+        f.profilerAttribution = note;
+      }
+    }
+  }
+
+  Object.assign(Z, { VERDICT_LABELS, estimateAmdahlGain, formatEstGainCell, evaluateDiagnostics, buildLiveProfilerContext, enrichFindingsWithProfiler });
 })();

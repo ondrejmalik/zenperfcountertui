@@ -70,6 +70,39 @@
     ['ucrtbase.dll', 4.30, 0x7FFA81200000n, false]
   ];
 
+  function makeThread(tid, description, startAddress, baseCpuPct, baseCtxSw, stateStr, waitReason, basePriority, currentCpu, idealCpu, affinityMask = 0x0FFF) {
+    return {
+      tid,
+      description,
+      startAddress,
+      baseCpuPct,
+      cpuPct: baseCpuPct,
+      baseCtxSw,
+      ctxSwPerSec: baseCtxSw,
+      state: stateStr,
+      waitReason,
+      basePriority,
+      currentCpu,
+      idealCpu: idealCpu ?? currentCpu,
+      affinityMask
+    };
+  }
+
+  function buildSource2Threads(pidBase, smtHot = true) {
+    return [
+      makeThread(pidBase + 4,  'MainThread',       0x7FF7B2012400n, 78.4, 2420, 'Running', '-',          10, 0, 0, 0x0FFF),
+      makeThread(pidBase + 12, 'RenderThread',     0x7FFA03048810n, smtHot ? 58.6 : 54.2, 3180, 'Running', '-',          10, smtHot ? 1 : 2, smtHot ? 1 : 2, 0x0FFF),
+      makeThread(pidBase + 20, '',                 0x7FFA1201A420n, 42.1, 1890, 'Running', '-',           8, 2, 2, 0x0FFF),
+      makeThread(pidBase + 28, 'V8JsWorker',       0x7FFA06092C00n, 29.8, 1460, 'Ready',   'WrQueue',     8, 4, 4, 0x0FFF),
+      makeThread(pidBase + 36, '',                 0x7FFA0004F810n, 24.5, 2140, 'Waiting', 'WrQueue',     8, 6, 6, 0x0FFF),
+      makeThread(pidBase + 44, 'JobWorker#0',      0x7FFA0A081200n, 18.2, 1620, 'Waiting', 'UserRequest', 8, 4, 4, 0x0FFF),
+      makeThread(pidBase + 52, 'JobWorker#1',      0x7FFA0A081200n, 15.6, 1380, 'Waiting', 'UserRequest', 8, 6, 6, 0x0FFF),
+      makeThread(pidBase + 60, 'AudioMixThread',   0x7FF9E402B100n,  7.4,  680, 'Waiting', 'DelayExec',  11, 8, 8, 0x0FFF),
+      makeThread(pidBase + 68, 'NetworkSocket',    0x7FF9E2019440n,  5.2,  940, 'Waiting', 'WrQueue',     9, 10, 10, 0x0FFF),
+      makeThread(pidBase + 76, '',                 0x7FF9F4120880n,  9.8, 1120, 'Waiting', 'EventPair',  10, 3, 3, 0x0FFF)
+    ];
+  }
+
   function makeWin32Profile(overrides = {}) {
     const baseDpc = [0.6, 0.2, 0.4, 0.2, 0.3, 0.1, 0.4, 0.2, 0.3, 0.1, 0.2, 0.1];
     const baseIrq = [0.4, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.1, 0.1];
@@ -140,6 +173,27 @@
         commitPct: 49.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: buildSource2Threads(14820, true),
+      presentProfile: {
+        baseFrameMs: 6.94,
+        jitterRel: 0.11,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.012,
+        spikeMultiplier: 2.2
+      },
+      vaProfile: {
+        privateJit4kMiB: 14.2,
+        jitProtect: 'RWX',
+        mapped4kMiB: 268
+      },
+      ioProfile: {
+        readMbS: 4.2,
+        writeMbS: 0.8,
+        readIops: 95,
+        writeIops: 18
+      },
       pmuProfile: {
         effGhz: 4.22, ipc: 1.28,
         l1dc: 31.4, l2dc: 8.6, l1ic: 11.2, l2ic: 1.75,
@@ -194,6 +248,27 @@
         commitPct: 52.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: buildSource2Threads(19204, false),
+      presentProfile: {
+        baseFrameMs: 8.65,
+        jitterRel: 0.14,
+        presentMode: 'Composed: Flip',
+        composedShare: 0.92,
+        spikeChance: 0.02,
+        spikeMultiplier: 2.1
+      },
+      vaProfile: {
+        privateJit4kMiB: 11.6,
+        jitProtect: 'RWX',
+        mapped4kMiB: 290
+      },
+      ioProfile: {
+        readMbS: 8.4,
+        writeMbS: 1.2,
+        readIops: 180,
+        writeIops: 24
+      },
       pmuProfile: {
         effGhz: 4.19, ipc: 1.15,
         l1dc: 33.8, l2dc: 9.8, l1ic: 12.1, l2ic: 1.95,
@@ -258,6 +333,35 @@
         commitPct: 54.0,
         seLockMemoryPrivilege: 'Missing'
       }),
+      protectedProcess: true,
+      threads: [
+        makeThread(27412, 'MainThread',     0x7FF811022180n, 64.0, 2850, 'Running', '-',          10, 0, 0, 0x0FFF),
+        makeThread(27420, 'RenderThread',   0x7FF819044B20n, 56.2, 2640, 'Running', '-',          10, 2, 2, 0x0FFF),
+        makeThread(27428, '',               0x7FF81101A420n, 38.4, 1940, 'Running', '-',           8, 4, 4, 0x0FFF),
+        makeThread(27436, 'SceneWorker#0',  0x7FF81E03C900n, 31.2, 1620, 'Waiting', 'WrQueue',     8, 6, 6, 0x0FFF),
+        makeThread(27444, '',               0x7FF849108400n, 14.5, 1180, 'Waiting', 'EventPair',  10, 8, 8, 0x0FFF),
+        makeThread(27452, 'AudioEngine',    0x7FF821011200n,  6.1,  540, 'Waiting', 'DelayExec',  11, 10, 10, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 5.40,
+        jitterRel: 0.10,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.09,
+        spikeMultiplier: 3.6,
+        spikeCulprit: 'dpc_irq'
+      },
+      vaProfile: {
+        privateJit4kMiB: 2.4,
+        jitProtect: 'RX',
+        mapped4kMiB: 240
+      },
+      ioProfile: {
+        readMbS: 6.5,
+        writeMbS: 0.9,
+        readIops: 140,
+        writeIops: 22
+      },
       pmuProfile: {
         effGhz: 3.64, ipc: 0.94,
         l1dc: 38.0, l2dc: 12.8, l1ic: 10.6, l2ic: 1.85,
@@ -312,6 +416,27 @@
         topWaitReason: 'WrExecutive',
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(31092, 'rustc',          0x7FF7E0041100n, 92.0, 8200, 'Running', '-',           8, 0, 0, 0x0FFF),
+        makeThread(31096, 'LLVM-Codegen#0', 0x7FF7EA128400n, 89.5, 7600, 'Running', '-',           8, 2, 2, 0x0FFF),
+        makeThread(31100, 'LLVM-Codegen#1', 0x7FF7EA128400n, 88.2, 7400, 'Running', '-',           8, 4, 4, 0x0FFF),
+        makeThread(31104, 'LLVM-Codegen#2', 0x7FF7EA128400n, 87.6, 7100, 'Running', '-',           8, 6, 6, 0x0FFF),
+        makeThread(31108, '',               0x7FF7E029A800n, 86.4, 6800, 'Running', '-',           8, 8, 8, 0x0FFF),
+        makeThread(31112, '',               0x7FF7E029A800n, 85.1, 6400, 'Ready',   'WrExecutive', 8, 10, 10, 0x0FFF)
+      ],
+      presentProfile: null, // CLI compiler: no Present ETW stream (graceful None)
+      vaProfile: {
+        privateJit4kMiB: 1.2,
+        jitProtect: 'RX',
+        mapped4kMiB: 140
+      },
+      ioProfile: {
+        readMbS: 38.0,
+        writeMbS: 24.5,
+        readIops: 620,
+        writeIops: 410
+      },
       pmuProfile: {
         effGhz: 4.14, ipc: 1.06,
         l1dc: 26.5, l2dc: 6.4, l1ic: 18.6, l2ic: 3.85,
@@ -372,6 +497,33 @@
         commitPct: 44.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(22914, 'CyclesRender#0', 0x7FF850018200n, 88.0,  920, 'Running', '-', 8, 0, 0, 0x0FFF),
+        makeThread(22918, 'CyclesRender#1', 0x7FF850018200n, 87.2,  890, 'Running', '-', 8, 2, 2, 0x0FFF),
+        makeThread(22922, 'CyclesRender#2', 0x7FF850018200n, 86.8,  860, 'Running', '-', 8, 4, 4, 0x0FFF),
+        makeThread(22926, 'EmbreeBVH',      0x7FF85402C100n, 84.5,  780, 'Running', '-', 8, 6, 6, 0x0FFF),
+        makeThread(22930, 'BlenderUI',      0x7FF610052A00n, 14.2, 1120, 'Waiting', 'UserRequest', 8, 8, 8, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 16.67,
+        jitterRel: 0.04,
+        presentMode: 'Hardware: Legacy Flip',
+        composedShare: 0.0,
+        spikeChance: 0.0,
+        spikeMultiplier: 1.2
+      },
+      vaProfile: {
+        privateJit4kMiB: 2.8,
+        jitProtect: 'RX',
+        mapped4kMiB: 210
+      },
+      ioProfile: {
+        readMbS: 12.0,
+        writeMbS: 6.4,
+        readIops: 210,
+        writeIops: 95
+      },
       pmuProfile: {
         effGhz: 4.24, ipc: 2.18,
         l1dc: 18.2, l2dc: 3.6, l1ic: 6.4, l2ic: 0.72,
@@ -423,6 +575,33 @@
         commitPct: 48.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(6108, 'CrRendererMain',  0x7FF94014A200n, 42.0, 2180, 'Running', '-',          6, 0, 0, 0x0FFF),
+        makeThread(6112, 'Compositor',      0x7FF94022C410n, 34.0, 1840, 'Running', '-',          6, 2, 2, 0x0FFF),
+        makeThread(6116, 'V8TurboFan',      0x7FF94088F100n, 38.0, 1420, 'Running', '-',          6, 6, 6, 0x0FFF),
+        makeThread(6120, '',                0x7FF93A018800n, 29.0, 1290, 'Waiting', 'WrQueue',    6, 8, 8, 0x0FFF),
+        makeThread(6124, 'ThreadPoolFg#0',  0x7FF940310400n,  8.4,  620, 'Waiting', 'UserRequest', 6, 4, 4, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 16.67,
+        jitterRel: 0.09,
+        presentMode: 'Composed: Copy with GPU GDI',
+        composedShare: 0.96,
+        spikeChance: 0.02,
+        spikeMultiplier: 1.8
+      },
+      vaProfile: {
+        privateJit4kMiB: 36.8,
+        jitProtect: 'RWX',
+        mapped4kMiB: 220
+      },
+      ioProfile: {
+        readMbS: 6.2,
+        writeMbS: 3.1,
+        readIops: 185,
+        writeIops: 92
+      },
       pmuProfile: {
         effGhz: 4.08, ipc: 1.02,
         l1dc: 22.8, l2dc: 7.4, l1ic: 14.2, l2ic: 2.10,
@@ -481,6 +660,35 @@
         commitPct: 68.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(34116, 'REDMainThread',   0x7FF6A0114000n, 62.0, 2140, 'Running', '-',          10, 0, 0, 0x0FFF),
+        makeThread(34120, 'REDRenderThread', 0x7FF8BC028400n, 54.0, 2480, 'Running', '-',          10, 2, 2, 0x0FFF),
+        makeThread(34124, 'AssetStreamer',   0x7FF6A0821900n, 46.0, 3890, 'Waiting', 'WrPageIn',    9, 4, 4, 0x0FFF),
+        makeThread(34128, 'PhysXWorker#0',   0x7FF8B204A100n, 48.0, 1620, 'Running', '-',           8, 6, 6, 0x0FFF),
+        makeThread(34132, '',                0x7FF8B806C200n, 34.0, 1340, 'Waiting', 'EventPair',   8, 8, 8, 0x0FFF),
+        makeThread(34136, 'JobPool#2',       0x7FF6A0448000n, 26.0, 1180, 'Waiting', 'WrQueue',     8, 10, 10, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 11.80,
+        jitterRel: 0.12,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.095,
+        spikeMultiplier: 2.35,
+        spikeCulprit: 'disk_read'
+      },
+      vaProfile: {
+        privateJit4kMiB: 3.1,
+        jitProtect: 'RX',
+        mapped4kMiB: 540
+      },
+      ioProfile: {
+        readMbS: 138.0,
+        writeMbS: 4.2,
+        readIops: 1840,
+        writeIops: 68
+      },
       pmuProfile: {
         effGhz: 4.21, ipc: 1.24,
         l1dc: 29.5, l2dc: 8.1, l1ic: 9.8, l2ic: 1.45,
@@ -540,6 +748,34 @@
         commitPct: 93.5,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(38908, 'Render thread',   0x7FF876012400n, 68.0, 2650, 'Running', '-',          10, 0, 0, 0x0FFF),
+        makeThread(38912, 'C2 Compiler#0',   0x7FF87018A200n, 52.0, 1980, 'Running', '-',           8, 2, 2, 0x0FFF),
+        makeThread(38916, 'G1 Conc#0',       0x7FF870244800n, 44.0, 1740, 'Waiting', 'WrPageIn',    8, 4, 4, 0x0FFF),
+        makeThread(38920, 'Server thread',   0x7FF870091A00n, 46.0, 2120, 'Running', '-',           9, 6, 6, 0x0FFF),
+        makeThread(38924, '',                0x7FF87032C100n, 28.0, 1420, 'Waiting', 'UserRequest', 8, 8, 8, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 8.20,
+        jitterRel: 0.13,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.085,
+        spikeMultiplier: 3.1,
+        spikeCulprit: 'page_faults'
+      },
+      vaProfile: {
+        privateJit4kMiB: 42.5,
+        jitProtect: 'RWX',
+        mapped4kMiB: 210
+      },
+      ioProfile: {
+        readMbS: 18.4,
+        writeMbS: 6.2,
+        readIops: 420,
+        writeIops: 110
+      },
       pmuProfile: {
         effGhz: 4.16, ipc: 1.12,
         l1dc: 28.0, l2dc: 7.9, l1ic: 11.8, l2ic: 1.90,
@@ -601,6 +837,27 @@
         commitPct: 61.0,
         seLockMemoryPrivilege: 'Present'
       }),
+      protectedProcess: false,
+      threads: [
+        makeThread(41254, 'SOS_Worker#0',    0x7FF880112200n, 56.0, 14800, 'Running', '-',          8, 0, 0, 0x0FFF),
+        makeThread(41258, 'SOS_Worker#1',    0x7FF880112200n, 52.0, 13900, 'Waiting', 'WrPushLock', 8, 2, 2, 0x0FFF),
+        makeThread(41262, 'SOS_Worker#2',    0x7FF886084100n, 48.0, 12600, 'Waiting', 'WrPushLock', 8, 4, 4, 0x0FFF),
+        makeThread(41266, 'SOS_Worker#3',    0x7FF886084100n, 54.0, 14100, 'Running', '-',          8, 6, 6, 0x0FFF),
+        makeThread(41270, '',                0x7FF88041C900n, 44.0, 11800, 'Waiting', 'WrPushLock', 8, 1, 1, 0x0FFF),
+        makeThread(41274, 'LogWriter',       0x7FF880028800n, 18.0,  6400, 'Waiting', 'WrQueue',    9, 8, 8, 0x0FFF)
+      ],
+      presentProfile: null, // Headless DB server: no Present ETW stream (graceful None)
+      vaProfile: {
+        privateJit4kMiB: 2.0,
+        jitProtect: 'RX',
+        mapped4kMiB: 280
+      },
+      ioProfile: {
+        readMbS: 34.0,
+        writeMbS: 48.0,
+        readIops: 860,
+        writeIops: 1120
+      },
       pmuProfile: {
         effGhz: 4.18, ipc: 1.04,
         l1dc: 27.2, l2dc: 7.1, l1ic: 10.4, l2ic: 1.55,
@@ -612,6 +869,83 @@
         dcCrossCcx: 1.45, locksSerial: 1.35, opcacheHitPct: 75.5, stlfInterlock: 2.30, misalAccess: 9.2,
         pfRate: 480, cpuUsr: 29.5, cpuSys: 19.2,
         coreC0: [56, 44, 52, 42, 48, 38, 54, 41, 49, 37, 45, 34]
+      }
+    },
+    {
+      pid: 45120,
+      name: 'coreclr_sim.exe',
+      tag: '2MiB PE + 4K JIT iTLB Residual',
+      allocatorType: 'crt_fallback',
+      allocatorLabel: 'CoreCLR GC + RyuJIT (2MiB PE, 4K JIT)',
+      wsMiB: 1420,
+      sharedMiB: 240,
+      hugeMiB: 0,
+      requestedHugeMiB: 0,
+      commitMiB: 1980,
+      peakWsMiB: 1640,
+      peakCommitMiB: 2120,
+      pageFaults: 740200,
+      userSec: 412.0,
+      sysSec: 38.4,
+      elapsedSec: 260.0,
+      ifeoEnabled: true,
+      ifeoMasterSessionToggled: false,
+      affinityMask: 0x0FFF,
+      modules: [
+        makeMod('coreclr.dll', 64.00, true, true, 'RX', false, 0x7FF890000000n),
+        makeMod('clrjit.dll', 32.00, true, true, 'RX', false, 0x7FF896000000n),
+        makeMod('sim_engine.dll', 48.00, true, true, 'RX', false, 0x7FF89A000000n),
+        makeMod('coreclr_sim.exe', 8.00, true, true, 'RX', false, 0x7FF670000000n),
+        makeMod('ucrtbase.dll', 4.30, false, false, 'RX', true, 0x7FFA81200000n)
+      ],
+      arenas: null,
+      heapStats: null,
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 58.0,
+        gpuProc3dPct: 54.0,
+        hardPageReadsPerSec: 0.0,
+        availPhysPct: 51.0,
+        commitPct: 44.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
+      protectedProcess: false,
+      threads: [
+        makeThread(45124, '.NET MainLoop',   0x7FF890024A00n, 74.0, 1980, 'Running', '-',           9, 0, 0, 0x0FFF),
+        makeThread(45128, 'RyuJIT Worker',   0x7FF896018800n, 46.0, 1520, 'Running', '-',           8, 2, 2, 0x0FFF),
+        makeThread(45132, '.NET TP Worker',  0x7FF89A04C100n, 38.0, 2140, 'Ready',   'WrQueue',     8, 4, 4, 0x0FFF),
+        makeThread(45136, 'GC Server#0',     0x7FF890198000n, 16.0,  860, 'Waiting', 'UserRequest', 8, 6, 6, 0x0FFF),
+        makeThread(45140, '',                0x7FF89A082200n, 12.0,  640, 'Waiting', 'WrQueue',     8, 8, 8, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 8.33,
+        jitterRel: 0.08,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.01,
+        spikeMultiplier: 1.9
+      },
+      vaProfile: {
+        privateJit4kMiB: 28.4,
+        jitProtect: 'RWX',
+        mapped4kMiB: 165
+      },
+      ioProfile: {
+        readMbS: 3.8,
+        writeMbS: 1.1,
+        readIops: 84,
+        writeIops: 22
+      },
+      pmuProfile: {
+        effGhz: 4.21, ipc: 1.24,
+        l1dc: 24.5, l2dc: 6.8, l1ic: 12.4, l2ic: 1.95,
+        demL3: 2.60, hwpfL3: 0.95, demDram: 0.92, hwpfDram: 0.30,
+        l2pfL3: 0.85, l2pfDram: 0.25,
+        l3Acc: 8.6, l3Miss: 1.48, l3LatCyc: 206,
+        br: 152.0, brMiss: 2.90, brMissPct: 2.35,
+        l1ItlbMissPct: 1.48, l2Itlb: 0.58, l1Dtlb: 1.12, l2Dtlb: 0.21,
+        dcCrossCcx: 0.54, locksSerial: 0.22, opcacheHitPct: 77.2, stlfInterlock: 1.85, misalAccess: 7.6,
+        pfRate: 240, cpuUsr: 41.0, cpuSys: 4.2,
+        coreC0: [74, 6, 46, 5, 38, 4, 24, 3, 14, 2, 10, 1]
       }
     }
   ];
@@ -650,6 +984,8 @@
       note: 'VAC-Safe 4K Default',
       ipc: 1.15,
       cpi: 0.870,
+      fps: 115.6,
+      avgFrameMs: 8.65,
       dramMpki: 2.38,
       l3HitMpki: 4.85,
       l2dcExclMpki: 24.00,
@@ -676,6 +1012,8 @@
       note: '17 Source 2 DLLs 2 MiB IFEO',
       ipc: 1.28,
       cpi: 0.781,
+      fps: 144.1,
+      avgFrameMs: 6.94,
       dramMpki: 1.72,
       l3HitMpki: 4.85,
       l2dcExclMpki: 22.80,
@@ -694,5 +1032,5 @@
     }
   };
 
-  Object.assign(Z, { PROTECTED_DRIVERS, makeMod, buildArenas, SOURCE2_DLLS, makeWin32Profile, PROCESSES, SYSTEM_WIDE_WIN32, SYSTEM_WIDE_PROFILE, BASELINE_PRESETS });
+  Object.assign(Z, { PROTECTED_DRIVERS, makeMod, makeThread, buildArenas, SOURCE2_DLLS, makeWin32Profile, PROCESSES, SYSTEM_WIDE_WIN32, SYSTEM_WIDE_PROFILE, BASELINE_PRESETS });
 })();

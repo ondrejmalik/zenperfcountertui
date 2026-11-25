@@ -2,7 +2,13 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, PROCESSES, state, getActiveMux, getAttachedProcess, fmtAddr, fmtDeltaPct, fmtMiB, fmtRate, fmtTimeSec, severityClass, evaluateDiagnostics, formatEstGainCell, renderBrailleGraph } = Z;
+  const {
+    CONFIG, MUX_PRESETS, PROCESSES, state, getActiveMux, getAttachedProcess,
+    fmtAddr, fmtDeltaPct, fmtMiB, fmtRate, fmtTimeSec, severityClass,
+    evaluateDiagnostics, formatEstGainCell, renderBrailleGraph,
+    formatThreadEntry, formatAffinityHex, describeAffinityMask,
+    getPrimaryPhysicalCoresMask, isComposedPresentMode
+  } = Z;
 
   function renderTab2Cache() {
     const snap = state.lastSnap;
@@ -220,6 +226,12 @@
       ? ''
       : ` <span class="c-red c-bright">[Admin required to edit IFEO]</span>`;
 
+    const jitMiB = (snap.vaMap && snap.vaMap.privateJitExec4kMiB) ? snap.vaMap.privateJitExec4kMiB : 0;
+    const jitWarn = jitMiB >= 8.0 && snap.l2Itlb >= 0.35 && snap.vaMap && snap.vaMap.imageLarge2mPct >= 75.0;
+    const jitRowHtml = jitMiB >= 4.0
+      ? `<div class="ifeo-row"><span>Private JIT/RWX Code: <span class="${jitWarn ? 'c-yellow c-bright' : 'c-cyan'}">${jitMiB.toFixed(1)} MiB (4 KiB)</span> <span class="c-dim">(dynamic executable pages outside PE images; IFEO cannot back with 2 MiB)</span></span><span class="c-dim">VA Map</span></div>`
+      : '';
+
     sumEl.innerHTML = `
       <div class="ifeo-row">
         <span>IFEO\\${proc.name}\\UseLargePages: ${ifeoBadge}${adminNotice}</span>
@@ -234,6 +246,7 @@
         `<span class="sep">│</span>iTLB Saved: <span class="${savedEntries > 0 ? 'c-green' : 'c-dim'}">${savedEntries > 0 ? '-' + savedEntries.toLocaleString() + ' (' + savedPct + '%)' : '0'}</span></span>
         <span class="c-dim">Space/Enter or dbl-click: toggle DLL</span>
       </div>
+      ${jitRowHtml}
     `;
     document.getElementById('btn-pe-sort').onclick = () => Z.cycleModSort();
     document.getElementById('btn-ifeo-master').onclick = () => Z.requestIfeoToggle(null);
@@ -372,6 +385,12 @@
     const qosRowHtml = isNonDefaultQos
       ? `<tr><td class="k">Priority / QoS</td><td class="v ${qosWarn ? 'c-red c-bright' : 'c-cyan'}">${qosLabel}</td></tr>`
       : '';
+    const dio = snap.diskIo;
+    const dioWarn = dio && (dio.readMbS >= 50.0 || dio.readIops >= 1000);
+    const fmtIops = v => v >= 1000 ? `${(v / 1000).toFixed(1)}K` : `${Math.round(v)}`;
+    const diskIoRowHtml = dio
+      ? `<tr><td class="k">Disk I/O (R / W)</td><td class="v ${dioWarn ? 'c-yellow c-bright' : ''}">R ${dio.readMbS.toFixed(1)} MB/s (${fmtIops(dio.readIops)} IOPS) <span class="c-dim">/ W ${dio.writeMbS.toFixed(1)} MB/s (${fmtIops(dio.writeIops)})</span></td></tr>`
+      : '';
     document.getElementById('mem-os-tbody').innerHTML = `
       <tr><td class="k">Private Working Set</td><td class="v c-bright">${fmtMiB(proc.wsMiB)}</td></tr>
       <tr><td class="k">Shared Working Set</td><td class="v c-dim">${fmtMiB(proc.sharedMiB)}</td></tr>
@@ -380,6 +399,7 @@
       <tr><td class="k">Total Real Physical RAM</td><td class="v c-cyan c-bright">${fmtMiB(totalReal)}</td></tr>
       <tr><td class="k">Virtual Commit / Peak</td><td class="v">${fmtMiB(proc.commitMiB)} <span class="c-dim">/ ${fmtMiB(proc.peakCommitMiB)}</span></td></tr>
       <tr><td class="k">CPU (usr / sys / elapsed)</td><td class="v">${fmtTimeSec(proc.userSec)} / ${fmtTimeSec(proc.sysSec)} <span class="c-dim">/ ${fmtTimeSec(proc.elapsedSec)} (${(snap.cpuUsr + snap.cpuSys).toFixed(1)}%)</span></td></tr>
+      ${diskIoRowHtml}
       ${qosRowHtml}
     `;
 
@@ -403,7 +423,44 @@
     );
 
     const root = document.getElementById('mem-layer2-root');
-    if (proc.arenas && proc.heapStats) {
+    const buildVaMapTableHtml = (vaMap) => {
+      if (!vaMap) return `<div class="c-dim">VA map pending VirtualQueryEx scan...</div>`;
+      return `
+        <table class="tui-table" style="font-size: 12px;">
+          <colgroup>
+            <col style="width: 24%;"><col style="width: 15%;"><col style="width: 15%;"><col style="width: 15%;"><col style="width: 15%;"><col style="width: 16%;">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="left">VA REGION (VirtualQueryEx)</th>
+              <th>COMMIT 2 MiB</th>
+              <th>COMMIT 4 KiB</th>
+              <th>WS 2 MiB</th>
+              <th>WS 4 KiB</th>
+              <th>TOTAL WS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${vaMap.rows.map(r => {
+              const isJit = r.key === 'privateJit';
+              const jitCls = isJit && r.commit4kMiB >= 8.0 ? 'c-yellow c-bright' : (isJit && r.commit4kMiB >= 4.0 ? 'c-cyan' : '');
+              return `
+                <tr>
+                  <td class="left ${jitCls || 'c-bright'}">${r.label}</td>
+                  <td class="${r.commit2mMiB > 0 ? 'c-green' : 'c-muted'}">${r.commit2mMiB > 0 ? fmtMiB(r.commit2mMiB) : '--'}</td>
+                  <td class="${jitCls}">${r.commit4kMiB > 0 ? fmtMiB(r.commit4kMiB) : '--'}</td>
+                  <td class="${r.ws2mMiB > 0 ? 'c-green' : 'c-muted'}">${r.ws2mMiB > 0 ? fmtMiB(r.ws2mMiB) : '--'}</td>
+                  <td class="c-dim">${r.ws4kMiB > 0 ? fmtMiB(r.ws4kMiB) : '--'}</td>
+                  <td class="c-bright">${fmtMiB(r.totalWsMiB)}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    };
+
+    if (proc.arenas && proc.heapStats && !state.memShowVaMap) {
       const ha = proc.arenas.hugeArenas;
       const totalBlocks = ha.length * 32;
       let actBlocks = 0, tchBlocks = 0;
@@ -479,7 +536,10 @@
           <div style="display: flex; flex-direction: column; min-height: 0; overflow-y: auto;">
             <div class="section-label">
               <span>${allocTitle}</span>
-              <span class="c-dim" style="font-weight: 400; font-size: 11.5px;"><span class="c-green">█</span> active  <span class="c-yellow">▓</span> peak  <span class="c-muted">░</span> free</span>
+              <span class="c-dim" style="font-weight: 400; font-size: 11.5px; display:flex; gap:8px; align-items:center;">
+                <span><span class="c-green">█</span> active  <span class="c-yellow">▓</span> peak  <span class="c-muted">░</span> free</span>
+                <button class="btn-inline" id="btn-toggle-va">VA Map (v)</button>
+              </span>
             </div>
             <div style="margin-bottom: 4px;">${arenaRows}${osRowsHtml}</div>
             <hr class="h-rule-tight">
@@ -521,6 +581,23 @@
           </div>
         </div>
       `;
+      const btnVa = document.getElementById('btn-toggle-va');
+      if (btnVa) btnVa.onclick = () => Z.toggleVaMapView();
+    } else if (proc.arenas && proc.heapStats && state.memShowVaMap) {
+      root.innerHTML = `
+        <div style="display: flex; flex-direction: column; height: 100%; overflow-y: auto;">
+          <div class="section-label">
+            <span>Virtual Address Space &amp; Private JIT Map (VirtualQueryEx + QueryWorkingSetEx)</span>
+            <span style="display:flex; gap:8px; align-items:center;">
+              <span class="c-dim" style="font-weight: 400; font-size: 11.5px;">PE 2 MiB: ${snap.vaMap ? snap.vaMap.imageLarge2mPct.toFixed(0) : 0}% │ 2-3s cadence</span>
+              <button class="btn-inline" id="btn-toggle-va">Mimalloc View (v)</button>
+            </span>
+          </div>
+          ${buildVaMapTableHtml(snap.vaMap)}
+        </div>
+      `;
+      const btnVa = document.getElementById('btn-toggle-va');
+      if (btnVa) btnVa.onclick = () => Z.toggleVaMapView();
     } else {
       const total = Math.max(1, proc.hugeMiB + proc.wsMiB + proc.sharedMiB);
       const breakdown = [
@@ -529,12 +606,16 @@
         { name: 'Mapped / Image Shared', bytes: proc.sharedMiB, col: 'var(--cyan)', note: 'PE images, shared sections, and memory-mapped files' }
       ];
       root.innerHTML = `
-        <div style="display: flex; flex-direction: column; height: 100%;">
+        <div style="display: flex; flex-direction: column; height: 100%; overflow-y: auto;">
           <div class="section-label">
-            <span>OS Virtual Memory &amp; Working Set Backing Breakdown</span>
-            <span class="c-dim" style="font-weight: 400; font-size: 12px;">Allocator: ${proc.allocatorLabel} (no Mimalloc v2 symbols)</span>
+            <span>${state.memShowVaMap ? 'OS Virtual Memory Backing (Layer 1 Fallback)' : 'OS Virtual Address Space &amp; Backing Breakdown'}</span>
+            <span style="display:flex; gap:8px; align-items:center;">
+              <span class="c-dim" style="font-weight: 400; font-size: 11.5px;">Allocator: ${proc.allocatorLabel}</span>
+              <button class="btn-inline" id="btn-toggle-va">${state.memShowVaMap ? 'Compact VA (v)' : 'Expand Backing (v)'}</button>
+            </span>
           </div>
-          <table class="tui-table">
+          ${state.memShowVaMap ? `
+          <table class="tui-table" style="margin-bottom: 6px;">
             <colgroup>
               <col style="width: 24%;"><col style="width: 13%;"><col style="width: 9%;"><col style="width: 20%;"><col style="width: 34%;">
             </colgroup>
@@ -556,9 +637,12 @@
                 `;
               }).join('')}
             </tbody>
-          </table>
+          </table>` : ''}
+          ${buildVaMapTableHtml(snap.vaMap)}
         </div>
       `;
+      const btnVa = document.getElementById('btn-toggle-va');
+      if (btnVa) btnVa.onclick = () => Z.toggleVaMapView();
     }
   }
 
@@ -617,7 +701,7 @@
     } else {
       state.advisorSelectedIdx = Math.max(0, Math.min(diag.findings.length - 1, state.advisorSelectedIdx));
       const selFinding = diag.findings[state.advisorSelectedIdx];
-      const sevCls = s => (s === 'HI' ? 'sev-hi' : (s === 'MD' ? 'sev-md' : 'sev-lo'));
+      const sevCls = s => (s === 'HI' ? 'sev-hi' : (s === 'MD' ? 'sev-md' : (s === 'INFO' ? 'sev-info' : 'sev-lo')));
 
       tbody.innerHTML = diag.findings.map((f, idx) => {
         const isSel = idx === state.advisorSelectedIdx;
@@ -645,10 +729,10 @@
         };
       });
 
-      const tabNames = { 1: 'Overview', 2: 'Cache', 3: 'TLB & Pages', 4: 'Memory' };
+      const tabNames = { 1: 'Overview', 2: 'Cache', 3: 'TLB', 4: 'Memory', 5: 'Advisor', 6: 'Threads', 7: 'Profiler' };
       const jumpHtml = selFinding.quickJumpTab
-        ? `<button class="btn-inline" id="btn-adv-jump">Enter: Jump to Tab ${selFinding.quickJumpTab} (${tabNames[selFinding.quickJumpTab]})</button>`
-        : `<span class="c-muted">No linked tab</span>`;
+        ? `<span style="display:flex; gap:6px; align-items:center;"><button class="btn-inline" id="btn-adv-burst">f: HW Burst</button><button class="btn-inline" id="btn-adv-jump">Enter: Jump to Tab ${selFinding.quickJumpTab} (${tabNames[selFinding.quickJumpTab]})</button></span>`
+        : `<button class="btn-inline" id="btn-adv-burst">f: HW Burst</button>`;
       const gainDetailText = selFinding.estGain ? selFinding.estGain.detail : 'N/A';
 
       detailEl.innerHTML = `
@@ -663,6 +747,8 @@
       `;
       const jumpBtn = document.getElementById('btn-adv-jump');
       if (jumpBtn) jumpBtn.onclick = () => Z.jumpToFindingTab(selFinding);
+      const burstBtn = document.getElementById('btn-adv-burst');
+      if (burstBtn) burstBtn.onclick = () => Z.openModal('burst');
     }
 
     if (diag.healthyChecks.length > 0) {
@@ -677,5 +763,184 @@
     }
   }
 
-  Object.assign(Z, { renderTab2Cache, renderTab3Tlb, getFilteredProcesses, renderPickerTable, renderTab4Memory, renderTab5Advisor });
+  function getSortedThreads(snap, proc) {
+    const list = (snap && Array.isArray(snap.threadSnapshots) && snap.threadSnapshots.length > 0)
+      ? [...snap.threadSnapshots]
+      : (proc && Array.isArray(proc.threads) ? [...proc.threads] : []);
+    list.sort((a, b) => {
+      if (state.threadSort === 'ctxsw') return (b.ctxSwPerSec - a.ctxSwPerSec) || (b.cpuPct - a.cpuPct);
+      if (state.threadSort === 'tid') return a.tid - b.tid;
+      return (b.cpuPct - a.cpuPct) || (b.ctxSwPerSec - a.ctxSwPerSec);
+    });
+    return list;
+  }
+
+  function renderTab6Threads() {
+    const proc = getAttachedProcess();
+    const unattEl = document.getElementById('tab6-unattached');
+    const attEl = document.getElementById('tab6-attached');
+    if (!unattEl || !attEl) return;
+
+    if (!proc) {
+      unattEl.style.display = 'flex';
+      attEl.style.display = 'none';
+      renderPickerTable('t6-picker-tbody', 't6-sort-label');
+      return;
+    }
+
+    unattEl.style.display = 'none';
+    attEl.style.display = 'flex';
+    const snap = state.lastSnap;
+    const ps = snap ? snap.presentStats : null;
+    const presentWrap = document.getElementById('tab6-present-wrap');
+    const presentHr = document.getElementById('tab6-present-hr');
+
+    if (ps) {
+      presentWrap.style.display = 'flex';
+      presentHr.style.display = 'block';
+      const flipCls = isComposedPresentMode(ps.presentMode) ? 'c-yellow c-bright' : 'c-green';
+      const low1Cls = ps.low1Ms >= 16.7 ? 'c-yellow' : '';
+      const low01Cls = ps.low01Ms >= 25.0 ? 'c-red' : (ps.low01Ms >= 16.7 ? 'c-yellow' : '');
+      document.getElementById('g-ft-stats').innerHTML =
+        `<span class="c-bright">FPS ${ps.fps.toFixed(1)}</span>` +
+        `<span class="c-muted">│</span>` +
+        `<span>Avg <span class="c-bright">${ps.avgMs.toFixed(1)} ms</span></span>` +
+        `<span class="c-muted">│</span>` +
+        `<span>1% Low <span class="${low1Cls}">${ps.low1Ms.toFixed(1)} ms</span></span>` +
+        `<span class="c-muted">│</span>` +
+        `<span>0.1% Low <span class="${low01Cls}">${ps.low01Ms.toFixed(1)} ms</span></span>` +
+        `<span class="c-muted">│</span>` +
+        `<span>Flip: <span class="${flipCls}">${ps.presentMode}</span></span>`;
+
+      const ftColor = isComposedPresentMode(ps.presentMode)
+        ? 'var(--yellow)'
+        : (ps.low01Ms >= 25.0 ? 'var(--orange)' : 'var(--cyan)');
+      const baseFt = (state.activeBaseline && state.activeBaseline.avgFrameMs) ? state.activeBaseline.avgFrameMs : null;
+      renderBrailleGraph(
+        document.getElementById('g-ft-canvas'),
+        document.getElementById('g-ft-axis'),
+        state.history.frametimeMs,
+        { minVal: 0, minSpan: 4.0, baseline: baseFt, color: ftColor, fmtAxis: v => v.toFixed(1) }
+      );
+    } else {
+      presentWrap.style.display = 'none';
+      presentHr.style.display = 'none';
+    }
+
+    const origMap = state.originalAffinityByPid[proc.pid] || {};
+    const editedCnt = Object.keys(origMap).length;
+    const sortNames = { cpu: 'CPU%', ctxsw: 'CtxSw/s', tid: 'TID' };
+    document.getElementById('threads-sort-label').textContent = sortNames[state.threadSort] || 'CPU%';
+    const isProt = Boolean(proc.protectedProcess || state.simProtectedProcess);
+    const protTag = isProt ? ` <span class="c-yellow">[Protected Process]</span>` : '';
+    const presentOffTag = ps ? '' : ` <span class="c-muted">│ Present ETW: inactive (non-presenting)</span>`;
+    document.getElementById('threads-summary-left').innerHTML =
+      `<span class="c-bright">${proc.name}</span> (${proc.pid}) │ ${(proc.threads || []).length} threads${protTag}${presentOffTag}`;
+    const revBtn = document.getElementById('btn-thread-revert');
+    if (revBtn) {
+      revBtn.textContent = editedCnt > 0 ? `Revert All (${editedCnt}) [R]` : 'Revert All (R)';
+    }
+
+    const sorted = getSortedThreads(snap, proc);
+    state.threadSelectedIdx = Math.max(0, Math.min(Math.max(0, sorted.length - 1), state.threadSelectedIdx));
+
+    const tbody = document.getElementById('threads-tbody');
+    if (sorted.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="left c-dim" style="padding: 10px 2px;">No threads reported for this process.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = sorted.map((t, idx) => {
+      const sel = idx === state.threadSelectedIdx ? 'selected' : '';
+      const mark = idx === state.threadSelectedIdx ? `<span class="c-bright">&gt; </span>` : `<span class="c-muted">  </span>`;
+      const entry = formatThreadEntry(t, proc.modules);
+      const isNamed = Boolean(t.description && t.description.trim());
+      const cpuCls = t.cpuPct >= 70.0 ? 'c-yellow c-bright' : (t.cpuPct >= 30.0 ? 'c-bright' : 'c-dim');
+      const ctxCls = t.ctxSwPerSec >= 8000 ? 'c-yellow' : 'c-dim';
+      const stCls = t.state === 'Running' ? 'c-green' : (t.state === 'Ready' ? 'c-cyan' : 'c-dim');
+      const stateWait = t.state === 'Waiting' && t.waitReason && t.waitReason !== '-'
+        ? `<span class="${stCls}">${t.state}</span> <span class="c-muted">/</span> <span class="${t.waitReason === 'WrPageIn' || t.waitReason === 'WrPushLock' ? 'c-yellow' : 'c-dim'}">${t.waitReason}</span>`
+        : `<span class="${stCls}">${t.state}</span>`;
+      const cpuTag = 'C' + String(t.currentCpu).padStart(2, '0');
+      const affShort = describeAffinityMask(t.affinityMask, CONFIG.physicalCores, CONFIG.logicalCpus);
+      const affHex = formatAffinityHex(t.affinityMask);
+      const isEdited = t.tid in origMap;
+      const editTag = isEdited ? `<span class="c-cyan c-bright">*</span>` : '';
+      const smtTag = t.smtContended
+        ? ` <span class="c-yellow c-bright" title="Running on or pinned to an active SMT-contended physical core pair">⇄</span>`
+        : '';
+      const affLabel = affShort === affHex ? affHex : `${affShort} (${affHex})`;
+      return `
+        <tr class="selectable ${sel}" data-tid="${t.tid}" data-tidx="${idx}">
+          <td class="left c-dim">${mark}${t.tid}</td>
+          <td class="left ${isNamed ? 'c-bright' : 'c-cyan'}" title="${isNamed ? 'GetThreadDescription' : 'Win32StartAddress module offset fallback'}">${entry}</td>
+          <td class="${cpuCls}">${t.cpuPct.toFixed(1)}%</td>
+          <td class="${ctxCls}">${Math.round(t.ctxSwPerSec).toLocaleString()}/s</td>
+          <td class="left">${stateWait}</td>
+          <td class="left">${cpuTag} <span class="c-muted">│</span> <span class="${isEdited ? 'c-cyan' : 'c-dim'}">${affLabel}${editTag}</span>${smtTag}</td>
+          <td class="c-dim">${t.basePriority}</td>
+        </tr>
+      `;
+    }).join('');
+
+    tbody.querySelectorAll('tr[data-tid]').forEach(tr => {
+      tr.onclick = () => {
+        state.threadSelectedIdx = Number(tr.dataset.tidx);
+        renderTab6Threads();
+      };
+      tr.ondblclick = () => {
+        state.threadSelectedIdx = Number(tr.dataset.tidx);
+        Z.openAffinityModal(Number(tr.dataset.tid));
+      };
+    });
+  }
+
+  function renderAffinityModal() {
+    const proc = getAttachedProcess();
+    if (!proc || !state.affinityModalTid) return;
+    const thread = (proc.threads || []).find(t => t.tid === state.affinityModalTid);
+    if (!thread) return;
+
+    const entry = formatThreadEntry(thread, proc.modules);
+    const origMap = state.originalAffinityByPid[proc.pid] || {};
+    const origMask = origMap[thread.tid];
+    const editedCount = Object.keys(origMap).length;
+    const isProt = Boolean(proc.protectedProcess || state.simProtectedProcess);
+    const physMask = getPrimaryPhysicalCoresMask(CONFIG.physicalCores);
+    const pc = CONFIG.physicalCores.find(p => p.siblings.includes(thread.currentCpu)) || CONFIG.physicalCores[0];
+    const s0 = pc.siblings[0];
+    const s1 = pc.siblings[1];
+
+    document.getElementById('affinity-modal-title').textContent = `Thread Affinity Editor - TID ${thread.tid} (${entry})`;
+    const protWarn = isProt ? ` <span class="c-red c-bright">[Protected Process: ERROR_ACCESS_DENIED]</span>` : '';
+    const origHtml = origMask !== undefined
+      ? ` <span class="c-dim">│ Original: ${formatAffinityHex(origMask)}</span>`
+      : '';
+    document.getElementById('affinity-thread-info').innerHTML =
+      `Process: <span class="c-bright">${proc.name}</span> (${proc.pid}) │ Current CPU: <span class="c-cyan">C${String(thread.currentCpu).padStart(2, '0')}</span> │ Mask: <span class="c-bright">${formatAffinityHex(thread.affinityMask)}</span>${origHtml}${protWarn}`;
+
+    document.getElementById('affinity-phys-mask').textContent = formatAffinityHex(physMask);
+    document.getElementById('affinity-single-hint').textContent = s1 !== undefined
+      ? `C${String(s0).padStart(2, '0')} (${formatAffinityHex(1 << s0)}), excl C${String(s1).padStart(2, '0')}`
+      : `C${String(s0).padStart(2, '0')} (${formatAffinityHex(1 << s0)})`;
+    document.getElementById('affinity-revert-count').textContent = `${editedCount} edited`;
+
+    const cmpEl = document.getElementById('affinity-baseline-cmp');
+    const base = state.activeBaseline;
+    const snap = state.lastSnap;
+    if (base && snap) {
+      cmpEl.classList.remove('is-hidden');
+      const ipcDelta = fmtDeltaPct(snap.ipc, base.ipc, true);
+      const ftHtml = (snap.presentStats && base.avgFrameMs)
+        ? ` │ Frametime: <span class="c-bright">${snap.presentStats.avgMs.toFixed(1)} ms</span> ${fmtDeltaPct(snap.presentStats.avgMs, base.avgFrameMs, false)} <span class="c-dim">(base ${base.avgFrameMs.toFixed(1)} ms)</span>`
+        : '';
+      cmpEl.innerHTML =
+        `<span>vs Baseline (<span class="c-bright">${base.name}</span>): IPC <span class="c-bright">${snap.ipc.toFixed(2)}</span> ${ipcDelta}${ftHtml}</span>` +
+        `<span class="c-dim">live A/B</span>`;
+    } else {
+      cmpEl.classList.add('is-hidden');
+    }
+  }
+
+  Object.assign(Z, { renderTab2Cache, renderTab3Tlb, getFilteredProcesses, renderPickerTable, renderTab4Memory, renderTab5Advisor, getSortedThreads, renderTab6Threads, renderAffinityModal });
 })();

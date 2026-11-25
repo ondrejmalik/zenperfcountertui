@@ -42,7 +42,7 @@
             cascade: `Cuts L2 iTLB page walks by ~70-90% and lowers L1d/L2d/L3 cache pollution caused by hardware page-table walks.`,
             quickJumpTab: 3
           });
-        } else {
+        } else if (avgL2Itlb < 0.35 && !groupA.jitResidualTriggered) {
           const lpCount = proc.modules.filter(m => m.lp).length;
           pushHealthy('L2 iTLB', `${avgL2Itlb.toFixed(2)} MPKI${lpCount > 0 ? ` (${lpCount} DLLs 2M)` : ''}`);
         }

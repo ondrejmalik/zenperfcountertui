@@ -36,6 +36,8 @@
     const stEl = document.getElementById('hdr-state');
     if (state.pmcLocked) {
       stEl.innerHTML = `<span class="c-red c-bright">PMC LOCKED</span>`;
+    } else if (state.profiler && state.profiler.burstCapture) {
+      stEl.innerHTML = `<span class="c-cyan c-bright">BURST ${Math.max(0, state.profiler.burstCapture.remainingSec)}s</span>`;
     } else if (state.timedCapture) {
       stEl.innerHTML = `<span class="c-cyan c-bright">CAPTURE ${Math.max(0, state.timedCapture.remainingSec)}s</span>`;
     } else if (state.paused) {
@@ -44,8 +46,8 @@
       stEl.innerHTML = `<span class="c-green c-bright">LIVE</span>`;
     }
 
-    // Tabs (1-5 with subtle red (N) badge on Advisor when HI findings exist)
-    const labels = { 1: 'Overview', 2: 'Cache', 3: 'TLB & Pages', 4: 'Memory', 5: 'Advisor' };
+    // Tabs (1-7 with subtle red (N) badge on Advisor when HI findings exist)
+    const labels = { 1: 'Overview', 2: 'Cache', 3: 'TLB', 4: 'Memory', 5: 'Advisor', 6: 'Threads', 7: 'Profiler' };
     document.querySelectorAll('#tab-strip .tab-btn').forEach(btn => {
       const t = Number(btn.dataset.tab);
       const isAct = t === state.activeTab;
@@ -69,9 +71,15 @@
     const hintEl = document.getElementById('bottom-hint');
     if (state.activeTab === 3) {
       hintEl.textContent = 'j/k Select │ Space/Enter Toggle DLL │ U Master IFEO │ s Sort';
+    } else if (state.activeTab === 4 && proc) {
+      hintEl.textContent = 'v Toggle VA/JIT Map │ Space Pause │ d Detach';
     } else if (state.activeTab === 5) {
-      hintEl.textContent = 'j/k Select Finding │ Enter Jump to Tab │ Space Pause';
-    } else if (state.activeTab === 4 && !proc) {
+      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ Space Pause';
+    } else if (state.activeTab === 6 && proc) {
+      hintEl.textContent = 'j/k Select Thread │ s Sort │ a Affinity │ R Revert Edits';
+    } else if (state.activeTab === 7 && proc) {
+      hintEl.textContent = 'o On/Off-CPU │ f HW Burst │ v Flat/Tree │ t Scope │ e Pause ETW │ r Clear │ / Filter';
+    } else if ((state.activeTab === 4 || state.activeTab === 6 || state.activeTab === 7) && !proc) {
       hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ w Wait Mode';
     } else {
       hintEl.textContent = 'Space Pause │ d Detach │ c CCX+SMT';
@@ -86,6 +94,12 @@
       bText.textContent = `[LOCKED] Hardware PMCs claimed by Windows ETW trace (${state.blockerName}): logman stop ${state.blockerName} -ets`;
       bAct.innerHTML = `<button class="banner-action" id="btn-unlock-pmc">Unlock PMCs (u)</button>`;
       document.getElementById('btn-unlock-pmc').onclick = () => Z.unlockPmc();
+    } else if (state.profiler && state.profiler.burstCapture) {
+      const cap = state.profiler.burstCapture;
+      banner.className = 'status-banner visible burst';
+      bText.textContent = `Hardware Burst Capture [${cap.label}]: ${Math.max(0, cap.remainingSec)}s left... (AMDuProfPcm paused, hardware PMCs released for AMDuProfCLI)`;
+      bAct.innerHTML = `<button class="banner-action" id="btn-cancel-burst">Cancel &amp; Resume PCM (Esc)</button>`;
+      document.getElementById('btn-cancel-burst').onclick = () => Z.cancelHardwareBurst();
     } else if (state.waitingTarget) {
       banner.className = 'status-banner visible waiting';
       bText.textContent = `Waiting for ${state.waitingTarget} to start... Streaming live system-wide Zen 2 PMU counters.`;
@@ -598,12 +612,21 @@
       const totalReal = proc.hugeMiB + proc.wsMiB;
       const hugePct = totalReal > 0 ? ((proc.hugeMiB / totalReal) * 100).toFixed(0) : '0';
       const smallPct = (100 - Number(hugePct)).toFixed(0);
+      const ps = snap.presentStats;
+      const fpsHtml = ps
+        ? (() => {
+            const fpsCls = ps.composedPct >= 80.0 ? 'c-yellow' : 'c-bright';
+            const lowCls = ps.low1Fps < 60.0 ? 'c-yellow' : 'c-dim';
+            return `<span class="sep">│</span>FPS <span class="${fpsCls}">${ps.fps.toFixed(1)}</span> <span class="${lowCls}">/ 1%L ${ps.low1Fps.toFixed(0)}</span>`;
+          })()
+        : '';
       footerEl.innerHTML =
         `<span>CPU <span class="c-bright">${(snap.cpuUsr + snap.cpuSys).toFixed(1)}%</span> <span class="c-dim">(usr ${snap.cpuUsr.toFixed(1)}% / sys <span class="${snap.cpuSys >= 15 ? 'c-yellow' : ''}">${snap.cpuSys.toFixed(1)}%</span>)</span>` +
         `${gpuHtml}` +
-        `<span class="sep">│</span>Page Faults <span class="${pfCls}">${snap.pfRate.toLocaleString()}/s</span>` +
-        `<span class="sep">│</span>RAM 2 MiB: <span class="${proc.hugeMiB > 0 ? 'c-green' : 'c-yellow'}">${fmtMiB(proc.hugeMiB)} (${hugePct}%)</span> vs 4 KiB: ${fmtMiB(proc.wsMiB)} (${smallPct}%)</span>` +
-        `<span class="c-dim">Real Physical: ${fmtMiB(totalReal)}</span>`;
+        `${fpsHtml}` +
+        `<span class="sep">│</span>Faults <span class="${pfCls}">${snap.pfRate.toLocaleString()}/s</span>` +
+        `<span class="sep">│</span>RAM 2M: <span class="${proc.hugeMiB > 0 ? 'c-green' : 'c-yellow'}">${fmtMiB(proc.hugeMiB)} (${hugePct}%)</span> / 4K: ${fmtMiB(proc.wsMiB)} (${smallPct}%)</span>` +
+        `<span class="c-dim">Real: ${fmtMiB(totalReal)}</span>`;
     } else {
       footerEl.innerHTML =
         `<span>Scope <span class="c-bright">System-Wide (12 Logical CPUs)</span>` +

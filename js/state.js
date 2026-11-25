@@ -24,6 +24,8 @@
     isAdmin: true,
     simGpuAvailable: true,
     simEcoQosSupported: true,
+    simProtectedProcess: false,
+    simUprofCliAvailable: true,
     ifeoWarnedSession: false,
     pendingIfeoAction: null,
     timedCapture: null, // { remainingSec, totalSec, accum }
@@ -33,8 +35,37 @@
     modSort: 'page',     // 'page' | 'size' | 'name'
     modSelectedIdx: 0,
     advisorSelectedIdx: 0,
-    openModal: null,     // null | 'picker' | 'baseline' | 'help' | 'quit' | 'ifeo'
+    threadSort: 'cpu',   // 'cpu' | 'ctxsw' | 'tid'
+    threadSelectedIdx: 0,
+    affinityModalTid: null,
+    memShowVaMap: false,
+    originalAffinityByPid: {}, // { [pid]: { [tid]: originalMask } }
+    openModal: null,     // null | 'picker' | 'baseline' | 'help' | 'quit' | 'ifeo' | 'affinity' | 'burst'
     helpTab: 'keys',
+
+    // Tab 7 Profiler state (Live ETW On-CPU/Off-CPU + AMDuProfCLI Burst Engine)
+    profiler: {
+      source: 'etw_oncpu', // 'etw_oncpu' | 'etw_offcpu' | 'burst'
+      viewMode: 'flat',    // 'flat' | 'tree'
+      scopeMode: 'all',    // 'all' | 'thread'
+      filter: '',
+      filterOpen: false,
+      selectedIdx: 0,
+      expandedIds: new Set(),
+      sidecarLoaded: false,
+      burstDurationSec: 5,
+      burstCapture: null,  // { burstType, label, remainingSec, totalSec, pid, tmpDir, timerId }
+      pcmPausedForBurst: false,
+      lastBurstByPid: {},  // pid -> { ibs_op, dram_l3, branch_miss, tlb_walk, latest }
+      etwSession: null,
+      resolver: null
+    },
+
+    // Rolling 300-frame Present ETW ring + spike correlation ring + cached VA map (2-3s cadence)
+    presentFrames: [],
+    spikeRing: [],
+    vaMapCache: null,
+    vaMapTickCounter: 0,
 
     history: {
       ipc: [],
@@ -44,6 +75,7 @@
       l2itlb: [],
       l2dtlb: [],
       pfRate: [],
+      frametimeMs: [],
       dcCrossCcx: [],
       locksSerial: [],
       legacyDecodePct: [],
@@ -111,7 +143,15 @@
       commitPctSum: 0,
       ctxSwSum: 0,
       syncWaitPctSum: 0,
-      bgProcCpuSum: {}
+      bgProcCpuSum: {},
+      // Deep-Dive Zero-PMC accumulators
+      readMbSSum: 0,
+      writeMbSSum: 0,
+      readIopsSum: 0,
+      writeIopsSum: 0,
+      fpsSum: 0,
+      avgFrameMsSum: 0,
+      presentSamples: 0
     },
 
     lastSnap: null,

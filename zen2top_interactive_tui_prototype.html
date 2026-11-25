@@ -32,9 +32,11 @@
     <div class="tab-strip" id="tab-strip">
       <button class="tab-btn active" data-tab="1">[1] Overview</button>
       <button class="tab-btn" data-tab="2">2 Cache</button>
-      <button class="tab-btn" data-tab="3">3 TLB &amp; Pages</button>
+      <button class="tab-btn" data-tab="3">3 TLB</button>
       <button class="tab-btn" data-tab="4">4 Memory</button>
       <button class="tab-btn" data-tab="5">5 Advisor</button>
+      <button class="tab-btn" data-tab="6">6 Threads</button>
+      <button class="tab-btn" data-tab="7">7 Profiler</button>
     </div>
     <div class="meta-right">
       <span id="hdr-cpu-scope">Affinity 12T │ Ryzen 5 3600X</span>
@@ -374,12 +376,176 @@
       <div class="advisor-healthy" id="advisor-healthy"></div>
     </div>
 
+    <!-- TAB 6: THREADS & FRAME PACING -->
+    <div class="tab-view" id="tab-6">
+      <!-- Unattached: Process Picker (same pattern as Tab 4) -->
+      <div id="tab6-unattached" class="tab4-pane is-hidden">
+        <div class="filter-bar">
+          <div class="filter-input-wrap">
+            <span class="c-dim">/</span>
+            <input type="text" class="tui-input" id="t6-picker-input" placeholder="Fuzzy filter process name or PID..." autocomplete="off">
+          </div>
+          <div class="c-dim picker-controls">
+            <span>Sort: <span class="c-bright sort-link" id="t6-sort-label">CPU%</span> (<span class="c-bright">s</span>)</span>
+            <span class="c-muted">│</span>
+            <button class="btn-inline" id="btn-t6-wait">Wait target (w)</button>
+            <span class="c-muted">│</span>
+            <span><span class="c-bright">Enter</span> Attach</span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="tui-table">
+            <colgroup>
+              <col style="width: 9%;">
+              <col style="width: 32%;">
+              <col style="width: 11%;">
+              <col style="width: 15%;">
+              <col style="width: 33%;">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="left">PID</th>
+                <th class="left">Process</th>
+                <th>CPU%</th>
+                <th>Working Set</th>
+                <th class="left">Allocator / Backing</th>
+              </tr>
+            </thead>
+            <tbody id="t6-picker-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Attached: Present ETW Frametime Graph (25%, when active) + Scrollable Sortable Thread Table -->
+      <div id="tab6-attached" class="tab4-pane">
+        <div class="graph-region threads-present-graph" id="tab6-present-wrap">
+          <div class="graph-header">
+            <span class="graph-title">Frametime (ms)</span>
+            <span class="graph-stats" id="g-ft-stats"></span>
+          </div>
+          <div class="braille-wrap">
+            <div class="y-axis" id="g-ft-axis"></div>
+            <pre class="braille-pre" id="g-ft-canvas"></pre>
+          </div>
+        </div>
+
+        <hr class="h-rule" id="tab6-present-hr">
+
+        <div class="threads-toolbar" id="threads-toolbar">
+          <span id="threads-summary-left" class="c-dim"></span>
+          <span class="picker-controls">
+            <span>Sort: <span class="c-bright sort-link" id="threads-sort-label">CPU%</span> (<span class="c-bright">s</span>)</span>
+            <button class="btn-inline" id="btn-thread-affinity">Affinity (a)</button>
+            <button class="btn-inline" id="btn-thread-revert">Revert All (R)</button>
+          </span>
+        </div>
+
+        <div class="table-scroll" id="threads-table-scroll">
+          <table class="tui-table">
+            <colgroup>
+              <col style="width: 8%;">
+              <col style="width: 26%;">
+              <col style="width: 9%;">
+              <col style="width: 11%;">
+              <col style="width: 18%;">
+              <col style="width: 21%;">
+              <col style="width: 7%;">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="left sort-link" data-thread-sort="tid">TID</th>
+                <th class="left">THREAD / ENTRY</th>
+                <th class="sort-link" data-thread-sort="cpu">CPU%</th>
+                <th class="sort-link" data-thread-sort="ctxsw">CtxSw/s</th>
+                <th class="left">STATE / WAIT</th>
+                <th class="left">CORE / AFFINITY</th>
+                <th>PRIO</th>
+              </tr>
+            </thead>
+            <tbody id="threads-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 7: PROFILER (LIVE ETW ON/OFF-CPU + AMDuProfCLI HARDWARE BURST) -->
+    <div class="tab-view" id="tab-7">
+      <div id="tab7-unattached" class="tab4-pane is-hidden">
+        <div class="filter-bar">
+          <div class="filter-input-wrap">
+            <span class="c-dim">/</span>
+            <input type="text" class="tui-input" id="t7-picker-input" placeholder="Fuzzy filter process name or PID to profile..." autocomplete="off">
+          </div>
+          <div class="c-dim picker-controls">
+            <span>Sort: <span class="c-bright sort-link" id="t7-sort-label">CPU%</span> (<span class="c-bright">s</span>)</span>
+            <span class="c-muted">│</span>
+            <button class="btn-inline" id="btn-t7-wait">Wait target (w)</button>
+            <span class="c-muted">│</span>
+            <span><span class="c-bright">Enter</span> Attach</span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="tui-table">
+            <colgroup>
+              <col style="width: 9%;">
+              <col style="width: 32%;">
+              <col style="width: 11%;">
+              <col style="width: 15%;">
+              <col style="width: 33%;">
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="left">PID</th>
+                <th class="left">Process</th>
+                <th>CPU%</th>
+                <th>Working Set</th>
+                <th class="left">Allocator / Backing</th>
+              </tr>
+            </thead>
+            <tbody id="t7-picker-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="tab7-attached" class="tab4-pane">
+        <!-- Top Control Strip (1 line) -->
+        <div class="prof-control-strip" id="prof-control-strip"></div>
+
+        <!-- Optional Filter Bar (shown only when '/' pressed or active) -->
+        <div class="filter-bar prof-filter-bar" id="prof-filter-bar" style="display: none;">
+          <div class="filter-input-wrap">
+            <span class="c-dim">/</span>
+            <input type="text" class="tui-input" id="prof-filter-input" placeholder="Filter function, module, or waker..." autocomplete="off">
+          </div>
+          <div class="c-dim picker-controls">
+            <span><span class="c-bright">Esc</span> Clear &amp; close</span>
+          </div>
+        </div>
+
+        <hr class="h-rule-tight">
+
+        <!-- Main Scrollable Hotspot / Call-Tree / Off-CPU Table -->
+        <div class="table-scroll">
+          <table class="tui-table">
+            <colgroup id="prof-colgroup"></colgroup>
+            <thead id="prof-thead"></thead>
+            <tbody id="prof-tbody"></tbody>
+          </table>
+        </div>
+
+        <hr class="h-rule-tight">
+
+        <!-- Bottom 3-Line Context Strip -->
+        <div class="prof-context-strip" id="prof-context-strip"></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- BOTTOM CHROME (1 line, max 7 items) -->
   <div class="bottom-line">
     <div class="keybar">
-      <button class="key-btn" data-action="tabs"><span class="k">1-5</span> Tabs</button>
+      <button class="key-btn" data-action="tabs"><span class="k">1-7</span> Tabs</button>
       <button class="key-btn" data-action="picker"><span class="k">p</span> Process</button>
       <button class="key-btn" data-action="mux"><span class="k">m</span> Mux</button>
       <button class="key-btn" data-action="baseline"><span class="k">b</span> Baseline</button>
@@ -509,9 +675,13 @@
           <span><span class="c-bright">[l]</span> Toggle Target SeLockMemoryPrivilege (Missing vs RAM Fragmentation)</span>
           <span class="c-dim" id="modal-priv-val">Present</span>
         </button>
+        <button class="modal-action-row" data-b-act="toggle-prot-proc">
+          <span><span class="c-bright">[x]</span> Toggle Protected Process Simulation (Thread Affinity ERROR_ACCESS_DENIED)</span>
+          <span class="c-dim" id="modal-prot-val">Editable</span>
+        </button>
         <button class="modal-action-row" data-b-act="run-tests">
-          <span><span class="c-bright">[v]</span> Run Group A Diagnostic Self-Test Suite (7 Zero-PMC Rules)</span>
-          <span class="c-cyan" id="modal-tests-val">12 checks</span>
+          <span><span class="c-bright">[v]</span> Run Zero-PMC Diagnostic &amp; Deep-Dive Self-Test Suite</span>
+          <span class="c-cyan" id="modal-tests-val">22 checks</span>
         </button>
         <hr class="h-rule-tight">
         <button class="modal-action-row" data-b-act="calibrate">
@@ -563,6 +733,73 @@
   </div>
 </div>
 
+<!-- THREAD AFFINITY & CCX EDITOR MODAL ('a' on Tab 6) -->
+<div class="modal-backdrop" id="modal-affinity">
+  <div class="modal-window compact">
+    <div class="modal-header">
+      <span class="modal-title" id="affinity-modal-title">Thread Affinity &amp; CCX Pinning</span>
+      <span class="c-dim">Esc Close</span>
+    </div>
+    <div class="modal-body">
+      <div id="affinity-thread-info" class="baseline-info"></div>
+      <div id="affinity-baseline-cmp" class="affinity-baseline-cmp is-hidden"></div>
+      <div class="modal-action-list">
+        <button class="modal-action-row" data-aff-act="ccx0">
+          <span><span class="c-bright">[1]</span> Pin to CCX0 (0x003F)</span>
+          <span class="c-dim">CPUs 0-5</span>
+        </button>
+        <button class="modal-action-row" data-aff-act="ccx1">
+          <span><span class="c-bright">[2]</span> Pin to CCX1 (0x0FC0)</span>
+          <span class="c-dim">CPUs 6-11</span>
+        </button>
+        <button class="modal-action-row" data-aff-act="phys">
+          <span><span class="c-bright">[3]</span> Physical Cores Only (primary SMT threads from topology)</span>
+          <span class="c-cyan" id="affinity-phys-mask">0x0555</span>
+        </button>
+        <button class="modal-action-row" data-aff-act="single-phys">
+          <span><span class="c-bright">[4]</span> Pin to Single Physical Core (exclude SMT sibling from other threads)</span>
+          <span class="c-yellow" id="affinity-single-hint">C00 excl C01</span>
+        </button>
+        <div class="affinity-custom-row">
+          <span><span class="c-bright">[5]</span> Custom Hex Mask:</span>
+          <input type="text" class="tui-input affinity-hex-input" id="affinity-hex-input" placeholder="0x003F" autocomplete="off">
+          <button class="btn-inline" id="btn-affinity-apply-hex">Apply</button>
+        </div>
+        <hr class="h-rule-tight">
+        <button class="modal-action-row" data-aff-act="revert">
+          <span><span class="c-bright">[R]</span> Revert All Session Affinity Edits</span>
+          <span class="c-dim" id="affinity-revert-count">0 edited</span>
+        </button>
+      </div>
+      <div class="affinity-note c-dim">
+        Runtime-only: SetThreadAffinityMask edits apply in-memory and reset automatically when the target process exits.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span>1-4 Presets  │  5 Custom Hex  │  R Revert Session Edits</span>
+      <span>Esc Close</span>
+    </div>
+  </div>
+</div>
+
+<!-- HARDWARE-STALL & IBS BURST CAPTURE MODAL ('f') -->
+<div class="modal-backdrop" id="modal-burst">
+  <div class="modal-window">
+    <div class="modal-header">
+      <span class="modal-title">Hardware-Stall &amp; IBS Burst Capture (AMDuProfCLI.exe)</span>
+      <span class="c-dim">1-4 Capture │ d Duration │ Esc Close</span>
+    </div>
+    <div class="modal-body">
+      <div id="burst-modal-info" class="baseline-info"></div>
+      <div id="burst-modal-list" class="modal-action-list"></div>
+    </div>
+    <div class="modal-footer">
+      <span>PmuCoordinator guarantees automatic AMDuProfPcm resume on completion, error, or Esc cancel</span>
+      <span>Esc Close</span>
+    </div>
+  </div>
+</div>
+
 <!-- QUIT OVERLAY ('q') -->
 <div class="modal-backdrop" id="modal-quit">
   <div class="modal-window compact">
@@ -571,7 +808,7 @@
       <span class="c-dim">0</span>
     </div>
     <div class="modal-body">
-      <p class="quit-lead">Detached background PMU &amp; Win32 workers cleanly. All Win32 HANDLEs dropped via RAII.</p>
+      <p class="quit-lead">Detached background PMU &amp; Win32 workers cleanly. Stopped live ETW session via ControlTraceW(EVENT_TRACE_CONTROL_STOP). All Win32 HANDLEs dropped via RAII.</p>
       <p class="c-dim">Press Enter, Esc, or click below to resume the interactive TUI prototype.</p>
     </div>
     <div class="modal-footer">
@@ -583,16 +820,22 @@
 
 
 <script src="js/config.js"></script>
+<script src="js/deep-dive.js"></script>
 <script src="js/profiles.js"></script>
+<script src="js/symbols.js"></script>
+<script src="js/profiler-engine.js"></script>
+<script src="js/profiler-fixtures.js"></script>
 <script src="js/state.js"></script>
 <script src="js/telemetry.js"></script>
 <script src="js/advisor-group-a.js"></script>
 <script src="js/advisor-pmu.js"></script>
 <script src="js/advisor.js"></script>
 <script src="js/advisor-tests.js"></script>
+<script src="js/profiler-tests.js"></script>
 <script src="js/braille.js"></script>
 <script src="js/render-overview.js"></script>
 <script src="js/render-tabs.js"></script>
+<script src="js/render-profiler.js"></script>
 <script src="js/render-modals.js"></script>
 <script src="js/actions.js"></script>
 <script src="js/main.js"></script>
