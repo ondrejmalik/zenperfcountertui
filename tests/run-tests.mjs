@@ -98,6 +98,7 @@ const requiredIds = [
   'js/symbols.js', 'js/profiler-engine.js', 'js/render-profiler.js',
   'modal-packs', 'pack-budget-meter', 'pack-presets-strip', 'pack-guardrail-note',
   'pack-picker-tbody', 'overview-uarch-wrap', 'overview-uarch-tbody',
+  'cpi-row-decode', 'cpi-track-decode',
   'js/packs.js', 'js/render-pack-picker.js', 'js/packs-tests.js'
 ];
 const missingIds = requiredIds.filter(id => !html.includes(id));

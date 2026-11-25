@@ -193,13 +193,31 @@
     document.getElementById('core-spark-line').innerHTML = makeCcxCoreRow(0) + makeCcxCoreRow(1);
   }
 
+  function buildDecodeBarHtml(ua, wrapW) {
+    const ocPx = Math.max(12, Math.round((ua.opcacheHitPct / 100.0) * wrapW));
+    const decPx = Math.max(4, wrapW - ocPx);
+    const decHex = ua.legacyDecodePct >= 30.0 ? '#e06464' : '#d98d59';
+    const ocLbl = ocPx >= 95 ? `Op-Cache ${ua.opcacheHitPct.toFixed(1)}%` : (ocPx >= 36 ? `${ua.opcacheHitPct.toFixed(0)}%` : '');
+    const decLbl = decPx >= 86 ? `Legacy ${ua.legacyDecodePct.toFixed(1)}%` : (decPx >= 32 ? `${ua.legacyDecodePct.toFixed(0)}%` : '');
+    return (
+      `<span class="cpi-seg" style="width:${ocPx}px; background:#5dc27f;" title="Op-Cache dispatched ops (0x4302AA): ${ua.opcacheHitPct.toFixed(1)}%">${ocLbl}</span>` +
+      `<span class="cpi-seg" style="width:${decPx}px; background:${decHex};" title="Legacy 4-wide x86 decoder ops (0x4301AA): ${ua.legacyDecodePct.toFixed(1)}%">${decLbl}</span>`
+    );
+  }
+
   function renderCpiStack(snap, plan) {
     const sumEl = document.getElementById('cpi-summary');
     const legendEl = document.getElementById('cpi-legend');
     const actualEl = document.getElementById('cpi-track-actual');
     const modeledEl = document.getElementById('cpi-track-modeled');
+    const decodeRowEl = document.getElementById('cpi-row-decode');
+    const decodeEl = document.getElementById('cpi-track-decode');
     const lbl1 = document.getElementById('cpi-label-1');
     const lbl2 = document.getElementById('cpi-label-2');
+    const lbl3 = document.getElementById('cpi-label-3');
+
+    if (decodeRowEl) decodeRowEl.classList.add('is-hidden');
+    if (decodeEl) decodeEl.innerHTML = '';
 
     if (plan.noPmu) {
       if (lbl1) lbl1.textContent = 'Actual';
@@ -212,6 +230,7 @@
     }
 
     const active = snap.activeTiers.filter(t => t.cpi > 0.0005);
+    const hasDecode = Boolean(plan.has(MetricPack.OpCacheDecode) && snap.uarch && snap.uarch.opcacheHitPct !== null);
 
     // If no CPI stall packs are enabled, show either Op-Cache Decode strip or Free Base Actual CPI + L3 strip
     if (active.length === 0) {
@@ -220,7 +239,7 @@
       const actualPx = Math.max(36, Math.min(wrapW, Math.round((snap.actualCpi / actScale) * wrapW)));
       const actTxt = actualPx >= 96 ? `Actual ${snap.actualCpi.toFixed(2)} (aperf)` : `CPI ${snap.actualCpi.toFixed(2)}`;
 
-      if (plan.has(MetricPack.OpCacheDecode) && snap.uarch && snap.uarch.opcacheHitPct !== null) {
+      if (hasDecode) {
         const ua = snap.uarch;
         if (lbl1) lbl1.textContent = 'Actual';
         if (lbl2) lbl2.textContent = 'Decode';
@@ -238,14 +257,7 @@
           `<span class="cpi-marker" title="Actual CPI boundary (${snap.actualCpi.toFixed(3)})"></span>` +
           `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">${plan.coreSlots} Core PMCs + 3 Fixed MSRs + 4 L3 PMCs</span>`;
 
-        const ocPx = Math.max(12, Math.round((ua.opcacheHitPct / 100.0) * wrapW));
-        const decPx = Math.max(4, wrapW - ocPx);
-        const decHex = ua.legacyDecodePct >= 30.0 ? '#e06464' : '#d98d59';
-        const ocLbl = ocPx >= 95 ? `Op-Cache ${ua.opcacheHitPct.toFixed(1)}%` : (ocPx >= 36 ? `${ua.opcacheHitPct.toFixed(0)}%` : '');
-        const decLbl = decPx >= 86 ? `Legacy ${ua.legacyDecodePct.toFixed(1)}%` : (decPx >= 32 ? `${ua.legacyDecodePct.toFixed(0)}%` : '');
-        modeledEl.innerHTML =
-          `<span class="cpi-seg" style="width:${ocPx}px; background:#5dc27f;" title="Op-Cache dispatched ops (0x4302AA): ${ua.opcacheHitPct.toFixed(1)}%">${ocLbl}</span>` +
-          `<span class="cpi-seg" style="width:${decPx}px; background:${decHex};" title="Legacy 4-wide x86 decoder ops (0x4301AA): ${ua.legacyDecodePct.toFixed(1)}%">${decLbl}</span>`;
+        modeledEl.innerHTML = buildDecodeBarHtml(ua, wrapW);
         return;
       }
 
@@ -276,11 +288,16 @@
     const oooHidden = snap.oooHiddenCpi;
     const oooPct = modeledCpi > 0.001 ? Math.round((oooHidden / modeledCpi) * 100) : 0;
 
+    const decodeSummaryPart = hasDecode
+      ? `<span class="c-dim"> │ </span>Op-Cache <span class="${snap.uarch.legacyDecodePct >= 30.0 ? 'c-yellow c-bright' : 'c-green'}">${snap.uarch.opcacheHitPct.toFixed(1)}%</span>`
+      : '';
+
     sumEl.innerHTML =
       `<span class="c-bright">Exclusive CPI Stack</span>` +
       `<span class="c-dim"> │ </span>Actual <span class="c-bright">${actualCpi.toFixed(2)}</span>` +
       `<span class="c-dim"> │ </span>Modeled <span class="c-bright">${modeledCpi.toFixed(2)}</span>` +
-      `<span class="c-dim"> │ </span>OoO/MLP hides <span class="c-cyan">${oooHidden > 0.005 ? oooHidden.toFixed(2) + ' (' + oooPct + '%)' : '0.00'}</span>`;
+      `<span class="c-dim"> │ </span>OoO/MLP hides <span class="c-cyan">${oooHidden > 0.005 ? oooHidden.toFixed(2) + ' (' + oooPct + '%)' : '0.00'}</span>` +
+      decodeSummaryPart;
 
     const flushTiers = active.filter(t => t.group === 'flush');
     const mlpTiers = active.filter(t => t.group === 'mlp');
@@ -288,6 +305,11 @@
     const legParts = [];
     if (flushTiers.length > 0) legParts.push(`<span><span class="c-muted">Flush:</span> ${fmtLeg(flushTiers)}</span>`);
     if (mlpTiers.length > 0) legParts.push(`<span><span class="c-muted">MLP:</span> ${fmtLeg(mlpTiers)}</span>`);
+    if (hasDecode) {
+      legParts.push(
+        `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> OpC <span style="color:${snap.uarch.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Leg</span>`
+      );
+    }
     legendEl.innerHTML = legParts.join('');
 
     const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
@@ -326,6 +348,14 @@
       modHtml += `<span class="cpi-seg" style="width:${w}px; background:${t.hex};" title="${t.name} (${t.group.toUpperCase()}): ${t.cpi.toFixed(3)} CPI (${pct}% of modeled stalls)">${label}</span>`;
     }
     modeledEl.innerHTML = modHtml;
+
+    // Whenever OpCacheDecode is active alongside CPI packs (e.g. All 4-Mux or custom selection),
+    // show the Decode (Op-Cache vs Legacy) bar directly beneath Actual & Modeled.
+    if (hasDecode && decodeRowEl && decodeEl) {
+      if (lbl3) lbl3.textContent = 'Decode';
+      decodeRowEl.classList.remove('is-hidden');
+      decodeEl.innerHTML = buildDecodeBarHtml(snap.uarch, wrapW);
+    }
   }
 
   function buildActiveMicroArchRows(snap, plan, base) {
