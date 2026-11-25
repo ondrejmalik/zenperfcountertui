@@ -513,6 +513,40 @@ html, body {
   flex-shrink: 0;
 }
 
+.cpi-track-label {
+  width: 76px;
+}
+
+.cpi-uarch-seg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 13px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fg-bright);
+  text-shadow: 0 1px 2px #0b0e13;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--seg-color) 62%, #111317),
+    color-mix(in srgb, var(--seg-color) 62%, #111317) 3px,
+    color-mix(in srgb, var(--seg-color) 20%, #111317) 3px,
+    color-mix(in srgb, var(--seg-color) 20%, #111317) 6px
+  );
+  border: 1px solid color-mix(in srgb, var(--seg-color) 75%, transparent);
+  margin-right: 1px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.cpi-uarch-note {
+  margin-left: 7px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* Tables */
 .table-scroll {
   flex: 1;

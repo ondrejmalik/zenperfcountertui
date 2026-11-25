@@ -205,6 +205,41 @@
     );
   }
 
+  function ensureUarchTrackRow(decodeRowEl) {
+    let row = document.getElementById('cpi-row-uarch');
+    let track = document.getElementById('cpi-track-uarch');
+    if (row && track) return { row, track };
+    const region = document.querySelector('.cpi-region');
+    if (!region) return { row: null, track: null };
+    row = document.createElement('div');
+    row.className = 'cpi-track-row is-hidden';
+    row.id = 'cpi-row-uarch';
+    row.innerHTML = `<span class="cpi-track-label" id="cpi-label-uarch">uArch (est)</span><div class="cpi-bar-wrap" id="cpi-track-uarch"></div>`;
+    if (decodeRowEl && decodeRowEl.parentNode === region) {
+      region.insertBefore(row, decodeRowEl);
+    } else {
+      region.appendChild(row);
+    }
+    track = document.getElementById('cpi-track-uarch');
+    return { row, track };
+  }
+
+  function buildUarchBoundBarHtml(activeBounds, totalCpi, hasUnboundedFloor, maxScale, wrapW) {
+    let html = '';
+    for (const t of activeBounds) {
+      const w = Math.max(4, Math.round((t.cpi / maxScale) * wrapW));
+      const minLblW = t.short.length * 7 + 8;
+      const lbl = w >= minLblW ? t.short : (w >= 18 ? t.short.slice(0, 2) : '');
+      const boundDetail = t.boundKind === 'floor'
+        ? `uncontended floor (${t.prefix}${t.cpi.toFixed(3)} CPI; real contention may stall 200-400+ cyc and overlap L3/CCX/DRAM)`
+        : `upper bound (${t.prefix}${t.cpi.toFixed(3)} CPI; partially hidden by Zen 2 224-entry ROB)`;
+      html += `<span class="cpi-uarch-seg" style="width:${w}px; --seg-color:${t.hex};" title="${t.name}: ${boundDetail}">${lbl}</span>`;
+    }
+    const sumTag = `~${totalCpi.toFixed(2)}${hasUnboundedFloor ? '+' : ''}`;
+    html += `<span class="cpi-uarch-note" title="Scale-matched overlapping micro-arch bounds (NOT added to Exclusive Modeled CPI or OoO/MLP)">${sumTag} (overlaps above)</span>`;
+    return html;
+  }
+
   function renderCpiStack(snap, plan) {
     const sumEl = document.getElementById('cpi-summary');
     const legendEl = document.getElementById('cpi-legend');
@@ -215,9 +250,12 @@
     const lbl1 = document.getElementById('cpi-label-1');
     const lbl2 = document.getElementById('cpi-label-2');
     const lbl3 = document.getElementById('cpi-label-3');
+    const { row: uarchRowEl, track: uarchEl } = ensureUarchTrackRow(decodeRowEl);
 
     if (decodeRowEl) decodeRowEl.classList.add('is-hidden');
     if (decodeEl) decodeEl.innerHTML = '';
+    if (uarchRowEl) uarchRowEl.classList.add('is-hidden');
+    if (uarchEl) uarchEl.innerHTML = '';
 
     if (plan.noPmu) {
       if (lbl1) lbl1.textContent = 'Actual';
@@ -230,12 +268,13 @@
     }
 
     const active = snap.activeTiers.filter(t => t.cpi > 0.0005);
+    const activeUarchBounds = (snap.uarchBoundTiers || []).filter(t => t.cpi > 0.0005);
     const hasDecode = Boolean(plan.has(MetricPack.OpCacheDecode) && snap.uarch && snap.uarch.opcacheHitPct !== null);
 
-    // If no CPI stall packs are enabled, show either Op-Cache Decode strip or Free Base Actual CPI + L3 strip
+    // If no Exclusive CPI stall packs are enabled, show either Op-Cache Decode strip or Free Base Actual CPI + L3 strip
     if (active.length === 0) {
       const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
-      const actScale = Math.max(snap.actualCpi, 1.5) * 1.15;
+      const actScale = Math.max(snap.actualCpi, snap.uarchBoundTotalCpi || 0, 1.5) * 1.15;
       const actualPx = Math.max(36, Math.min(wrapW, Math.round((snap.actualCpi / actScale) * wrapW)));
       const actTxt = actualPx >= 96 ? `Actual ${snap.actualCpi.toFixed(2)} (aperf)` : `CPI ${snap.actualCpi.toFixed(2)}`;
 
@@ -249,8 +288,14 @@
           `<span class="c-dim"> │ </span>Op-Cache <span class="${ua.legacyDecodePct >= 30.0 ? 'c-yellow c-bright' : 'c-green'}">${ua.opcacheHitPct.toFixed(1)}%</span>` +
           `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
 
-        legendEl.innerHTML =
-          `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> Op-Cache (8-wide) <span style="color:${ua.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Legacy (4-wide)</span>`;
+        const legParts = [
+          `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> Op-Cache (8-wide) <span style="color:${ua.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Legacy (4-wide)</span>`
+        ];
+        if (activeUarchBounds.length > 0) {
+          const fmtUaLeg = list => list.map(t => `<span><span style="color:${t.barColor}">▒</span> ${t.short}</span>`).join(' ');
+          legParts.push(`<span><span class="c-muted">uArch(est):</span> ${fmtUaLeg(activeUarchBounds)}</span>`);
+        }
+        legendEl.innerHTML = legParts.join('');
 
         actualEl.innerHTML =
           `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual CPI derived from Free Base fixed MSR aperf / irperf: ${snap.actualCpi.toFixed(3)}">${actTxt}</span>` +
@@ -258,6 +303,10 @@
           `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">${plan.coreSlots} Core PMCs + 3 Fixed MSRs + 4 L3 PMCs</span>`;
 
         modeledEl.innerHTML = buildDecodeBarHtml(ua, wrapW);
+        if (activeUarchBounds.length > 0 && uarchRowEl && uarchEl) {
+          uarchRowEl.classList.remove('is-hidden');
+          uarchEl.innerHTML = buildUarchBoundBarHtml(activeUarchBounds, snap.uarchBoundTotalCpi, snap.uarchHasUnboundedFloor, actScale, wrapW);
+        }
         return;
       }
 
@@ -267,7 +316,9 @@
         `<span class="c-bright">Free Base Execution &amp; L3 (${plan.muxShort})</span>` +
         `<span class="c-dim"> │ </span>Actual CPI <span class="c-bright">${snap.actualCpi.toFixed(2)}</span>` +
         `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
-      legendEl.innerHTML = `<span class="c-dim">Press 'm' to add CPI stall packs</span>`;
+      legendEl.innerHTML = activeUarchBounds.length > 0
+        ? `<span><span class="c-muted">uArch(est):</span> ${activeUarchBounds.map(t => `<span><span style="color:${t.barColor}">▒</span> ${t.short}</span>`).join(' ')}</span>`
+        : `<span class="c-dim">Press 'm' to add CPI stall packs</span>`;
       actualEl.innerHTML =
         `<span class="cpi-actual-fill" style="width:${actualPx}px;">${actTxt}</span>` +
         `<span class="cpi-marker"></span>` +
@@ -277,6 +328,10 @@
       modeledEl.innerHTML =
         `<span class="cpi-seg" style="width:${hitPx}px; background:#5dc27f;">L3 Hit ${snap.l3HitPct.toFixed(1)}%</span>` +
         `<span class="cpi-seg" style="width:${missPx}px; background:#dfb052;">${missPx >= 50 ? 'Miss ' + (100 - snap.l3HitPct).toFixed(1) + '%' : ''}</span>`;
+      if (activeUarchBounds.length > 0 && uarchRowEl && uarchEl) {
+        uarchRowEl.classList.remove('is-hidden');
+        uarchEl.innerHTML = buildUarchBoundBarHtml(activeUarchBounds, snap.uarchBoundTotalCpi, snap.uarchHasUnboundedFloor, actScale, wrapW);
+      }
       return;
     }
 
@@ -305,6 +360,10 @@
     const legParts = [];
     if (flushTiers.length > 0) legParts.push(`<span><span class="c-muted">Flush:</span> ${fmtLeg(flushTiers)}</span>`);
     if (mlpTiers.length > 0) legParts.push(`<span><span class="c-muted">MLP:</span> ${fmtLeg(mlpTiers)}</span>`);
+    if (activeUarchBounds.length > 0) {
+      const fmtUaLeg = list => list.map(t => `<span><span style="color:${t.barColor}">▒</span> ${t.short}</span>`).join(' ');
+      legParts.push(`<span><span class="c-muted">uArch:</span> ${fmtUaLeg(activeUarchBounds)}</span>`);
+    }
     if (hasDecode) {
       legParts.push(
         `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> OpC <span style="color:${snap.uarch.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Leg</span>`
@@ -313,7 +372,7 @@
     legendEl.innerHTML = legParts.join('');
 
     const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
-    const maxScale = Math.max(actualCpi, modeledCpi, 0.4) * 1.06;
+    const maxScale = Math.max(actualCpi, modeledCpi, snap.uarchBoundTotalCpi || 0, 0.4) * 1.06;
     const actualPx = Math.max(24, Math.round((actualCpi / maxScale) * wrapW));
     const modeledPx = Math.max(24, Math.round((modeledCpi / maxScale) * wrapW));
     const oooPx = Math.max(0, modeledPx - actualPx);
@@ -349,8 +408,16 @@
     }
     modeledEl.innerHTML = modHtml;
 
+    // Separate, scale-matched hatched track anchored at x = 0 for overlapping micro-arch bounds (STLF, Splits, Lock floor)
+    if (activeUarchBounds.length > 0 && uarchRowEl && uarchEl) {
+      const lblUarch = document.getElementById('cpi-label-uarch');
+      if (lblUarch) lblUarch.textContent = 'uArch (est)';
+      uarchRowEl.classList.remove('is-hidden');
+      uarchEl.innerHTML = buildUarchBoundBarHtml(activeUarchBounds, snap.uarchBoundTotalCpi, snap.uarchHasUnboundedFloor, maxScale, wrapW);
+    }
+
     // Whenever OpCacheDecode is active alongside CPI packs (e.g. All 4-Mux or custom selection),
-    // show the Decode (Op-Cache vs Legacy) bar directly beneath Actual & Modeled.
+    // show the Decode (Op-Cache vs Legacy) bar directly beneath the CPI tracks.
     if (hasDecode && decodeRowEl && decodeEl) {
       if (lbl3) lbl3.textContent = 'Decode';
       decodeRowEl.classList.remove('is-hidden');
@@ -372,75 +439,33 @@
     }, plan) || ua;
 
     const rows = [];
-    if (plan.has(MetricPack.CrossCcxLocks) && ua.dcCrossCcxMpki !== null) {
-      rows.push(
-        {
-          key: 'dcCrossCcx',
-          name: 'Cross-CCX Fills',
-          hex: '0x430443',
-          unit: 'MPKI',
-          live: ua.dcCrossCcxMpki,
-          avg: cumUa.dcCrossCcxMpki ?? ua.dcCrossCcxMpki,
-          baseVal: base ? base.dcCrossCcxMpki : null,
-          higherIsBetter: false,
-          sev: ua.dcCrossCcxMpki >= 2.0 ? 'HI' : (ua.dcCrossCcxMpki >= 0.8 ? 'MD' : 'OK'),
-          scaleMax: 3.5,
-          barColor: ua.dcCrossCcxMpki >= 2.0 ? 'var(--red)' : (ua.dcCrossCcxMpki >= 0.8 ? 'var(--yellow)' : 'var(--cyan)'),
-          graphTitle: 'Cross-CCX Fills MPKI',
-          series: state.history.dcCrossCcx
-        },
-        {
-          key: 'locksSerial',
-          name: 'Serialized Locks',
-          hex: '0x430325',
-          unit: 'MPKI',
-          live: ua.locksSerialMpki,
-          avg: cumUa.locksSerialMpki ?? ua.locksSerialMpki,
-          baseVal: base ? base.locksSerialMpki : null,
-          higherIsBetter: false,
-          sev: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'HI' : (ua.locksSerialMpki >= 1.0 ? 'MD' : 'OK'),
-          scaleMax: 1.8,
-          barColor: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'var(--red)' : (ua.locksSerialMpki >= 1.0 ? 'var(--yellow)' : 'var(--orange)'),
-          graphTitle: 'Serialized Locks MPKI',
-          series: state.history.locksSerial
-        }
-      );
-    }
-    if (plan.has(MetricPack.OpCacheDecode) && ua.legacyDecodePct !== null) {
-      rows.push(
-        {
-          key: 'legacyDecodePct',
-          name: 'Legacy Decode %',
-          hex: '0x4301AA',
-          unit: '%',
-          live: ua.legacyDecodePct,
-          avg: cumUa.legacyDecodePct ?? ua.legacyDecodePct,
-          baseVal: base ? base.legacyDecodePct : null,
-          higherIsBetter: false,
-          sev: ua.legacyDecodePct >= 30.0 ? 'MD' : 'OK',
-          scaleMax: 50.0,
-          barColor: ua.legacyDecodePct >= 30.0 ? 'var(--yellow)' : 'var(--orange)',
-          graphTitle: 'Legacy Decode %',
-          series: state.history.legacyDecodePct
-        },
-        {
-          key: 'opcacheHitPct',
-          name: 'Op-Cache Hit %',
-          hex: '0x4302AA',
-          unit: '%',
-          live: ua.opcacheHitPct,
-          avg: cumUa.opcacheHitPct ?? ua.opcacheHitPct,
-          baseVal: base ? base.opcacheHitPct : null,
-          higherIsBetter: true,
-          sev: ua.opcacheHitPct <= 70.0 ? 'MD' : 'OK',
-          scaleMax: 100.0,
-          barColor: ua.opcacheHitPct <= 70.0 ? 'var(--yellow)' : 'var(--green)',
-          graphTitle: 'Op-Cache Hit %',
-          series: state.history.opcacheHitPct
-        }
-      );
+    // Cross-CCX Fills (0x430443) is promoted into the solid Exclusive CPI Stack & STALL SOURCE table above.
+    if (plan.has(MetricPack.CrossCcxLocks) && ua.locksSerialMpki !== null) {
+      const lockFloorCpi = (ua.locksSerialMpki / 1000.0) * CONFIG.latencies.lockFloor;
+      const isHi = ua.locksSerialMpki >= 0.5 && (ua.dcCrossCcxMpki ?? 0) >= 0.5;
+      rows.push({
+        key: 'locksSerial',
+        name: 'Serialized Locks',
+        hex: '0x430325',
+        unit: 'MPKI',
+        live: ua.locksSerialMpki,
+        avg: cumUa.locksSerialMpki ?? ua.locksSerialMpki,
+        baseVal: base ? base.locksSerialMpki : null,
+        higherIsBetter: false,
+        sev: isHi ? 'HI' : (ua.locksSerialMpki >= 1.0 ? 'MD' : 'OK'),
+        boundCpi: lockFloorCpi,
+        boundText: `≥${lockFloorCpi.toFixed(3)}`,
+        boundTitle: `Uncontended serialization floor (~${CONFIG.latencies.lockFloor.toFixed(0)} cyc/lock). Contended cross-CCX locks can stall 200-400+ cyc and overlap L3/CCX/DRAM.`,
+        hatchedBar: true,
+        scaleMax: 1.8,
+        barColor: isHi ? 'var(--red)' : (ua.locksSerialMpki >= 1.0 ? 'var(--yellow)' : 'var(--orange)'),
+        graphTitle: 'Serialized Locks MPKI',
+        series: state.history.locksSerial
+      });
     }
     if (plan.has(MetricPack.StlfSplits) && ua.stlfInterlockMpki !== null) {
+      const stlfCpi = (ua.stlfInterlockMpki / 1000.0) * CONFIG.latencies.stlfPenalty;
+      const splitCpi = (ua.misalAccessMpki / 1000.0) * CONFIG.latencies.lineSplitPenalty;
       rows.push(
         {
           key: 'stlfInterlock',
@@ -452,6 +477,10 @@
           baseVal: base ? base.stlfInterlockMpki : null,
           higherIsBetter: false,
           sev: ua.stlfInterlockMpki >= 3.0 ? 'MD' : 'OK',
+          boundCpi: stlfCpi,
+          boundText: `≤${stlfCpi.toFixed(3)}`,
+          boundTitle: `Upper bound at ~${CONFIG.latencies.stlfPenalty.toFixed(1)} cyc per failed store-to-load forward (partially hidden by Zen 2 224-entry ROB).`,
+          hatchedBar: true,
           scaleMax: 6.0,
           barColor: ua.stlfInterlockMpki >= 3.0 ? 'var(--yellow)' : 'var(--magenta)',
           graphTitle: 'STLF Interlocks MPKI',
@@ -467,6 +496,10 @@
           baseVal: base ? base.misalAccessMpki : null,
           higherIsBetter: false,
           sev: ua.misalAccessMpki >= 20.0 ? 'MD' : (ua.misalAccessMpki >= 10.0 ? 'LO' : 'OK'),
+          boundCpi: splitCpi,
+          boundText: `≤${splitCpi.toFixed(3)}`,
+          boundTitle: `Upper bound at ~${CONFIG.latencies.lineSplitPenalty.toFixed(0)} extra L1d cycle per 64B split (extra cache misses already counted in STALL SOURCE).`,
+          hatchedBar: true,
           scaleMax: 30.0,
           barColor: ua.misalAccessMpki >= 20.0 ? 'var(--yellow)' : (ua.misalAccessMpki >= 10.0 ? 'var(--cyan)' : 'var(--blue)'),
           graphTitle: 'Cache-Line Splits MPKI',
@@ -474,31 +507,76 @@
         }
       );
     }
+    if (plan.has(MetricPack.OpCacheDecode) && ua.legacyDecodePct !== null) {
+      rows.push(
+        {
+          key: 'legacyDecodePct',
+          name: 'Legacy Decode %',
+          hex: '0x4301AA',
+          unit: '%',
+          live: ua.legacyDecodePct,
+          avg: cumUa.legacyDecodePct ?? ua.legacyDecodePct,
+          baseVal: base ? base.legacyDecodePct : null,
+          higherIsBetter: false,
+          sev: ua.legacyDecodePct >= 30.0 ? 'MD' : 'OK',
+          boundCpi: null,
+          boundText: '--',
+          boundTitle: 'Dispatch ratio only (no direct stall-cycle weight; Zen 2 4-wide legacy decoder is often masked when back-end memory stalls dominate).',
+          hatchedBar: false,
+          scaleMax: 50.0,
+          barColor: ua.legacyDecodePct >= 30.0 ? 'var(--yellow)' : 'var(--orange)',
+          graphTitle: 'Legacy Decode %',
+          series: state.history.legacyDecodePct
+        },
+        {
+          key: 'opcacheHitPct',
+          name: 'Op-Cache Hit %',
+          hex: '0x4302AA',
+          unit: '%',
+          live: ua.opcacheHitPct,
+          avg: cumUa.opcacheHitPct ?? ua.opcacheHitPct,
+          baseVal: base ? base.opcacheHitPct : null,
+          higherIsBetter: true,
+          sev: ua.opcacheHitPct <= 70.0 ? 'MD' : 'OK',
+          boundCpi: null,
+          boundText: '--',
+          boundTitle: 'Complement of Legacy Decode % (also shown on the Decode bar above).',
+          hatchedBar: false,
+          scaleMax: 100.0,
+          barColor: ua.opcacheHitPct <= 70.0 ? 'var(--yellow)' : 'var(--green)',
+          graphTitle: 'Op-Cache Hit %',
+          series: state.history.opcacheHitPct
+        }
+      );
+    }
     return rows;
   }
 
   function renderMicroArchTableRows(uarchRows, highlightTopKey) {
-    const sevBadge = s => {
-      if (s === 'HI') return `<span class="sev-hi">HI</span>`;
-      if (s === 'MD') return `<span class="sev-md">MD</span>`;
-      if (s === 'LO') return `<span class="sev-lo">LO</span>`;
-      return `<span class="c-green">OK</span>`;
+    const boundCell = r => {
+      if (r.boundCpi === null || r.boundCpi === undefined) {
+        const cls = r.sev === 'MD' ? 'sev-md' : 'c-muted';
+        return `<span class="${cls}" title="${r.boundTitle}">${r.boundText}</span>`;
+      }
+      const cls = r.sev === 'HI' ? 'sev-hi' : (r.sev === 'MD' ? 'sev-md' : (r.sev === 'LO' ? 'sev-lo' : 'c-dim'));
+      return `<span class="${cls}" title="${r.boundTitle}">${r.boundText}</span>`;
     };
     return uarchRows.map(r => {
       const isTop = r.key === highlightTopKey;
       const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
       const ratio = Math.max(0.0, Math.min(1.0, r.live / r.scaleMax));
       const barLen = Math.max(1, Math.round(ratio * 20));
-      const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
+      const fillChar = r.hatchedBar ? '▒' : '█';
+      const barStr = fillChar.repeat(barLen) + '·'.repeat(20 - barLen);
       const liveStr = r.unit === '%' ? `${r.live.toFixed(1)}%` : `${r.live < 1.0 ? r.live.toFixed(3) : r.live.toFixed(2)} MPKI`;
       const avgStr = r.unit === '%' ? `${r.avg.toFixed(1)}%` : (r.avg < 1.0 ? r.avg.toFixed(3) : r.avg.toFixed(2));
       return `
-        <tr class="${isTop ? 'top-bottleneck' : ''}" title="${r.name} (${r.hex})">
+        <tr class="${isTop ? 'top-bottleneck' : ''}" title="${r.name} (${r.hex}) - ${r.boundTitle}">
           <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
           <td class="${isTop ? 'c-bright' : ''}">${liveStr}</td>
           <td class="c-dim">${avgStr}</td>
           <td>${fmtDeltaPct(r.live, r.baseVal, r.higherIsBetter)}</td>
-          <td>${sevBadge(r.sev)}</td>
+          <td>${boundCell(r)}</td>
           <td style="font-size: 12px;"><span style="color:${r.sev !== 'OK' || r.key === 'opcacheHitPct' ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
         </tr>
       `;
@@ -538,16 +616,32 @@
       { minVal: 0.4, baseline: (hasFreeBase && base) ? base.ipc : null, color: ipcColor }
     );
 
+    const tierBaseKeyMap = {
+      dram: 'dramMpki',
+      dcCrossCcx: 'dcCrossCcxMpki',
+      l3Hit: 'l3HitMpki',
+      l2dcExcl: 'l2dcExclMpki',
+      l2icExcl: 'l2icExclMpki',
+      branch: 'branchMpki',
+      l2dtlb: 'l2dtlbMpki',
+      l2itlb: 'l2itlbMpki'
+    };
+    const getTierAvgMpki = (tier) => {
+      if (tier.key === 'dcCrossCcx') {
+        return state.cum.instRaw > 0
+          ? (state.cum.dcCrossCcxRaw / state.cum.instRaw) * 1000.0
+          : tier.mpki;
+      }
+      return state.cum.samples > 0 ? state.cum[tier.key] / state.cum.samples : tier.mpki;
+    };
+
     const activeCpiRows = snap.tableTiers
       .filter(t => plan.has(t.requiredPack))
-      .map(t => {
-        const baseKey = {
-          dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
-          l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
-        }[t.key];
-        const avgVal = state.cum.samples > 0 ? state.cum[t.key] / state.cum.samples : t.mpki;
-        return { ...t, baseVal: base ? base[baseKey] : null, avgVal };
-      });
+      .map(t => ({
+        ...t,
+        baseVal: base ? base[tierBaseKeyMap[t.key]] : null,
+        avgVal: getTierAvgMpki(t)
+      }));
     const activeUarchRows = buildActiveMicroArchRows(snap, plan, base);
 
     const sevWeight = { HI: 3, MD: 2, LO: 1, OK: 0 };
@@ -561,11 +655,8 @@
     // 2. Top-Right Graph: Active Top CPI Stall -> Active Top Micro-Arch -> Free Base L3 Latency
     if (activeCpiRows.length > 0 && snap.topTier) {
       const topTier = snap.topTier;
-      const topBaseKey = {
-        dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
-        l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
-      }[topTier.key];
-      const topAvg = state.cum.samples > 0 ? state.cum[topTier.key] / state.cum.samples : topTier.mpki;
+      const topBaseKey = tierBaseKeyMap[topTier.key];
+      const topAvg = getTierAvgMpki(topTier);
 
       document.getElementById('g-top-title').textContent = `Top Stall: ${topTier.name} MPKI`;
       document.getElementById('g-top-stats').innerHTML =
@@ -622,7 +713,7 @@
       );
     }
 
-    // 3. Two-Line Exclusive CPI Stack (or Micro-Arch Decode / Free Base strip)
+    // 3. Exclusive CPI Stack + Scale-Matched Hatched uArch Bounds + Decode Bar
     renderCpiStack(snap, plan);
 
     // 4. Unified Stall Table + Compact Micro-Arch Sub-Table (NEVER pad with empty '--' rows)
@@ -669,6 +760,11 @@
       // Whenever any Micro-Arch pack is enabled alongside CPI packs, show compact Micro-Arch sub-table below
       if (activeUarchRows.length > 0 && uarchWrap && uarchTbody) {
         uarchWrap.classList.remove('is-hidden');
+        const uarchBoundTh = uarchWrap.querySelector('thead th:nth-child(5)');
+        if (uarchBoundTh) {
+          uarchBoundTh.textContent = 'BOUND CPI';
+          uarchBoundTh.title = 'Estimated overlapping CPI bound (excluded from Exclusive Modeled CPI)';
+        }
         const topUaKey = hotUarchRows.length > 0 ? topUarchRow.key : null;
         uarchTbody.innerHTML = renderMicroArchTableRows(activeUarchRows, topUaKey);
       } else if (uarchWrap) {
@@ -683,7 +779,7 @@
             <th>LIVE</th>
             <th>AVG</th>
             <th>vs BASE</th>
-            <th>SEVERITY</th>
+            <th title="Estimated overlapping CPI bound (excluded from Exclusive Modeled CPI)">BOUND CPI</th>
             <th>IMPACT BAR</th>
           </tr>
         `;

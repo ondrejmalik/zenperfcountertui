@@ -118,28 +118,79 @@
     const l2dcExcl = Math.max(0.0, l1dc - l2dc);
     const l2icExcl = Math.max(0.0, l1ic - l2ic);
     const dramLatForCpi = l3LatCyc > 0 ? l3LatCyc : CONFIG.latencies.dramFallback;
+    const crossCcxMpki = Math.max(0.0, uarchDerived.dcCrossCcxMpki || 0.0);
 
     // Ordered for Two-Line CPI Stack: Flush/FE left -> MLP Memory right (strictly pack-gated)
+    // dc_cross_ccx (0x430443 ext_cache_local) is mutually exclusive with dc_dem_l3 (0x430243 int_cache)
+    // and dc_dem_dram (0x430843 mem_io_local), so it joins the solid Exclusive CPI Stack cleanly.
     const cpiTiers = [
       // Flush / Front-End
-      { key: 'branch',   name: 'Branch',     short: 'Br',     group: 'flush', mpki: brMiss,    cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', requiredPack: MetricPack.Branches },
-      { key: 'l2icExcl', name: 'L2 I-Cache', short: 'L2I',    group: 'flush', mpki: l2icExcl,  cpi: (l2icExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-blue',    barColor: 'var(--blue)',    hex: '#6b96d6', requiredPack: MetricPack.L1L2Ic },
-      { key: 'l2itlb',   name: 'L2 iTLB',    short: 'iTLB',   group: 'flush', mpki: l2Itlb,    cpi: (l2Itlb / 1000) * CONFIG.latencies.l2ItlbWalk,       colorClass: 'c-orange',  barColor: 'var(--orange)',  hex: '#d98d59', requiredPack: MetricPack.ItlbFull },
+      { key: 'branch',     name: 'Branch',          short: 'Br',   group: 'flush', mpki: brMiss,       cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', requiredPack: MetricPack.Branches },
+      { key: 'l2icExcl',   name: 'L2 I-Cache',      short: 'L2I',  group: 'flush', mpki: l2icExcl,     cpi: (l2icExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-blue',    barColor: 'var(--blue)',    hex: '#6b96d6', requiredPack: MetricPack.L1L2Ic },
+      { key: 'l2itlb',     name: 'L2 iTLB',         short: 'iTLB', group: 'flush', mpki: l2Itlb,       cpi: (l2Itlb / 1000) * CONFIG.latencies.l2ItlbWalk,       colorClass: 'c-orange',  barColor: 'var(--orange)',  hex: '#d98d59', requiredPack: MetricPack.ItlbFull },
       // MLP-Overlappable Memory
-      { key: 'l2dcExcl', name: 'L2 D-Cache', short: 'L2D',    group: 'mlp',   mpki: l2dcExcl,  cpi: (l2dcExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-cyan',    barColor: 'var(--cyan)',    hex: '#5fb4c9', requiredPack: MetricPack.L1L2Dc },
-      { key: 'l3Hit',    name: 'L3 Hit',     short: 'L3',     group: 'mlp',   mpki: l3HitExcl, cpi: (l3HitExcl / 1000) * CONFIG.latencies.l3Hit,         colorClass: 'c-yellow',  barColor: 'var(--yellow)',  hex: '#dfb052', requiredPack: MetricPack.DcDemand },
-      { key: 'dram',     name: 'DRAM',       short: 'DRAM',   group: 'mlp',   mpki: dramExcl,  cpi: (dramExcl / 1000) * dramLatForCpi,                   colorClass: 'c-red',     barColor: 'var(--red)',     hex: '#e06464', requiredPack: MetricPack.DcDemand },
-      { key: 'l2dtlb',   name: 'L2 dTLB',    short: 'dTLB',   group: 'mlp',   mpki: l2Dtlb,    cpi: (l2Dtlb / 1000) * CONFIG.latencies.l2DtlbWalk,       colorClass: 'c-green',   barColor: 'var(--green)',   hex: '#5dc27f', requiredPack: MetricPack.DtlbFull }
+      { key: 'l2dcExcl',   name: 'L2 D-Cache',      short: 'L2D',  group: 'mlp',   mpki: l2dcExcl,     cpi: (l2dcExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-cyan',    barColor: 'var(--cyan)',    hex: '#5fb4c9', requiredPack: MetricPack.L1L2Dc },
+      { key: 'l3Hit',      name: 'L3 Hit',          short: 'L3',   group: 'mlp',   mpki: l3HitExcl,    cpi: (l3HitExcl / 1000) * CONFIG.latencies.l3Hit,         colorClass: 'c-yellow',  barColor: 'var(--yellow)',  hex: '#dfb052', requiredPack: MetricPack.DcDemand },
+      { key: 'dcCrossCcx', name: 'Cross-CCX Fills', short: 'CCX',  group: 'mlp',   mpki: crossCcxMpki, cpi: (crossCcxMpki / 1000) * CONFIG.latencies.crossCcx,   colorClass: 'c-orange',  barColor: '#e37e5b',        hex: '#e37e5b', requiredPack: MetricPack.CrossCcxLocks },
+      { key: 'dram',       name: 'DRAM',            short: 'DRAM', group: 'mlp',   mpki: dramExcl,     cpi: (dramExcl / 1000) * dramLatForCpi,                   colorClass: 'c-red',     barColor: 'var(--red)',     hex: '#e06464', requiredPack: MetricPack.DcDemand },
+      { key: 'l2dtlb',     name: 'L2 dTLB',         short: 'dTLB', group: 'mlp',   mpki: l2Dtlb,       cpi: (l2Dtlb / 1000) * CONFIG.latencies.l2DtlbWalk,       colorClass: 'c-green',   barColor: 'var(--green)',   hex: '#5dc27f', requiredPack: MetricPack.DtlbFull }
     ];
 
-    // Table display order (DRAM -> L3 -> L2D -> L2I -> Branch -> dTLB -> iTLB)
-    const tableOrderKeys = ['dram', 'l3Hit', 'l2dcExcl', 'l2icExcl', 'branch', 'l2dtlb', 'l2itlb'];
+    // Table display order (DRAM -> Cross-CCX -> L3 -> L2D -> L2I -> Branch -> dTLB -> iTLB)
+    const tableOrderKeys = ['dram', 'dcCrossCcx', 'l3Hit', 'l2dcExcl', 'l2icExcl', 'branch', 'l2dtlb', 'l2itlb'];
     const tableTiers = tableOrderKeys.map(k => cpiTiers.find(t => t.key === k));
 
     const activeTiers = cpiTiers.filter(t => plan.has(t.requiredPack));
     const modeledCpi = activeTiers.reduce((acc, t) => acc + t.cpi, 0);
     const oooHiddenCpi = Math.max(0, modeledCpi - actualCpi);
     const topTier = [...activeTiers].sort((a, b) => b.cpi - a.cpi)[0] || null;
+
+    // Overlapping micro-arch CPI bounds (rendered on separate hatched track anchored at x = 0; never added to modeledCpi)
+    const uarchBoundTiers = [];
+    if (plan.has(MetricPack.StlfSplits)) {
+      const stlfMpki = Math.max(0.0, uarchDerived.stlfInterlockMpki || 0.0);
+      const misalMpki = Math.max(0.0, uarchDerived.misalAccessMpki || 0.0);
+      uarchBoundTiers.push(
+        {
+          key: 'stlfInterlock',
+          name: 'STLF Interlocks',
+          short: 'STLF',
+          boundKind: 'upper',
+          prefix: '≤',
+          mpki: stlfMpki,
+          cpi: (stlfMpki / 1000.0) * CONFIG.latencies.stlfPenalty,
+          hex: '#b380d6',
+          barColor: 'var(--magenta)'
+        },
+        {
+          key: 'misalAccess',
+          name: 'Cache-Line Splits',
+          short: 'Sp',
+          boundKind: 'upper',
+          prefix: '≤',
+          mpki: misalMpki,
+          cpi: (misalMpki / 1000.0) * CONFIG.latencies.lineSplitPenalty,
+          hex: '#5fb4c9',
+          barColor: 'var(--cyan)'
+        }
+      );
+    }
+    if (plan.has(MetricPack.CrossCcxLocks)) {
+      const locksMpki = Math.max(0.0, uarchDerived.locksSerialMpki || 0.0);
+      uarchBoundTiers.push({
+        key: 'locksSerial',
+        name: 'Serialized Locks',
+        short: 'Lk+',
+        boundKind: 'floor',
+        prefix: '≥',
+        mpki: locksMpki,
+        cpi: (locksMpki / 1000.0) * CONFIG.latencies.lockFloor,
+        hex: '#e06464',
+        barColor: 'var(--red)'
+      });
+    }
+    const uarchBoundTotalCpi = uarchBoundTiers.reduce((acc, t) => acc + t.cpi, 0);
+    const uarchHasUnboundedFloor = uarchBoundTiers.some(t => t.boundKind === 'floor' && t.cpi > 0.0005);
 
     // Per-core C0% (mperf duty cycle) & per-core IPC
     const coreC0 = prof.coreC0.map((c, idx) => Math.min(100, Math.max(0, jitter(c, 0.055, 11 + idx * 0.35))));
@@ -330,6 +381,7 @@
       effGhz, ipc, actualCpi, instPerSec, cycPerSec, aperfPerSec, mperfPerSec,
       retiringPct, retiringExact, retUopsPerSec,
       uarch: uarchActive, uarchRawDelta,
+      uarchBoundTiers, uarchBoundTotalCpi, uarchHasUnboundedFloor,
       l1dc, l2dc, l1ic, l2ic, l2dcExcl, l2icExcl,
       demL3, hwpfL3, demDram, hwpfDram, l2pfL3, l2pfDram,
       dramExcl, dramTotal, l3HitExcl, l3HitTotal,

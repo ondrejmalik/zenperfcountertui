@@ -45,10 +45,14 @@
       l1Hit: 4.0,
       l2Hit: 12.0,
       l3Hit: 39.0,
+      crossCcx: 90.0,
       branchMispredict: 17.0,
       l2ItlbWalk: 32.0,
       l2DtlbWalk: 32.0,
-      dramFallback: 225.0
+      dramFallback: 225.0,
+      lockFloor: 20.0,
+      stlfPenalty: 12.5,
+      lineSplitPenalty: 1.0
     },
     advisor: {
       minSamples: 10,
