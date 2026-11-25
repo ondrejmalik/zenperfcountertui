@@ -36,6 +36,12 @@
       uopsPerInst: 1.15,
       exactRetiring: false // false keeps Full at 18 Core PMCs (3-Mux); true adds 0x4300C1 (19 PMCs -> 4-Mux)
     },
+    profiler: {
+      autoStartEtw: true,
+      sampleRateKhz: 1, // 1-4 kHz
+      maxNodes: 20000,
+      defaultBurstDurationSec: 5
+    },
     calibrated: false,
     moduleMinMiB: 4.0
   };
