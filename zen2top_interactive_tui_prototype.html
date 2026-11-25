@@ -654,8 +654,8 @@
   }
 
   .mem-top {
-    flex: 0 0 40%;
-    min-height: 158px;
+    flex: 0 0 42%;
+    min-height: 176px;
   }
 
   .mem-bottom {
@@ -1443,6 +1443,23 @@
           <span class="c-dim" id="modal-admin-val">Elevated</span>
         </button>
         <hr class="h-rule-tight">
+        <button class="modal-action-row" data-b-act="toggle-gpu-api">
+          <span><span class="c-bright">[g]</span> Toggle D3DKMT GPU Telemetry (gdi32.dll graceful None fallback)</span>
+          <span class="c-dim" id="modal-gpu-val">Available</span>
+        </button>
+        <button class="modal-action-row" data-b-act="toggle-ecoqos-api">
+          <span><span class="c-bright">[o]</span> Toggle Win11 EcoQoS API (pre-22H2 ERROR_INVALID_PARAMETER -&gt; Unknown)</span>
+          <span class="c-dim" id="modal-ecoqos-val">Win11 22H2+</span>
+        </button>
+        <button class="modal-action-row" data-b-act="toggle-lock-priv">
+          <span><span class="c-bright">[l]</span> Toggle Target SeLockMemoryPrivilege (Missing vs RAM Fragmentation)</span>
+          <span class="c-dim" id="modal-priv-val">Present</span>
+        </button>
+        <button class="modal-action-row" data-b-act="run-tests">
+          <span><span class="c-bright">[v]</span> Run Group A Diagnostic Self-Test Suite (7 Zero-PMC Rules)</span>
+          <span class="c-cyan" id="modal-tests-val">12 checks</span>
+        </button>
+        <hr class="h-rule-tight">
         <button class="modal-action-row" data-b-act="calibrate">
           <span><span class="c-bright">[C]</span> Run Hardware Latency Calibration (--calibrate)</span>
           <span class="c-cyan" id="modal-cal-val">~1s pointer-chase</span>
@@ -1555,7 +1572,8 @@
     { id: 'full', label: 'Full (3-Mux)', cliArg: 'full', corePmcs: 18, l3Pmcs: 4 },
     { id: 'tlb', label: 'TLB-Only (0-Mux)', cliArg: 'tlb', corePmcs: 5, l3Pmcs: 0 },
     { id: 'ipc-mem', label: 'IPC+Cache/DRAM (0-Mux)', cliArg: 'ipc-mem', corePmcs: 6, l3Pmcs: 4 },
-    { id: 'uarch', label: 'Micro-Arch (0-Mux)', cliArg: 'uarch', corePmcs: 6, l3Pmcs: 4 }
+    { id: 'uarch', label: 'Micro-Arch (0-Mux)', cliArg: 'uarch', corePmcs: 6, l3Pmcs: 4 },
+    { id: 'no-pmu', label: 'No-PMU (Win32 Only)', cliArg: 'no-pmu', corePmcs: 0, l3Pmcs: 0 }
   ];
 
   // Exact verified AMD Zen 2 (Family 17h Model 71h) AMDuProfPcm event definitions per preset
@@ -1615,10 +1633,21 @@
       'core/oc_uops=(0x4302AA)',
       'core/stlf_interlock=(0x430224)',
       'core/misal_access=(0x430047)'
-    ]
+    ],
+    'no-pmu': []
   };
 
   function buildUprofMetricSpec(presetId, exactRetiring = false) {
+    if (presetId === 'no-pmu') {
+      return {
+        presetId,
+        coreEvents: [],
+        fixedMsrs: [],
+        l3Events: [],
+        muxGroups: 0,
+        metricString: ''
+      };
+    }
     const coreEvents = [...(PMU_CORE_EVENTS_BY_PRESET[presetId] || PMU_CORE_EVENTS_BY_PRESET.full)];
     if (presetId === 'full' && exactRetiring) {
       coreEvents.push('core/ret_uops=(0x4300C1)');
@@ -1821,6 +1850,35 @@
     ['ucrtbase.dll', 4.30, 0x7FFA81200000n, false]
   ];
 
+  function makeWin32Profile(overrides = {}) {
+    const baseDpc = [0.6, 0.2, 0.4, 0.2, 0.3, 0.1, 0.4, 0.2, 0.3, 0.1, 0.2, 0.1];
+    const baseIrq = [0.4, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.1, 0.1];
+    const baseIrqRate = [920, 310, 540, 280, 460, 220, 510, 260, 410, 210, 320, 190];
+    return {
+      gpu3dPct: 72.0,
+      gpuProc3dPct: 68.0,
+      coreDpcPct: overrides.coreDpcPct ? [...overrides.coreDpcPct] : baseDpc,
+      coreIrqPct: overrides.coreIrqPct ? [...overrides.coreIrqPct] : baseIrq,
+      coreIrqPerSec: overrides.coreIrqPerSec ? [...overrides.coreIrqPerSec] : baseIrqRate,
+      noisyNeighbors: overrides.noisyNeighbors
+        ? overrides.noisyNeighbors.map(x => ({ ...x }))
+        : [
+            { name: 'dwm.exe', pid: 1188, sysCpuPct: 1.2 },
+            { name: 'Discord.exe', pid: 8824, sysCpuPct: 0.9 }
+          ],
+      ctxSwPerSec: 12400,
+      syncWaitPct: 16.0,
+      topWaitReason: 'WrQueue',
+      priorityClass: 'NORMAL',
+      ecoQos: 'Inactive',
+      hardPageReadsPerSec: 0.0,
+      availPhysPct: 48.0,
+      commitPct: 46.0,
+      seLockMemoryPrivilege: 'Present',
+      ...overrides
+    };
+  }
+
   const PROCESSES = [
     {
       pid: 14820,
@@ -1831,6 +1889,7 @@
       wsMiB: 1640,
       sharedMiB: 412,
       hugeMiB: 4096,
+      requestedHugeMiB: 4096,
       commitMiB: 6180,
       peakWsMiB: 2140,
       peakCommitMiB: 6320,
@@ -1853,6 +1912,14 @@
         pages:     { peak: 24180, total: 91200, current: 20790, isCount: true },
         softReset: 412
       },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 72.0,
+        gpuProc3dPct: 68.0,
+        hardPageReadsPerSec: 0.0,
+        availPhysPct: 46.0,
+        commitPct: 49.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
       pmuProfile: {
         effGhz: 4.22, ipc: 1.28,
         l1dc: 31.4, l2dc: 8.6, l1ic: 11.2, l2ic: 1.75,
@@ -1876,6 +1943,7 @@
       wsMiB: 2890,
       sharedMiB: 440,
       hugeMiB: 2048,
+      requestedHugeMiB: 2048,
       commitMiB: 5410,
       peakWsMiB: 3490,
       peakCommitMiB: 5620,
@@ -1898,6 +1966,14 @@
         pages:     { peak: 26800, total: 118400, current: 23300, isCount: true },
         softReset: 620
       },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 76.0,
+        gpuProc3dPct: 73.0,
+        hardPageReadsPerSec: 0.4,
+        availPhysPct: 44.0,
+        commitPct: 52.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
       pmuProfile: {
         effGhz: 4.19, ipc: 1.15,
         l1dc: 33.8, l2dc: 9.8, l1ic: 12.1, l2ic: 1.95,
@@ -1914,12 +1990,13 @@
     {
       pid: 27408,
       name: 'cs2.exe',
-      tag: 'IFEO Fail + Queueing + Throttle',
+      tag: 'IFEO Priv Missing + DPC/IRQ HI',
       allocatorType: 'tier0_mimalloc',
       allocatorLabel: 'tier0.dll (mimalloc v2) - IFEO Fault',
       wsMiB: 2610,
       sharedMiB: 380,
       hugeMiB: 1024,
+      requestedHugeMiB: 1024,
       commitMiB: 4520,
       peakWsMiB: 3110,
       peakCommitMiB: 4700,
@@ -1949,6 +2026,18 @@
         pages:     { peak: 16200, total: 72400, current: 14100, isCount: true },
         softReset: 310
       },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 81.0,
+        gpuProc3dPct: 78.0,
+        // C00 is hot (64% C0) with 8.6% DPC+IRQ -> fires dpc_irq_collision (HI)
+        coreDpcPct: [6.2, 0.3, 0.5, 0.2, 0.4, 0.1, 0.5, 0.2, 0.3, 0.1, 0.2, 0.1],
+        coreIrqPct: [2.4, 0.2, 0.3, 0.1, 0.2, 0.1, 0.3, 0.1, 0.2, 0.1, 0.1, 0.1],
+        coreIrqPerSec: [4820, 410, 560, 290, 480, 240, 520, 260, 400, 210, 310, 190],
+        hardPageReadsPerSec: 0.6,
+        availPhysPct: 41.0,
+        commitPct: 54.0,
+        seLockMemoryPrivilege: 'Missing'
+      }),
       pmuProfile: {
         effGhz: 3.64, ipc: 0.94,
         l1dc: 38.0, l2dc: 12.8, l1ic: 10.6, l2ic: 1.85,
@@ -1965,12 +2054,13 @@
     {
       pid: 31088,
       name: 'rustc.exe',
-      tag: 'CRT + Branch / I-Cache / PF Churn',
+      tag: 'CRT + Branch / I-Cache / Soft PF',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'ucrtbase.dll (Layer 1 OS Fallback)',
       wsMiB: 1940,
       sharedMiB: 190,
       hugeMiB: 0,
+      requestedHugeMiB: 0,
       commitMiB: 2680,
       peakWsMiB: 2310,
       peakCommitMiB: 2940,
@@ -1990,6 +2080,18 @@
       ],
       arenas: null,
       heapStats: null,
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 4.0,
+        gpuProc3dPct: 0.0,
+        // High soft faults (4180/s) but low disk hard faults (1.2/s); ctx sw suppressed by avgC0 >= 85%
+        hardPageReadsPerSec: 1.2,
+        availPhysPct: 38.0,
+        commitPct: 58.0,
+        ctxSwPerSec: 58000,
+        syncWaitPct: 44.0,
+        topWaitReason: 'WrExecutive',
+        seLockMemoryPrivilege: 'Present'
+      }),
       pmuProfile: {
         effGhz: 4.14, ipc: 1.06,
         l1dc: 26.5, l2dc: 6.4, l1ic: 18.6, l2ic: 3.85,
@@ -2000,7 +2102,7 @@
         l1ItlbMissPct: 1.35, l2Itlb: 0.42, l1Dtlb: 2.95, l2Dtlb: 0.86,
         dcCrossCcx: 0.42, locksSerial: 1.18, opcacheHitPct: 61.8, stlfInterlock: 4.20, misalAccess: 22.5,
         pfRate: 4180, cpuUsr: 58.0, cpuSys: 21.5,
-        // All 6 physical cores >85% saturated -> tests Rule 3 SMT suppression
+        // All 6 physical cores >85% saturated -> tests Rule 3 SMT & Rule 7 CtxSw suppression
         coreC0: [92, 88, 91, 86, 89, 87, 93, 89, 90, 86, 88, 86]
       }
     },
@@ -2013,6 +2115,7 @@
       wsMiB: 2420,
       sharedMiB: 310,
       hugeMiB: 2048,
+      requestedHugeMiB: 2048,
       commitMiB: 4610,
       peakWsMiB: 2880,
       peakCommitMiB: 4820,
@@ -2041,6 +2144,14 @@
         pages:     { peak: 12400, total: 42100, current: 10900, isCount: true },
         softReset: 210
       },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 14.0,
+        gpuProc3dPct: 11.0,
+        hardPageReadsPerSec: 0.0,
+        availPhysPct: 52.0,
+        commitPct: 44.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
       pmuProfile: {
         effGhz: 4.24, ipc: 2.18,
         l1dc: 18.2, l2dc: 3.6, l1ic: 6.4, l2ic: 0.72,
@@ -2057,12 +2168,13 @@
     {
       pid: 6104,
       name: 'chrome.exe',
-      tag: 'PartitionAlloc (Cross-CCX)',
+      tag: 'Cross-CCX + EcoQoS Throttled',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'PartitionAlloc (Layer 1 OS Fallback)',
       wsMiB: 1180,
       sharedMiB: 310,
       hugeMiB: 0,
+      requestedHugeMiB: 0,
       commitMiB: 1520,
       peakWsMiB: 1410,
       peakCommitMiB: 1740,
@@ -2081,6 +2193,16 @@
       ],
       arenas: null,
       heapStats: null,
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 22.0,
+        gpuProc3dPct: 14.0,
+        priorityClass: 'BELOW_NORMAL',
+        ecoQos: 'Active',
+        hardPageReadsPerSec: 0.8,
+        availPhysPct: 45.0,
+        commitPct: 48.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
       pmuProfile: {
         effGhz: 4.08, ipc: 1.02,
         l1dc: 22.8, l2dc: 7.4, l1ic: 14.2, l2ic: 2.10,
@@ -2094,8 +2216,194 @@
         // 4 threads active across both CCX0 & CCX1 + low L3 hit (73.5%) -> fires Rule 4 Cross-CCX
         coreC0: [42, 4, 34, 2, 6, 1, 38, 3, 29, 2, 4, 1]
       }
+    },
+    {
+      pid: 34112,
+      name: 'cyberpunk2077.exe',
+      tag: 'GPU-Bound 99% + Noisy Neighbor',
+      allocatorType: 'crt_fallback',
+      allocatorLabel: 'REDengine4 Pool (Layer 1 OS Fallback)',
+      wsMiB: 4820,
+      sharedMiB: 690,
+      hugeMiB: 0,
+      requestedHugeMiB: 0,
+      commitMiB: 7940,
+      peakWsMiB: 5340,
+      peakCommitMiB: 8420,
+      pageFaults: 2140300,
+      userSec: 910.4,
+      sysSec: 128.6,
+      elapsedSec: 485.0,
+      ifeoEnabled: false,
+      ifeoMasterSessionToggled: false,
+      affinityMask: 0x0FFF,
+      modules: [
+        makeMod('Cyberpunk2077.exe', 92.40, false, false, 'RX', false, 0x7FF6A0000000n),
+        makeMod('PhysX3_x64.dll', 21.80, false, false, 'RX', true, 0x7FF8B2000000n),
+        makeMod('nvngx_dlss.dll', 34.50, false, false, 'RX', true, 0x7FF8B8000000n),
+        makeMod('d3d12core.dll', 18.20, false, false, 'RX', true, 0x7FF8BC000000n)
+      ],
+      arenas: null,
+      heapStats: null,
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 98.8,
+        gpuProc3dPct: 97.6,
+        // C00 is hot (62% C0) with 6.4% DPC+IRQ -> fires dpc_irq_collision (MD)
+        coreDpcPct: [4.6, 0.3, 0.5, 0.2, 0.4, 0.2, 0.5, 0.2, 0.3, 0.1, 0.2, 0.1],
+        coreIrqPct: [1.8, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1],
+        coreIrqPerSec: [3450, 380, 520, 270, 440, 210, 490, 240, 360, 190, 290, 170],
+        noisyNeighbors: [
+          { name: 'MsMpEng.exe', pid: 4120, sysCpuPct: 8.8 },
+          { name: 'dwm.exe', pid: 1188, sysCpuPct: 1.4 }
+        ],
+        hardPageReadsPerSec: 0.2,
+        availPhysPct: 29.0,
+        commitPct: 68.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
+      pmuProfile: {
+        effGhz: 4.21, ipc: 1.24,
+        l1dc: 29.5, l2dc: 8.1, l1ic: 9.8, l2ic: 1.45,
+        demL3: 3.10, hwpfL3: 1.35, demDram: 1.55, hwpfDram: 0.52,
+        l2pfL3: 0.95, l2pfDram: 0.40,
+        l3Acc: 9.6, l3Miss: 2.10, l3LatCyc: 218,
+        br: 146.0, brMiss: 2.85, brMissPct: 2.20,
+        l1ItlbMissPct: 0.35, l2Itlb: 0.16, l1Dtlb: 1.20, l2Dtlb: 0.24,
+        dcCrossCcx: 0.72, locksSerial: 0.24, opcacheHitPct: 80.5, stlfInterlock: 1.70, misalAccess: 7.4,
+        pfRate: 240, cpuUsr: 36.0, cpuSys: 5.2,
+        // Hottest logical CPU C00 is 62% (<75%) while GPU 3D is 98.8% (>=97%) -> GPU-BOUND
+        coreC0: [62, 14, 54, 12, 46, 10, 48, 8, 34, 6, 26, 4]
+      }
+    },
+    {
+      pid: 38904,
+      name: 'javaw.exe',
+      tag: 'Hard Paging + 2MiB RAM Frag',
+      allocatorType: 'generic_mimalloc',
+      allocatorLabel: 'mimalloc.dll (4 GiB Locked + Disk Paging)',
+      wsMiB: 3180,
+      sharedMiB: 280,
+      hugeMiB: 4096,
+      requestedHugeMiB: 4096,
+      commitMiB: 11240,
+      peakWsMiB: 4620,
+      peakCommitMiB: 12180,
+      pageFaults: 6180400,
+      userSec: 540.2,
+      sysSec: 162.8,
+      elapsedSec: 310.0,
+      ifeoEnabled: true,
+      ifeoMasterSessionToggled: false,
+      affinityMask: 0x0FFF,
+      modules: [
+        makeMod('jvm.dll', 28.40, false, true, 'RX', true, 0x7FF870000000n),
+        makeMod('javaw.exe', 4.60, false, true, 'RX', false, 0x7FF650000000n),
+        makeMod('lwjgl_opengl.dll', 12.10, false, false, 'RX', true, 0x7FF876000000n),
+        makeMod('ucrtbase.dll', 4.30, false, false, 'RX', true, 0x7FFA81200000n)
+      ],
+      arenas: buildArenas(4, [30, 28, 25, 19], []),
+      heapStats: {
+        normal:    { peak: 3420, total: 19400, current: 3110 },
+        huge:      { peak: 4096, total: 4096,  current: 4096 },
+        reserved:  { peak: 4096, total: 4096,  current: 4096 },
+        committed: { peak: 3810, total: 4920,  current: 3640 },
+        touched:   { peak: 3680, total: 3680,  current: 3264 },
+        segments:  { peak: 118,  total: 204,   current: 102, isCount: true },
+        pages:     { peak: 25100, total: 96400, current: 21800, isCount: true },
+        softReset: 510
+      },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 48.0,
+        gpuProc3dPct: 44.0,
+        hardPageReadsPerSec: 44.5,
+        availPhysPct: 3.8,
+        commitPct: 93.5,
+        seLockMemoryPrivilege: 'Present'
+      }),
+      pmuProfile: {
+        effGhz: 4.16, ipc: 1.12,
+        l1dc: 28.0, l2dc: 7.9, l1ic: 11.8, l2ic: 1.90,
+        demL3: 3.20, hwpfL3: 1.10, demDram: 1.42, hwpfDram: 0.45,
+        l2pfL3: 0.90, l2pfDram: 0.34,
+        l3Acc: 9.8, l3Miss: 1.95, l3LatCyc: 219,
+        br: 150.0, brMiss: 3.10, brMissPct: 2.50,
+        l1ItlbMissPct: 1.45, l2Itlb: 0.56, l1Dtlb: 1.15, l2Dtlb: 0.22,
+        dcCrossCcx: 0.68, locksSerial: 0.28, opcacheHitPct: 78.0, stlfInterlock: 1.95, misalAccess: 8.6,
+        pfRate: 1620, cpuUsr: 38.0, cpuSys: 14.5,
+        coreC0: [68, 10, 52, 8, 44, 6, 46, 7, 28, 4, 18, 2]
+      }
+    },
+    {
+      pid: 41250,
+      name: 'sqlservr.exe',
+      tag: 'CtxSw Lock Storm + 0 GiB Huge Frag',
+      allocatorType: 'generic_mimalloc',
+      allocatorLabel: 'mimalloc.dll (0 GiB Huge - Frag Fallback)',
+      wsMiB: 2740,
+      sharedMiB: 320,
+      hugeMiB: 0,
+      requestedHugeMiB: 2048,
+      commitMiB: 3890,
+      peakWsMiB: 3120,
+      peakCommitMiB: 4100,
+      pageFaults: 1520100,
+      userSec: 1120.5,
+      sysSec: 495.2,
+      elapsedSec: 615.0,
+      ifeoEnabled: false,
+      ifeoMasterSessionToggled: false,
+      affinityMask: 0x0FFF,
+      modules: [
+        makeMod('sqlmin.dll', 48.20, false, false, 'RX', true, 0x7FF880000000n),
+        makeMod('sqllang.dll', 39.60, false, false, 'RX', true, 0x7FF886000000n),
+        makeMod('mimalloc.dll', 4.60, false, false, 'RX', true, 0x7FF88A000000n),
+        makeMod('sqlservr.exe', 5.10, false, false, 'RX', false, 0x7FF660000000n)
+      ],
+      arenas: buildArenas(0, [], [{ blocks: 32, inuse: 26, touched: 30 }, { blocks: 32, inuse: 18, touched: 24 }]),
+      heapStats: {
+        normal:    { peak: 2680, total: 16200, current: 2410 },
+        huge:      { peak: 0,    total: 0,     current: 0 },
+        reserved:  { peak: 2048, total: 2048,  current: 2048 },
+        committed: { peak: 2540, total: 5820,  current: 2320 },
+        touched:   { peak: 2496, total: 2496,  current: 2240 },
+        segments:  { peak: 88,   total: 174,   current: 76, isCount: true },
+        pages:     { peak: 19400, total: 88100, current: 16900, isCount: true },
+        softReset: 430
+      },
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 2.0,
+        gpuProc3dPct: 0.0,
+        ctxSwPerSec: 78500,
+        syncWaitPct: 58.0,
+        topWaitReason: 'WrPushLock',
+        hardPageReadsPerSec: 1.8,
+        availPhysPct: 36.0,
+        commitPct: 61.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
+      pmuProfile: {
+        effGhz: 4.18, ipc: 1.04,
+        l1dc: 27.2, l2dc: 7.1, l1ic: 10.4, l2ic: 1.55,
+        demL3: 2.95, hwpfL3: 0.85, demDram: 1.18, hwpfDram: 0.32,
+        l2pfL3: 0.78, l2pfDram: 0.28,
+        l3Acc: 8.9, l3Miss: 1.62, l3LatCyc: 214,
+        br: 142.0, brMiss: 2.95, brMissPct: 2.40,
+        l1ItlbMissPct: 0.40, l2Itlb: 0.18, l1Dtlb: 1.85, l2Dtlb: 0.56,
+        dcCrossCcx: 1.45, locksSerial: 1.35, opcacheHitPct: 75.5, stlfInterlock: 2.30, misalAccess: 9.2,
+        pfRate: 480, cpuUsr: 29.5, cpuSys: 19.2,
+        coreC0: [56, 44, 52, 42, 48, 38, 54, 41, 49, 37, 45, 34]
+      }
     }
   ];
+
+  const SYSTEM_WIDE_WIN32 = makeWin32Profile({
+    gpu3dPct: 18.0,
+    gpuProc3dPct: 0.0,
+    hardPageReadsPerSec: 0.2,
+    availPhysPct: 54.0,
+    commitPct: 39.0,
+    seLockMemoryPrivilege: 'Present'
+  });
 
   const SYSTEM_WIDE_PROFILE = {
     effGhz: 4.18, ipc: 1.44,
@@ -2184,6 +2492,8 @@
     attachedPid: 14820,
     activeBaseline: deserializeBaselineJson(BASELINE_PRESETS['4K-Default']),
     isAdmin: true,
+    simGpuAvailable: true,
+    simEcoQosSupported: true,
     ifeoWarnedSession: false,
     pendingIfeoAction: null,
     timedCapture: null, // { remainingSec, totalSec, accum }
@@ -2259,7 +2569,19 @@
       cpuSys: 0,
       avgC0Pct: 0,
       coreC0Sum: new Array(12).fill(0),
-      ccxLatSum: [0, 0]
+      ccxLatSum: [0, 0],
+      // Group A (Zero-PMC Win32) cumulative accumulators
+      gpu3dSum: 0,
+      gpu3dSamples: 0,
+      coreDpcSum: new Array(12).fill(0),
+      coreIrqSum: new Array(12).fill(0),
+      coreIrqRateSum: new Array(12).fill(0),
+      hardPageReadsSum: 0,
+      availPhysPctSum: 0,
+      commitPctSum: 0,
+      ctxSwSum: 0,
+      syncWaitPctSum: 0,
+      bgProcCpuSum: {}
     },
 
     lastSnap: null,
@@ -2532,6 +2854,40 @@
       }
     }
 
+    // Group A (Zero-PMC Win32) non-blocking background collector snapshot
+    const w32 = (proc && proc.win32Profile) ? proc.win32Profile : SYSTEM_WIDE_WIN32;
+    const gpu3dPct = state.simGpuAvailable
+      ? Math.min(100.0, Math.max(0.0, jitter(w32.gpu3dPct, 0.015, 17.1)))
+      : null;
+    const gpuProc3dPct = (state.simGpuAvailable && proc)
+      ? Math.min(gpu3dPct, Math.max(0.0, jitter(w32.gpuProc3dPct ?? w32.gpu3dPct, 0.02, 17.5)))
+      : null;
+    const coreDpcPct = w32.coreDpcPct.map((d, idx) => Math.min(100.0, Math.max(0.0, jitter(d, 0.08, 18 + idx * 0.4))));
+    const coreIrqPct = w32.coreIrqPct.map((q, idx) => Math.min(100.0, Math.max(0.0, jitter(q, 0.08, 19 + idx * 0.4))));
+    const coreIrqPerSec = w32.coreIrqPerSec.map((r, idx) => Math.max(0, Math.round(jitter(r, 0.09, 20 + idx * 0.3))));
+    const noisyNeighbors = (w32.noisyNeighbors || []).map((bg, idx) => {
+      const sysCpuPct = Math.min(100.0, Math.max(0.0, jitter(bg.sysCpuPct, 0.07, 21 + idx * 0.7)));
+      return {
+        name: bg.name,
+        pid: bg.pid,
+        sysCpuPct,
+        singleCorePct: sysCpuPct * CONFIG.logicalCpus
+      };
+    });
+    const ctxSwPerSec = proc ? Math.max(0, Math.round(jitter(w32.ctxSwPerSec, 0.06, 22.1))) : 0;
+    const syncWaitPct = proc ? Math.min(100.0, Math.max(0.0, jitter(w32.syncWaitPct, 0.05, 22.6))) : 0;
+    const topWaitReason = w32.topWaitReason || 'WrQueue';
+    const priorityClass = proc ? (w32.priorityClass || 'NORMAL') : 'NORMAL';
+    const ecoQos = !proc
+      ? 'Inactive'
+      : (state.simEcoQosSupported ? (w32.ecoQos || 'Inactive') : 'Unknown');
+    const hardPageReadsPerSec = w32.hardPageReadsPerSec <= 0.01
+      ? 0.0
+      : Math.max(0.0, jitter(w32.hardPageReadsPerSec, 0.12, 23.2));
+    const availPhysPct = Math.min(99.0, Math.max(0.5, jitter(w32.availPhysPct, 0.03, 23.8)));
+    const commitPct = Math.min(99.5, Math.max(5.0, jitter(w32.commitPct, 0.02, 24.3)));
+    const seLockMemoryPrivilege = w32.seLockMemoryPrivilege || 'Present';
+
     const snap = {
       effGhz, ipc, actualCpi, instPerSec, cycPerSec, aperfPerSec, mperfPerSec,
       retiringPct, retiringExact, retUopsPerSec,
@@ -2544,7 +2900,11 @@
       l1ItlbMissPct, l2Itlb, l1Dtlb, l2Dtlb, l1DtlbMissPct,
       cpiTiers, tableTiers, activeTiers, modeledCpi, oooHiddenCpi, topTier,
       coreC0, coreRelInstPct, coreIpc, avgC0Pct, ccx,
-      pfRate, cpuUsr, cpuSys
+      pfRate, cpuUsr, cpuSys,
+      gpu3dPct, gpuProc3dPct, coreDpcPct, coreIrqPct, coreIrqPerSec,
+      noisyNeighbors, ctxSwPerSec, syncWaitPct, topWaitReason,
+      priorityClass, ecoQos, hardPageReadsPerSec, availPhysPct, commitPct,
+      seLockMemoryPrivilege
     };
 
     if (commitToHistory) {
@@ -2593,9 +2953,31 @@
       state.cum.cpuUsr += cpuUsr;
       state.cum.cpuSys += cpuSys;
       state.cum.avgC0Pct += avgC0Pct;
-      for (let i = 0; i < 12; i++) state.cum.coreC0Sum[i] += coreC0[i];
+      for (let i = 0; i < 12; i++) {
+        state.cum.coreC0Sum[i] += coreC0[i];
+        state.cum.coreDpcSum[i] += coreDpcPct[i];
+        state.cum.coreIrqSum[i] += coreIrqPct[i];
+        state.cum.coreIrqRateSum[i] += coreIrqPerSec[i];
+      }
       state.cum.ccxLatSum[0] += ccx[0].latNs;
       state.cum.ccxLatSum[1] += ccx[1].latNs;
+
+      if (gpu3dPct !== null) {
+        state.cum.gpu3dSum += gpu3dPct;
+        state.cum.gpu3dSamples += 1;
+      }
+      state.cum.hardPageReadsSum += hardPageReadsPerSec;
+      state.cum.availPhysPctSum += availPhysPct;
+      state.cum.commitPctSum += commitPct;
+      state.cum.ctxSwSum += ctxSwPerSec;
+      state.cum.syncWaitPctSum += syncWaitPct;
+      for (const bg of noisyNeighbors) {
+        const key = `${bg.name}|${bg.pid}`;
+        if (!state.cum.bgProcCpuSum[key]) {
+          state.cum.bgProcCpuSum[key] = { name: bg.name, pid: bg.pid, sysCpuSum: 0 };
+        }
+        state.cum.bgProcCpuSum[key].sysCpuSum += bg.sysCpuPct;
+      }
 
       pushRing(state.history.ipc, ipc);
       pushRing(state.history.topStall, topTier.mpki);
@@ -2662,6 +3044,7 @@
     for (const k of Object.keys(state.history)) state.history[k] = [];
     for (const k of Object.keys(state.cum)) {
       if (Array.isArray(state.cum[k])) state.cum[k] = state.cum[k].map(() => 0);
+      else if (state.cum[k] && typeof state.cum[k] === 'object') state.cum[k] = {};
       else state.cum[k] = 0;
     }
     state.sampleCount = 0;
@@ -2674,6 +3057,7 @@
   // 5B. DETERMINISTIC EVIDENCE-GATED DIAGNOSTIC ENGINE (Tab 5 Advisor)
   // =========================================================================
   const VERDICT_LABELS = {
+    GpuBound: 'GPU-BOUND (CPU Headroom Available)',
     MemoryLatencyBound: 'MEMORY LATENCY BOUND',
     MemoryBandwidthQueueing: 'MEMORY BANDWIDTH / QUEUEING',
     L3CapacityOrCrossCcx: 'L3 CAPACITY / CROSS-CCX',
@@ -2683,6 +3067,7 @@
     TlbTranslationBound: 'TLB TRANSLATION BOUND',
     SmtContentionBound: 'SMT CONTENTION BOUND',
     CoreExecutionBound: 'CORE EXECUTION BOUND',
+    Win32OnlyClear: 'WIN32 OS DIAGNOSTICS CLEAR (NO-PMU)',
     InsufficientData: 'INSUFFICIENT DATA'
   };
 
@@ -2732,15 +3117,21 @@
     return `<span class="${cls}">${txt}</span>`;
   }
 
-  function evaluateDiagnostics() {
-    const n = state.cum.samples;
+  function evaluateDiagnostics(testOverride = null) {
+    const ov = testOverride || null;
+    const n = (ov && ov.samples !== undefined) ? ov.samples : state.cum.samples;
     const minSamples = CONFIG.advisor.minSamples;
-    const mux = getActiveMux();
+    const mux = (ov && ov.muxId)
+      ? (MUX_PRESETS.find(m => m.id === ov.muxId) || getActiveMux())
+      : getActiveMux();
     const muxId = mux.id;
-    const proc = getAttachedProcess();
-    const base = state.activeBaseline;
+    const proc = (ov && ('proc' in ov)) ? ov.proc : getAttachedProcess();
+    const base = (ov && ('base' in ov)) ? ov.base : state.activeBaseline;
 
-    const avg = k => (n > 0 ? state.cum[k] / n : 0);
+    const avg = k => {
+      if (ov && ov.avg && (k in ov.avg)) return ov.avg[k];
+      return n > 0 ? (state.cum[k] || 0) / n : 0;
+    };
     const avgC0 = avg('avgC0Pct');
     const avgInst = avg('instPerSec');
     const avgIpc = avg('ipc');
@@ -2753,22 +3144,28 @@
     const retExact = CONFIG.retiring.exactRetiring && muxId === 'full';
     const retCtxStr = `Ret ${retExact ? '' : '~'}${Math.round(avgRetPct)}% of 6-wide Zen 2 (typical C++ ceiling ~45-60%)`;
 
-    const hasIpcClock = muxId !== 'tlb';
+    const hasPmu = muxId !== 'no-pmu';
+    const hasIpcClock = hasPmu && muxId !== 'tlb';
     const hasCacheCore = muxId === 'full' || muxId === 'ipc-mem';
     const hasFull = muxId === 'full';
     const hasTlb = muxId === 'full' || muxId === 'tlb';
-    const hasL3 = muxId !== 'tlb';
+    const hasL3 = hasPmu && muxId !== 'tlb';
     const hasUarch = muxId === 'uarch';
 
     const inactiveRules = [];
-    if (!hasTlb) inactiveRules.push('PE/Heap TLB');
-    if (!hasIpcClock) inactiveRules.push('Cache/DRAM/L3', 'Clock', 'SMT/CCX');
-    else if (hasUarch) inactiveRules.push('Cache/DRAM', 'Branch%', 'L1i/L2i');
-    else if (!hasFull) inactiveRules.push('Branch%', 'Demand/HWPF Split', 'L1i Capacity');
+    if (!hasPmu) {
+      inactiveRules.push('Hardware PMCs (No-PMU: Group A Win32 active)');
+    } else {
+      if (!hasTlb) inactiveRules.push('PE/Heap TLB');
+      if (!hasIpcClock) inactiveRules.push('Cache/DRAM/L3', 'Clock', 'SMT/CCX');
+      else if (hasUarch) inactiveRules.push('Cache/DRAM', 'Branch%', 'L1i/L2i');
+      else if (!hasFull) inactiveRules.push('Branch%', 'Demand/HWPF Split', 'L1i Capacity');
+    }
 
     if (n < minSamples) {
       return {
         ready: false,
+        gpuBound: false,
         gateReason: `Collecting baseline evidence (${n}/${minSamples} samples)...`,
         primaryVerdict: 'InsufficientData',
         verdictLabel: VERDICT_LABELS.InsufficientData,
@@ -2779,14 +3176,15 @@
       };
     }
 
-    if (avgC0 < CONFIG.advisor.minAvgC0Pct && avgInst < CONFIG.advisor.minInstPerSec) {
+    if (avgC0 < CONFIG.advisor.minAvgC0Pct && (!hasPmu || avgInst < CONFIG.advisor.minInstPerSec)) {
       return {
         ready: false,
-        gateReason: `Low workload activity (avg C0 ${avgC0.toFixed(1)}% < ${CONFIG.advisor.minAvgC0Pct}%, Inst ${fmtRate(avgInst)} < 1.50 B/s).`,
+        gpuBound: false,
+        gateReason: `Low workload activity (avg C0 ${avgC0.toFixed(1)}% < ${CONFIG.advisor.minAvgC0Pct}%${hasPmu ? `, Inst ${fmtRate(avgInst)} < 1.50 B/s` : ''}).`,
         primaryVerdict: 'InsufficientData',
         verdictLabel: VERDICT_LABELS.InsufficientData,
         winningStallLine: 'workload mostly idle',
-        proofLine: `Avg C0 ${avgC0.toFixed(1)}% │ Inst ${fmtRate(avgInst)} │ Waiting for active load.`,
+        proofLine: `Avg C0 ${avgC0.toFixed(1)}%${hasPmu ? ` │ Inst ${fmtRate(avgInst)}` : ''} │ Waiting for active load.`,
         samples: n, muxLabel: mux.label, avgIpc, avgActualCpi, oooPct,
         inactiveRules, findings: [], healthyChecks: [], highCount: 0
       };
@@ -2815,8 +3213,54 @@
     const avgSys = avg('cpuSys');
     const sysSharePct = (avgSys / Math.max(0.01, avgUsr + avgSys)) * 100.0;
 
-    const avgCoreC0 = state.cum.coreC0Sum.map(v => v / n);
-    const avgCcxLat = state.cum.ccxLatSum.map(v => v / n);
+    const avgCoreC0 = (ov && ov.avgCoreC0) ? ov.avgCoreC0 : state.cum.coreC0Sum.map(v => v / n);
+    const avgCcxLat = (ov && ov.avgCcxLat) ? ov.avgCcxLat : state.cum.ccxLatSum.map(v => v / n);
+
+    // Group A (Zero-PMC Win32) rolling cumulative averages
+    const avgGpu3dPct = (ov && ('avgGpu3dPct' in ov))
+      ? ov.avgGpu3dPct
+      : (state.simGpuAvailable && state.cum.gpu3dSamples > 0 ? state.cum.gpu3dSum / state.cum.gpu3dSamples : null);
+    const avgCoreDpc = (ov && ov.avgCoreDpc) ? ov.avgCoreDpc : state.cum.coreDpcSum.map(v => v / n);
+    const avgCoreIrq = (ov && ov.avgCoreIrq) ? ov.avgCoreIrq : state.cum.coreIrqSum.map(v => v / n);
+    const avgCoreIrqRate = (ov && ov.avgCoreIrqRate) ? ov.avgCoreIrqRate : state.cum.coreIrqRateSum.map(v => v / n);
+    const avgHardPageReads = (ov && ov.avgHardPageReads !== undefined)
+      ? ov.avgHardPageReads
+      : (state.cum.hardPageReadsSum / n);
+    const avgAvailPhysPct = (ov && ov.avgAvailPhysPct !== undefined)
+      ? ov.avgAvailPhysPct
+      : (state.cum.availPhysPctSum / n);
+    const avgCommitPct = (ov && ov.avgCommitPct !== undefined)
+      ? ov.avgCommitPct
+      : (state.cum.commitPctSum / n);
+    const avgCtxSw = (ov && ov.avgCtxSw !== undefined)
+      ? ov.avgCtxSw
+      : (state.cum.ctxSwSum / n);
+    const avgSyncWaitPct = (ov && ov.avgSyncWaitPct !== undefined)
+      ? ov.avgSyncWaitPct
+      : (state.cum.syncWaitPctSum / n);
+    const topWaitReason = (ov && ov.topWaitReason)
+      ? ov.topWaitReason
+      : (state.lastSnap ? state.lastSnap.topWaitReason : 'WrQueue');
+    const priorityClass = (ov && ov.priorityClass)
+      ? ov.priorityClass
+      : (proc && proc.win32Profile ? proc.win32Profile.priorityClass : 'NORMAL');
+    const ecoQos = (ov && ov.ecoQos)
+      ? ov.ecoQos
+      : (!proc ? 'Inactive' : (state.simEcoQosSupported ? ((proc.win32Profile && proc.win32Profile.ecoQos) || 'Inactive') : 'Unknown'));
+    const seLockMemoryPrivilege = (ov && ov.seLockMemoryPrivilege)
+      ? ov.seLockMemoryPrivilege
+      : ((proc && proc.win32Profile && proc.win32Profile.seLockMemoryPrivilege) || 'Present');
+    const bgList = (ov && ov.noisyNeighbors)
+      ? ov.noisyNeighbors.map(b => ({
+          name: b.name,
+          pid: b.pid,
+          sysCpuPct: b.sysCpuPct,
+          singleCorePct: b.singleCorePct ?? (b.sysCpuPct * CONFIG.logicalCpus)
+        }))
+      : Object.values(state.cum.bgProcCpuSum || {}).map(b => {
+          const sysCpuPct = b.sysCpuSum / n;
+          return { name: b.name, pid: b.pid, sysCpuPct, singleCorePct: sysCpuPct * CONFIG.logicalCpus };
+        });
 
     const dramLatForCpi = avgL3LatCyc > 0 ? avgL3LatCyc : CONFIG.latencies.dramFallback;
     const avgTierCpi = {
@@ -2835,33 +3279,272 @@
     const pushFinding = f => findings.push(f);
     const pushHealthy = (label, metric) => healthyChecks.push({ label, metric });
 
-    // --- RULE 1: PE Code iTLB + Silent IFEO Failure (Tab 3) ---
+    // =====================================================================
+    // GROUP A: ZERO-PMC WIN32 DIAGNOSTICS (Active in EVERY preset incl. --no-pmu)
+    // =====================================================================
+
+    // --- GROUP A RULE 1: GPU-Bound (D3DKMT 3D Engine >= 97% & hottest CPU C0 < 75%) ---
+    let gpuBound = false;
+    let hottestCpuC0 = 0;
+    let hottestCpuIdx = 0;
+    for (let i = 0; i < avgCoreC0.length; i++) {
+      if (avgCoreC0[i] > hottestCpuC0) {
+        hottestCpuC0 = avgCoreC0[i];
+        hottestCpuIdx = i;
+      }
+    }
+    const hottestCpuTag = 'C' + String(hottestCpuIdx).padStart(2, '0');
+    if (avgGpu3dPct !== null) {
+      if (avgGpu3dPct >= 97.0 && hottestCpuC0 < 75.0) {
+        gpuBound = true;
+        pushFinding({
+          id: 'gpu_bound',
+          category: 'GpuBound',
+          isPrimaryAnchor: true,
+          severity: 'HI',
+          scope: '[OS / TUI]',
+          confidence: 'HIGH',
+          impact: 1.50,
+          title: `GPU-bound workload: 3D engine at ${avgGpu3dPct.toFixed(1)}% (hottest CPU ${hottestCpuTag} only ${hottestCpuC0.toFixed(0)}% C0)`,
+          keyMetric: `GPU 3D ${avgGpu3dPct.toFixed(1)}% | Max CPU ${hottestCpuC0.toFixed(0)}%`,
+          estGain: {
+            kind: 'qualitative',
+            label: 'FPS gated by GPU',
+            detail: 'Qualitative: average FPS is gated by GPU 3D saturation; CPU/RAM tuning will not raise average FPS until GPU load drops (may still aid 1% lows)'
+          },
+          why: `D3DKMTQueryStatistics reports global GPU 3D engine utilization averaging ${avgGpu3dPct.toFixed(1)}% (>=97%) while the hottest logical CPU (${hottestCpuTag}) averages only ${hottestCpuC0.toFixed(1)}% C0 (<75%). The CPU is waiting on GPU fences and Present queues.`,
+          action: `Lower GPU render resolution, enable upscaling (FSR/DLSS), or reduce shader/RT quality before chasing CPU stalls. Lowering CPI or tuning CPU/RAM will not raise average FPS while GPU-bound (though CPU tweaks may still help 1% lows during CPU-heavy spikes).`,
+          cascade: `Relieving GPU 3D saturation exposes true CPU frame-time headroom so microarchitectural optimizations translate into higher average FPS.`,
+          quickJumpTab: 1
+        });
+      } else {
+        pushHealthy('GPU <97%', `${avgGpu3dPct.toFixed(0)}%`);
+      }
+    }
+
+    // --- GROUP A RULE 2: Per-Logical-CPU DPC & Hardware IRQ Collision ---
+    let worstDpcCol = null;
+    let maxHotDpcIrq = 0;
+    let anyHotCpu = false;
+    for (let i = 0; i < avgCoreC0.length; i++) {
+      const c0 = avgCoreC0[i] || 0;
+      const dpc = avgCoreDpc[i] || 0;
+      const irq = avgCoreIrq[i] || 0;
+      const tot = dpc + irq;
+      if (c0 >= 60.0) {
+        anyHotCpu = true;
+        if (tot > maxHotDpcIrq) maxHotDpcIrq = tot;
+        if (tot >= 5.0 && (!worstDpcCol || tot > worstDpcCol.total)) {
+          worstDpcCol = { cpu: i, c0, dpc, irq, total: tot, irqRate: avgCoreIrqRate[i] || 0 };
+        }
+      }
+    }
+    if (!anyHotCpu) {
+      for (let i = 0; i < avgCoreDpc.length; i++) {
+        const tot = (avgCoreDpc[i] || 0) + (avgCoreIrq[i] || 0);
+        if (tot > maxHotDpcIrq) maxHotDpcIrq = tot;
+      }
+    }
+    if (worstDpcCol) {
+      const cpuTag = 'C' + String(worstDpcCol.cpu).padStart(2, '0');
+      const isHi = worstDpcCol.total >= 8.0;
+      pushFinding({
+        id: 'dpc_irq_collision',
+        category: 'OsKernelChurn',
+        severity: isHi ? 'HI' : 'MD',
+        scope: '[OS / TUI]',
+        confidence: 'HIGH',
+        impact: isHi ? 0.42 : 0.16,
+        title: `DPC/IRQ collision on hot CPU ${cpuTag} (${worstDpcCol.total.toFixed(1)}% while ${worstDpcCol.c0.toFixed(0)}% C0)`,
+        keyMetric: `${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ @ ${worstDpcCol.c0.toFixed(0)}% C0`,
+        estGain: {
+          kind: 'qualitative',
+          label: '1% lows / jitter',
+          detail: 'Qualitative: eliminates ISR/DPC kernel preemption and L1/L2 cache eviction on the active thread core'
+        },
+        why: `SystemProcessorPerformanceInformation reports ${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ (DPC ${worstDpcCol.dpc.toFixed(1)}% + IRQ ${worstDpcCol.irq.toFixed(1)}%, ${Math.round(worstDpcCol.irqRate).toLocaleString()} IRQ/s) while running ${worstDpcCol.c0.toFixed(0)}% C0 active load.`,
+        action: `Shift GPU, NIC, or USB MSI interrupt affinity off ${cpuTag} (Interrupt Affinity Policy Tool) or pin the target's main thread to a quiet logical CPU.`,
+        cascade: `Reduces frame-time spikes and prevents L1/L2 cache eviction caused by kernel ISR/DPC preemption.`,
+        quickJumpTab: 1,
+        openCcx: true
+      });
+    } else {
+      pushHealthy('DPC/IRQ <5%', `peak ${maxHotDpcIrq.toFixed(1)}%`);
+    }
+
+    // --- GROUP A RULE 3: Noisy Neighbor Background Process ---
+    const filteredBg = bgList
+      .filter(b => b.name && b.name.toLowerCase() !== 'system idle process' && (!proc || b.pid !== proc.pid))
+      .sort((a, b) => b.sysCpuPct - a.sysCpuPct);
+    const noisyMatch = filteredBg.find(b => b.sysCpuPct >= 5.0 || b.singleCorePct >= 50.0);
+    if (noisyMatch) {
+      pushFinding({
+        id: 'noisy_neighbor',
+        category: 'OsKernelChurn',
+        severity: 'MD',
+        scope: '[OS / TUI]',
+        confidence: 'HIGH',
+        impact: 0.18,
+        title: `Noisy neighbor: ${noisyMatch.name} [${noisyMatch.pid}] using ${noisyMatch.sysCpuPct.toFixed(1)}% CPU`,
+        keyMetric: `${noisyMatch.sysCpuPct.toFixed(1)}% sys | ${noisyMatch.singleCorePct.toFixed(0)}% 1-core`,
+        estGain: {
+          kind: 'qualitative',
+          label: 'L3 + A/B stability',
+          detail: 'Qualitative: removes background shared L3 cache eviction and A/B baseline contamination'
+        },
+        why: `SystemProcessInformation shows non-target process ${noisyMatch.name} [${noisyMatch.pid}] averaging ${noisyMatch.sysCpuPct.toFixed(1)}% total system CPU (${noisyMatch.singleCorePct.toFixed(0)}% of one logical core) during the session.`,
+        action: `Pause or close ${noisyMatch.name} [${noisyMatch.pid}] before profiling or gaming. Background CPU bursts compete for Zen 2's shared CCX L3 cache and contaminate A/B baselines.`,
+        cascade: `Stabilizes unified L3 hit rate, reduces scheduler preemption, and improves A/B baseline repeatability.`,
+        quickJumpTab: 1
+      });
+    } else {
+      const topQuiet = filteredBg[0] ? filteredBg[0].sysCpuPct : 0;
+      pushHealthy('No noisy neighbor', `top ${topQuiet.toFixed(1)}%`);
+    }
+
+    // --- GROUP A RULE 4: Priority Class & Windows 11 EcoQoS Throttling ---
+    if (proc) {
+      const isLowPrio = priorityClass === 'BELOW_NORMAL' || priorityClass === 'IDLE';
+      const isEcoActive = ecoQos === 'Active';
+      if (isLowPrio || isEcoActive) {
+        const flags = [];
+        if (isEcoActive) flags.push('EcoQoS active');
+        if (priorityClass === 'BELOW_NORMAL') flags.push('BelowNormal priority');
+        if (priorityClass === 'IDLE') flags.push('Idle priority');
+        const flagStr = flags.join(' + ');
+        pushFinding({
+          id: 'priority_or_ecoqos',
+          category: 'ClockThrottling',
+          severity: 'HI',
+          scope: '[OS / TUI]',
+          confidence: 'HIGH',
+          impact: 0.48,
+          title: `Target OS throttling active: ${flagStr}`,
+          keyMetric: `${priorityClass} | EcoQoS ${ecoQos}`,
+          estGain: {
+            kind: 'qualitative',
+            label: 'Boost / quantum',
+            detail: 'Qualitative: restores full CPU boost clocks and normal Windows scheduler quantum priority'
+          },
+          why: `GetPriorityClass / GetProcessInformation(ProcessPowerThrottling) reports ${flagStr} on ${proc.name} (PID ${proc.pid}). Windows 11 Efficiency Mode (PROCESS_POWER_THROTTLING_EXECUTION_SPEED) caps boost frequencies and deprioritizes scheduling.`,
+          action: `Disable Efficiency Mode (EcoQoS) for ${proc.name} in Task Manager / launcher settings and restore NORMAL or HIGH priority class.`,
+          cascade: `Restores full boost clocks and scheduler quantum priority, preventing silent frequency caps and thread starvation.`,
+          quickJumpTab: 4
+        });
+      } else {
+        pushHealthy('Normal QoS', `${priorityClass}${ecoQos === 'Unknown' ? '' : ', EcoQoS off'}`);
+      }
+    }
+
+    // --- GROUP A RULE 5: Hard Page Faults (Disk Paging) & Physical Memory Pressure ---
+    if (avgHardPageReads >= 20.0 || avgAvailPhysPct < 5.0) {
+      const hasLockedHuge = Boolean(proc && ((proc.hugeMiB || 0) > 0 || (proc.arenas && proc.arenas.hugeArenas.length > 0)));
+      const hugeWarn = hasLockedHuge
+        ? ` Warning: ${proc.name} holds ${fmtMiB(proc.hugeMiB)} of locked 2 MiB huge pages; over-reserving MIMALLOC_RESERVE_HUGE_OS_PAGES may be starving Windows' pageable working set.`
+        : '';
+      pushFinding({
+        id: 'hard_page_faults',
+        category: 'OsKernelChurn',
+        severity: 'HI',
+        scope: '[OS / HW]',
+        confidence: 'HIGH',
+        impact: 0.52,
+        title: `Hard disk page faults / RAM pressure (${avgHardPageReads.toFixed(1)} reads/s, ${avgAvailPhysPct.toFixed(1)}% RAM free)`,
+        keyMetric: `Hard ${avgHardPageReads.toFixed(1)}/s | Avail ${avgAvailPhysPct.toFixed(1)}%`,
+        estGain: {
+          kind: 'qualitative',
+          label: 'Eliminates I/O hitch',
+          detail: 'Qualitative: stops millisecond-scale disk paging stalls from physical memory exhaustion'
+        },
+        why: `PDH \\Memory\\Page Reads/sec averages ${avgHardPageReads.toFixed(1)}/s with ${avgAvailPhysPct.toFixed(1)}% available physical RAM (commit ${avgCommitPct.toFixed(1)}%). These are real disk-backed hard faults, distinct from harmless soft faults in NtQueryInformationProcess (${Math.round(avgPfRate).toLocaleString()}/s total).`,
+        action: `Free physical RAM (close memory-heavy background apps or add RAM) to stop pagefile thrashing.${hugeWarn}`,
+        cascade: `Eliminates millisecond-scale disk I/O hitches and severe frame-time freezes.`,
+        quickJumpTab: 4
+      });
+    } else {
+      pushHealthy(
+        avgHardPageReads < 0.5 ? 'Hard faults 0/s' : 'Hard faults <20/s',
+        `${avgHardPageReads.toFixed(1)}/s, ${avgAvailPhysPct.toFixed(0)}% RAM free`
+      );
+    }
+
+    // --- GROUP A RULE 6: Exact Large-Page Failure Root Cause (Upgrades Rule 1 Silent Failure, Zero-PMC) ---
+    let largePageFailureTriggered = false;
+    if (proc) {
+      const silentFailMods = (proc.ifeoEnabled && proc.modules)
+        ? proc.modules.filter(m => m.ifeo && !m.lp && !m.sessionToggled)
+        : [];
+      const mimallocZeroHuge = Boolean((proc.requestedHugeMiB || 0) > 0 && (proc.hugeMiB || 0) === 0);
+
+      if (silentFailMods.length > 0 || mimallocZeroHuge) {
+        largePageFailureTriggered = true;
+        const privMissing = seLockMemoryPrivilege === 'Missing';
+        const reasons = [];
+        if (silentFailMods.length > 0) {
+          const modNames = silentFailMods.slice(0, 3).map(m => m.name).join(', ');
+          reasons.push(`IFEO UseLargePages=1 fell back to 4 KiB on ${silentFailMods.length} DLL(s) (${modNames}${silentFailMods.length > 3 ? ', ...' : ''})`);
+        }
+        if (mimallocZeroHuge) {
+          reasons.push(`Mimalloc huge arenas reported 0 GiB despite ${fmtMiB(proc.requestedHugeMiB)} requested`);
+        }
+        const shortTag = silentFailMods.length > 0 ? `${silentFailMods.length} DLLs 4K` : '0 GiB Huge';
+
+        pushFinding({
+          id: 'large_page_failure_root_cause',
+          category: 'TlbTranslationBound',
+          severity: 'HI',
+          scope: '[OS / TUI]',
+          confidence: 'HIGH',
+          impact: 0.46 + (hasTlb ? avgTierCpi.l2Itlb : 0),
+          title: privMissing
+            ? `Missing SeLockMemoryPrivilege (${shortTag} failed 2 MiB backing)`
+            : `Contiguous 2 MiB RAM Fragmentation (${shortTag} failed 2 MiB backing)`,
+          keyMetric: `${privMissing ? 'Priv: Missing' : 'Priv: Present'} | ${shortTag}`,
+          estGain: {
+            kind: 'qualitative',
+            label: '2 MiB page backing',
+            detail: 'Qualitative: restores hardware 2 MiB large-page allocations to cut TLB walks and PTE cache pollution'
+          },
+          why: `${reasons.join('; ')}. OpenProcessToken / GetTokenInformation(TokenPrivileges) verified SeLockMemoryPrivilege is ${privMissing ? 'MISSING from the token' : 'PRESENT/ENABLED on the token, ruling out permissions and proving contiguous 2 MiB physical RAM fragmentation'}.`,
+          action: privMissing
+            ? `Grant "Lock Pages in Memory" (SeLockMemoryPrivilege) to your user account in secpol.msc -> Local Policies -> User Rights Assignment, then sign out and sign back in.`
+            : `SeLockMemoryPrivilege is already present. Clear Windows standby RAM (e.g. RAMMap / EmptyStandbyList) or relaunch ${proc.name} after freeing fragmented physical memory.`,
+          cascade: `Restores hardware 2 MiB page backing -> eliminates 4-level page-table walks and reduces PTE pollution in L1d/L2/L3.`,
+          quickJumpTab: silentFailMods.length > 0 ? 3 : 4
+        });
+      }
+    }
+
+    // --- GROUP A RULE 7: Context-Switch Storm & Lock Contention ---
+    if (proc && avgCtxSw >= 50000.0 && avgSyncWaitPct >= 40.0 && avgC0 < 85.0) {
+      pushFinding({
+        id: 'context_switch_storm',
+        category: 'OsKernelChurn',
+        severity: 'MD',
+        scope: '[Code / OS]',
+        confidence: 'HIGH',
+        impact: 0.19,
+        title: `Context-switch storm & lock contention (${(avgCtxSw / 1000).toFixed(1)}K cs/s, ${avgSyncWaitPct.toFixed(0)}% sync waits)`,
+        keyMetric: `${(avgCtxSw / 1000).toFixed(1)}K/s | ${avgSyncWaitPct.toFixed(0)}% ${topWaitReason}`,
+        estGain: {
+          kind: 'qualitative',
+          label: '-sys% / tail latency',
+          detail: 'Qualitative: cuts kernel scheduler overhead (sys%) and synchronization wait tail latency'
+        },
+        why: `SystemProcessInformation thread inspection shows ${proc.name} averaging ${Math.round(avgCtxSw).toLocaleString()} context switches/s with ${avgSyncWaitPct.toFixed(1)}% of waiting threads blocked on synchronization primitives (top: ${topWaitReason}; WrMutex/WrExecutive/WrPushLock/WrResource) while average CPU saturation is only ${avgC0.toFixed(1)}% (<85%).`,
+        action: `Diagnose lock contention or worker-thread oversubscription: cap worker pool threads to physical cores (${CONFIG.physicalCores.length} on ${CONFIG.cpuModel}) or replace contended OS locks with sharded or lock-free queues.`,
+        cascade: `Cuts kernel scheduler overhead (sys%), reduces cache thrashing from thread migrations, and tightens tail latency.`,
+        quickJumpTab: 4
+      });
+    }
+
+    // --- RULE 1: PE Code iTLB (4 KiB Modules when IFEO Disabled; Silent Failure upgraded to Group A Rule 6) ---
     if (proc && hasTlb) {
       const itlbGain = hasIpcClock
         ? estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Itlb, 0.85, 'flush', 'assumes -85% L2 iTLB walks from 2 MiB PE pages')
         : { kind: 'qualitative', label: 'iTLB walks', detail: 'Actual CPI unavailable in TLB-Only preset (switch to Full for Amdahl IPC range)' };
 
-      const silentFailMods = proc.ifeoEnabled
-        ? proc.modules.filter(m => m.ifeo && !m.lp && !m.sessionToggled)
-        : [];
-      if (silentFailMods.length > 0) {
-        const names = silentFailMods.slice(0, 4).map(m => m.name).join(', ');
-        pushFinding({
-          id: 'pe_ifeo_silent_fail',
-          category: 'TlbTranslationBound',
-          severity: 'HI',
-          scope: '[OS / TUI]',
-          confidence: 'HIGH',
-          impact: 0.45 + avgTierCpi.l2Itlb,
-          title: `IFEO 2 MiB silent failure (${silentFailMods.length} DLLs fell back to 4 KiB)`,
-          keyMetric: `${silentFailMods.length} DLLs 4K | iTLB ${avgL2Itlb.toFixed(2)}`,
-          estGain: itlbGain,
-          why: `Registry IFEO UseLargePages=1 is active for ${proc.name} (${names}${silentFailMods.length > 4 ? ', ...' : ''}), yet QueryWorkingSetEx reports 4 KiB pages at runtime (not pending from current session).`,
-          action: `Grant SeLockMemoryPrivilege ("Lock Pages in Memory" in secpol.msc -> reboot) to the user account, or reboot/free fragmented RAM so contiguous 2 MiB PE image allocations succeed.`,
-          cascade: `Restores hardware 2 MiB PE backing -> cuts L2 iTLB page walks (${avgL2Itlb.toFixed(2)} MPKI) and reduces page-table-walk pollution in L1d/L2/L3.`,
-          quickJumpTab: 3
-        });
-      } else {
+      if (!largePageFailureTriggered) {
         const candMods = proc.modules
           .filter(m => !m.lp && !m.protectedDriver && m.sizeMiB >= 8.0)
           .sort((a, b) => b.sizeMiB - a.sizeMiB);
@@ -3451,8 +4134,10 @@
     const feMissCpi = hasCacheCore ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
     const tlbCpi = avgTierCpi.l2Itlb + avgTierCpi.l2Dtlb;
 
-    let primaryVerdict = 'CoreExecutionBound';
-    if (!hasIpcClock && hasTlb) {
+    let primaryVerdict = hasPmu ? 'CoreExecutionBound' : 'Win32OnlyClear';
+    if (!hasPmu) {
+      primaryVerdict = 'Win32OnlyClear';
+    } else if (!hasIpcClock && hasTlb) {
       primaryVerdict = (avgL2Itlb >= 0.35 || avgL2Dtlb >= 0.50) ? 'TlbTranslationBound' : 'CoreExecutionBound';
     } else if (hasUarch) {
       if (crossCcxBouncing || lockContention || stlfBound || splitsBound) {
@@ -3485,7 +4170,7 @@
       (f.severity === 'HI' || f.severity === 'MD') && f.category === primaryVerdict
     );
 
-    if (!hasRegimeExplanation && primaryVerdict !== 'CoreExecutionBound') {
+    if (!hasRegimeExplanation && !gpuBound && primaryVerdict !== 'CoreExecutionBound' && primaryVerdict !== 'Win32OnlyClear') {
       if (primaryVerdict === 'MemoryLatencyBound') {
         const splitDesc = hasFull
           ? `Dem ${avgDemDram.toFixed(2)} (${(demShare * 100).toFixed(0)}%) + HWPF ${avgHwpfDram.toFixed(2)}`
@@ -3554,7 +4239,11 @@
 
     let winningStallLine = '';
     let proofLine = '';
-    if (!hasIpcClock) {
+    if (!hasPmu) {
+      const gpuStr = avgGpu3dPct !== null ? `GPU 3D ${avgGpu3dPct.toFixed(1)}%` : 'GPU N/A';
+      winningStallLine = `No-PMU Win32-Only: ${gpuStr} │ Max CPU ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 │ Hard Faults ${avgHardPageReads.toFixed(1)}/s`;
+      proofLine = `${gpuStr} │ Avg C0 ${avgC0.toFixed(1)}% │ Hard Faults ${avgHardPageReads.toFixed(1)}/s (Avail RAM ${avgAvailPhysPct.toFixed(1)}%) │ Priority ${priorityClass} / EcoQoS ${ecoQos}`;
+    } else if (!hasIpcClock) {
       winningStallLine = `TLB-Only 0-Mux: L2 iTLB ${avgL2Itlb.toFixed(2)} / dTLB ${avgL2Dtlb.toFixed(2)} MPKI`;
       proofLine = `L2 iTLB ${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%) │ L2 dTLB ${avgL2Dtlb.toFixed(2)} MPKI │ Inst ${fmtRate(avgInst)}`;
     } else if (hasUarch && uarchMetrics) {
@@ -3582,12 +4271,20 @@
       }
     }
 
+    let verdictLabel = VERDICT_LABELS[primaryVerdict] || primaryVerdict;
+    if (gpuBound) {
+      verdictLabel = VERDICT_LABELS.GpuBound;
+      winningStallLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% │ Hottest ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 │ CPU: ${VERDICT_LABELS[primaryVerdict] || primaryVerdict}`;
+      proofLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% (>=97%) with ${hottestCpuTag} at ${hottestCpuC0.toFixed(0)}% C0 (<75%) │ ${proofLine}`;
+    }
+
     const highCount = findings.filter(f => f.severity === 'HI').length;
     return {
       ready: true,
+      gpuBound,
       gateReason: '',
-      primaryVerdict,
-      verdictLabel: VERDICT_LABELS[primaryVerdict] || primaryVerdict,
+      primaryVerdict: gpuBound ? 'GpuBound' : primaryVerdict,
+      verdictLabel,
       winningStallLine,
       proofLine,
       samples: n,
@@ -3598,6 +4295,183 @@
       healthyChecks,
       highCount
     };
+  }
+
+  function runGroupADiagnosticTests() {
+    const baseProc = {
+      pid: 9001,
+      name: 'test_app.exe',
+      wsMiB: 1024,
+      hugeMiB: 2048,
+      requestedHugeMiB: 2048,
+      ifeoEnabled: false,
+      modules: [makeMod('game.dll', 48.0, true, true, 'RX', true, 0x7FF800000000n)],
+      arenas: buildArenas(2, [16, 12], []),
+      win32Profile: makeWin32Profile()
+    };
+    const quietDpc = new Array(12).fill(0.3);
+    const quietIrq = new Array(12).fill(0.2);
+    const quietIrqRate = new Array(12).fill(300);
+    const baseOverride = (extra = {}) => ({
+      samples: 15,
+      muxId: 'full',
+      proc: baseProc,
+      base: null,
+      avg: {
+        avgC0Pct: 40.0, instPerSec: 8e9, ipc: 1.5, actualCpi: 0.67, modeledCpi: 0.50,
+        oooHiddenCpi: 0.0, retiringPct: 28.0, effGhz: 4.2,
+        dram: 0.8, demDram: 0.5, hwpfDram: 0.3, l2pfDram: 0.2,
+        l3Hit: 2.0, l3Miss: 0.9, l3HitPct: 88.0, latNs: 48.0, latCyc: 200,
+        l2icMiss: 0.8, l2icExcl: 4.0, l1ic: 5.0, l2dcExcl: 10.0,
+        branch: 1.5, branchMissPct: 1.5, l2itlb: 0.05, l1ItlbMissPct: 0.2,
+        l2dtlb: 0.08, pageFaultRate: 120, cpuUsr: 40.0, cpuSys: 4.0,
+        ...(extra.avg || {})
+      },
+      avgCoreC0: [62, 10, 50, 8, 40, 5, 45, 6, 30, 4, 20, 2],
+      avgCcxLat: [48, 49],
+      avgGpu3dPct: 70.0,
+      avgCoreDpc: [...quietDpc],
+      avgCoreIrq: [...quietIrq],
+      avgCoreIrqRate: [...quietIrqRate],
+      avgHardPageReads: 0.0,
+      avgAvailPhysPct: 48.0,
+      avgCommitPct: 45.0,
+      avgCtxSw: 10000,
+      avgSyncWaitPct: 15.0,
+      topWaitReason: 'WrQueue',
+      priorityClass: 'NORMAL',
+      ecoQos: 'Inactive',
+      seLockMemoryPrivilege: 'Present',
+      noisyNeighbors: [{ name: 'dwm.exe', pid: 1188, sysCpuPct: 1.0 }],
+      ...extra
+    });
+
+    const results = [];
+    const check = (name, cond, detail) => results.push({ name, pass: Boolean(cond), detail });
+
+    // 1. Evidence gate (<10 samples)
+    const dGate = evaluateDiagnostics(baseOverride({ samples: 9, avgGpu3dPct: 99.0 }));
+    check('evidence_gate_under_10', !dGate.ready && dGate.findings.length === 0, `ready=${dGate.ready}, findings=${dGate.findings.length}`);
+
+    // 2. GPU-bound verdict annotation & top HI qualitative finding
+    const dGpu = evaluateDiagnostics(baseOverride({ avgGpu3dPct: 98.5 }));
+    const fGpu = dGpu.findings.find(f => f.id === 'gpu_bound');
+    check(
+      'gpu_bound_verdict_override',
+      dGpu.gpuBound && dGpu.verdictLabel === 'GPU-BOUND (CPU Headroom Available)' && fGpu && fGpu.severity === 'HI' && fGpu.estGain.kind === 'qualitative' && dGpu.findings[0].id === 'gpu_bound',
+      `verdict="${dGpu.verdictLabel}", top=${dGpu.findings[0]?.id}`
+    );
+
+    // 3. GPU-bound suppressed when hottest CPU >= 75% C0 or GPU is null (D3DKMT unavailable)
+    const dGpuHotCpu = evaluateDiagnostics(baseOverride({ avgGpu3dPct: 99.0, avgCoreC0: [82, 10, 50, 8, 40, 5, 45, 6, 30, 4, 20, 2] }));
+    const dGpuNone = evaluateDiagnostics(baseOverride({ avgGpu3dPct: null }));
+    check(
+      'gpu_bound_guards_and_none',
+      !dGpuHotCpu.gpuBound && !dGpuNone.gpuBound && !dGpuNone.findings.some(f => f.id === 'gpu_bound') && !dGpuNone.healthyChecks.some(h => h.label.includes('GPU')),
+      `hotCpuBound=${dGpuHotCpu.gpuBound}, nullGpuBound=${dGpuNone.gpuBound}`
+    );
+
+    // 4. DPC/IRQ collision HI (>=8%) and MD (>=5%) on hot CPU (>=60% C0)
+    const dpcHi = [...quietDpc]; dpcHi[0] = 6.2;
+    const irqHi = [...quietIrq]; irqHi[0] = 2.4;
+    const dDpcHi = evaluateDiagnostics(baseOverride({ avgCoreDpc: dpcHi, avgCoreIrq: irqHi }));
+    const fDpcHi = dDpcHi.findings.find(f => f.id === 'dpc_irq_collision');
+    const dpcMd = [...quietDpc]; dpcMd[0] = 4.2;
+    const irqMd = [...quietIrq]; irqMd[0] = 1.6;
+    const dDpcMd = evaluateDiagnostics(baseOverride({ avgCoreDpc: dpcMd, avgCoreIrq: irqMd }));
+    const fDpcMd = dDpcMd.findings.find(f => f.id === 'dpc_irq_collision');
+    check(
+      'dpc_irq_hot_cpu_hi_and_md',
+      fDpcHi && fDpcHi.severity === 'HI' && fDpcHi.title.includes('C00') && fDpcMd && fDpcMd.severity === 'MD',
+      `HI=${fDpcHi?.severity}, MD=${fDpcMd?.severity}`
+    );
+
+    // 5. DPC/IRQ collision does NOT fire when noisy CPU is cool (<60% C0)
+    const dpcCool = [...quietDpc]; dpcCool[1] = 8.5;
+    const irqCool = [...quietIrq]; irqCool[1] = 2.5;
+    const dDpcCool = evaluateDiagnostics(baseOverride({ avgCoreDpc: dpcCool, avgCoreIrq: irqCool }));
+    check(
+      'dpc_irq_cool_cpu_suppressed',
+      !dDpcCool.findings.some(f => f.id === 'dpc_irq_collision'),
+      `fired=${dDpcCool.findings.some(f => f.id === 'dpc_irq_collision')}`
+    );
+
+    // 6. Noisy neighbor triggers on >=5% sys CPU or >=50% single-core
+    const dNoisy = evaluateDiagnostics(baseOverride({ noisyNeighbors: [{ name: 'MsMpEng.exe', pid: 4120, sysCpuPct: 4.5 }] }));
+    const fNoisy = dNoisy.findings.find(f => f.id === 'noisy_neighbor');
+    check(
+      'noisy_neighbor_single_core_and_sys',
+      fNoisy && fNoisy.severity === 'MD' && fNoisy.title.includes('MsMpEng.exe [4120]'),
+      `title="${fNoisy?.title}"`
+    );
+
+    // 7. Priority / EcoQoS fires on BELOW_NORMAL or Active, handles Unknown gracefully
+    const dEco = evaluateDiagnostics(baseOverride({ ecoQos: 'Active' }));
+    const dUnk = evaluateDiagnostics(baseOverride({ priorityClass: 'NORMAL', ecoQos: 'Unknown' }));
+    check(
+      'priority_ecoqos_and_unknown_graceful',
+      dEco.findings.some(f => f.id === 'priority_or_ecoqos' && f.severity === 'HI') &&
+      !dUnk.findings.some(f => f.id === 'priority_or_ecoqos'),
+      `ecoFired=${dEco.findings.some(f => f.id === 'priority_or_ecoqos')}, unkFired=${dUnk.findings.some(f => f.id === 'priority_or_ecoqos')}`
+    );
+
+    // 8. Hard page faults fires on >=20/s or <5% avail phys, warns on huge pages, ignores soft faults
+    const dHard = evaluateDiagnostics(baseOverride({ avgHardPageReads: 32.0, avgAvailPhysPct: 3.5 }));
+    const fHard = dHard.findings.find(f => f.id === 'hard_page_faults');
+    const dSoftOnly = evaluateDiagnostics(baseOverride({ avg: { pageFaultRate: 4500 }, avgHardPageReads: 1.5, avgAvailPhysPct: 40.0 }));
+    check(
+      'hard_page_faults_vs_soft_and_huge_warn',
+      fHard && fHard.severity === 'HI' && fHard.action.includes('locked 2 MiB huge pages') &&
+      !dSoftOnly.findings.some(f => f.id === 'hard_page_faults'),
+      `hardFired=${Boolean(fHard)}, softOnlyFired=${dSoftOnly.findings.some(f => f.id === 'hard_page_faults')}`
+    );
+
+    // 9. Exact SeLockMemoryPrivilege Missing vs Present branching (IFEO + Mimalloc 0 GiB)
+    const ifeoFailProc = {
+      ...baseProc, ifeoEnabled: true,
+      modules: [makeMod('client.dll', 58.0, false, true, 'RX', true, 0x7FF811000000n)]
+    };
+    const dPrivMiss = evaluateDiagnostics(baseOverride({ proc: ifeoFailProc, seLockMemoryPrivilege: 'Missing' }));
+    const fPrivMiss = dPrivMiss.findings.find(f => f.id === 'large_page_failure_root_cause');
+    const miZeroProc = { ...baseProc, hugeMiB: 0, requestedHugeMiB: 4096 };
+    const dPrivFrag = evaluateDiagnostics(baseOverride({ proc: miZeroProc, seLockMemoryPrivilege: 'Present' }));
+    const fPrivFrag = dPrivFrag.findings.find(f => f.id === 'large_page_failure_root_cause');
+    check(
+      'large_page_priv_missing_vs_fragmentation',
+      fPrivMiss && fPrivMiss.title.includes('Missing SeLockMemoryPrivilege') && fPrivMiss.action.includes('secpol.msc') &&
+      fPrivFrag && fPrivFrag.title.includes('Contiguous 2 MiB RAM Fragmentation') && fPrivFrag.action.includes('standby RAM'),
+      `missing="${fPrivMiss?.title}", present="${fPrivFrag?.title}"`
+    );
+
+    // 10. Context-switch storm fires at >=50k/s + >=40% sync + <85% C0; suppressed at >=85% C0
+    const dCtx = evaluateDiagnostics(baseOverride({ avgCtxSw: 72000, avgSyncWaitPct: 52.0, topWaitReason: 'WrPushLock' }));
+    const fCtx = dCtx.findings.find(f => f.id === 'context_switch_storm');
+    const dCtxSat = evaluateDiagnostics(baseOverride({ avg: { avgC0Pct: 89.0 }, avgCtxSw: 72000, avgSyncWaitPct: 52.0 }));
+    check(
+      'context_switch_storm_and_saturation_guard',
+      fCtx && fCtx.severity === 'MD' && !dCtxSat.findings.some(f => f.id === 'context_switch_storm'),
+      `fired=${Boolean(fCtx)}, saturatedFired=${dCtxSat.findings.some(f => f.id === 'context_switch_storm')}`
+    );
+
+    // 11. --no-pmu preset runs Group A rules and Verified Healthy checks with zero PMCs
+    const dNoPmu = evaluateDiagnostics(baseOverride({ muxId: 'no-pmu', avg: { avgC0Pct: 35.0, instPerSec: 0 } }));
+    const hasHealthySet = ['GPU <97%', 'DPC/IRQ <5%', 'No noisy neighbor', 'Hard faults 0/s', 'Normal QoS']
+      .every(lbl => dNoPmu.healthyChecks.some(h => h.label === lbl));
+    check(
+      'no_pmu_group_a_and_healthy_strip',
+      dNoPmu.ready && hasHealthySet,
+      `ready=${dNoPmu.ready}, healthy=${dNoPmu.healthyChecks.map(h => h.label).join(', ')}`
+    );
+
+    // 12. All 7 Group A findings emit qualitative estGain + required fields (never fake IPC %)
+    const allGroupAFindings = [fGpu, fDpcHi, fNoisy, dEco.findings.find(f => f.id === 'priority_or_ecoqos'), fHard, fPrivMiss, fCtx];
+    const allValid = allGroupAFindings.every(f =>
+      f && f.why && f.action && f.cascade && f.scope && f.confidence && f.estGain && f.estGain.kind === 'qualitative'
+    );
+    check('all_7_rules_qualitative_schema', allValid, `validated=${allGroupAFindings.filter(Boolean).length}/7`);
+
+    const passed = results.filter(r => r.pass).length;
+    return { passed, total: results.length, results };
   }
 
   // =========================================================================
@@ -3717,7 +4591,7 @@
     }
 
     document.getElementById('hdr-mux').innerHTML = `<span class="c-cyan">${mux.label}</span>`;
-    document.getElementById('hdr-ghz').textContent = (mux.id === 'tlb' || !snap) ? 'GHz N/A' : `${snap.effGhz.toFixed(2)} GHz`;
+    document.getElementById('hdr-ghz').textContent = (mux.id === 'tlb' || mux.id === 'no-pmu' || !snap) ? 'GHz N/A' : `${snap.effGhz.toFixed(2)} GHz`;
 
     const baseEl = document.getElementById('hdr-base');
     if (state.activeBaseline) {
@@ -3806,8 +4680,9 @@
 
     const snap = state.lastSnap;
     const muxId = MUX_PRESETS[state.muxIndex].id;
-    const hasCore = muxId !== 'tlb';
+    const hasCore = muxId !== 'tlb' && muxId !== 'no-pmu';
     const hasDram = muxId === 'full' || muxId === 'ipc-mem';
+    const isNoPmu = muxId === 'no-pmu';
 
     document.getElementById('ccx-tbody').innerHTML = snap.ccx.map(c => `
       <tr>
@@ -3823,16 +4698,22 @@
     `).join('');
 
     const fmtThread = (cpuId) => {
-      const duty = hasCore ? snap.coreC0[cpuId] : snap.coreRelInstPct[cpuId];
+      const duty = (hasCore || isNoPmu) ? snap.coreC0[cpuId] : snap.coreRelInstPct[cpuId];
       const ipcVal = snap.coreIpc[cpuId];
+      const dpcIrq = (snap.coreDpcPct ? snap.coreDpcPct[cpuId] : 0) + (snap.coreIrqPct ? snap.coreIrqPct[cpuId] : 0);
+      const dpcTip = `, DPC+IRQ ${dpcIrq.toFixed(1)}%`;
       if (duty < 2.0) {
-        return `<span class="c-muted" title="CPU ${cpuId}: idle (${duty.toFixed(1)}%)">idle</span>`;
+        return `<span class="c-muted" title="CPU ${cpuId}: idle (${duty.toFixed(1)}%${dpcTip})">idle</span>`;
+      }
+      if (isNoPmu) {
+        const cls = (duty >= 60.0 && dpcIrq >= 5.0) ? 'c-yellow' : (duty >= 15.0 ? 'c-green' : 'c-dim');
+        return `<span class="${cls}" title="CPU ${cpuId}: Win32 C0 ${duty.toFixed(1)}%${dpcTip}">${Math.round(duty)}%</span>`;
       }
       if (!hasCore) {
-        return `<span class="${duty >= 15.0 ? 'c-green' : 'c-dim'}" title="CPU ${cpuId}: ${duty.toFixed(1)}% relative instruction share">${Math.round(duty)}%</span>`;
+        return `<span class="${duty >= 15.0 ? 'c-green' : 'c-dim'}" title="CPU ${cpuId}: ${duty.toFixed(1)}% relative instruction share${dpcTip}">${Math.round(duty)}%</span>`;
       }
       const ipcCls = ipcVal >= 1.25 ? 'c-green' : 'c-dim';
-      return `<span class="${ipcCls}" title="CPU ${cpuId}: IPC ${ipcVal.toFixed(2)}, C0 ${duty.toFixed(1)}%">${ipcVal.toFixed(2)}</span><span class="c-dim">(${Math.round(duty)}%)</span>`;
+      return `<span class="${ipcCls}" title="CPU ${cpuId}: IPC ${ipcVal.toFixed(2)}, C0 ${duty.toFixed(1)}%${dpcTip}">${ipcVal.toFixed(2)}</span><span class="c-dim">(${Math.round(duty)}%)</span>`;
     };
 
     const makeCcxCoreRow = (ccxId) => {
@@ -3840,8 +4721,8 @@
       const cells = physList.map(pc => {
         const s0 = pc.siblings[0];
         const s1 = pc.siblings[1];
-        const d0 = hasCore ? snap.coreC0[s0] : snap.coreRelInstPct[s0];
-        const d1 = s1 !== undefined ? (hasCore ? snap.coreC0[s1] : snap.coreRelInstPct[s1]) : 0;
+        const d0 = (hasCore || isNoPmu) ? snap.coreC0[s0] : snap.coreRelInstPct[s0];
+        const d1 = s1 !== undefined ? ((hasCore || isNoPmu) ? snap.coreC0[s1] : snap.coreRelInstPct[s1]) : 0;
         const contended = s1 !== undefined && d0 >= 15.0 && d1 >= 15.0;
         const sep = s1 === undefined
           ? ''
@@ -3850,7 +4731,7 @@
             : `<span class="c-muted"> │ </span>`);
         return `<span class="smt-pair"><span class="c-bright">P${pc.id}</span> ${fmtThread(s0)}${sep}${s1 !== undefined ? fmtThread(s1) : ''}</span>`;
       }).join('');
-      const modeTag = hasCore ? 'IPC(C0%)' : 'rel-inst%';
+      const modeTag = hasCore ? 'IPC(C0%)' : (isNoPmu ? 'Win32 C0%' : 'rel-inst%');
       return `
         <div class="core-spark-row">
           <span class="c-dim">CCX${ccxId} ${modeTag}</span>
@@ -3871,12 +4752,15 @@
     const lbl1 = document.getElementById('cpi-label-1');
     const lbl2 = document.getElementById('cpi-label-2');
 
-    if (muxId === 'tlb') {
+    if (muxId === 'tlb' || muxId === 'no-pmu') {
       if (lbl1) lbl1.textContent = 'Actual';
       if (lbl2) lbl2.textContent = 'Modeled';
-      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ Actual CPI requires cycles PMC or aperf (press 'm' for Full, IPC+Cache/DRAM, or Micro-Arch)</span>`;
+      const reason = muxId === 'no-pmu'
+        ? `Hardware PMCs disabled (--no-pmu); Group A Zero-PMC Win32 diagnostics remain active on Tabs 1, 4 &amp; 5`
+        : `Actual CPI requires cycles PMC or aperf (press 'm' for Full, IPC+Cache/DRAM, or Micro-Arch)`;
+      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ ${reason}</span>`;
       legendEl.innerHTML = '';
-      actualEl.innerHTML = `<span class="c-muted">N/A in TLB-Only (0-Mux) preset</span>`;
+      actualEl.innerHTML = `<span class="c-muted">N/A in ${getActiveMux().label} preset</span>`;
       modeledEl.innerHTML = '';
       return;
     }
@@ -3981,7 +4865,7 @@
     if (!snap) return;
     const muxId = MUX_PRESETS[state.muxIndex].id;
     const base = state.activeBaseline;
-    const hasIpc = muxId !== 'tlb';
+    const hasIpc = muxId !== 'tlb' && muxId !== 'no-pmu';
     const isUarch = muxId === 'uarch';
     const avgIpc = state.cum.samples > 0 ? state.cum.ipc / state.cum.samples : snap.ipc;
 
@@ -4000,7 +4884,9 @@
         `<span class="c-muted">│</span>` +
         `<span class="c-dim">Inst</span> <span>${fmtRate(snap.instPerSec)}</span>` +
         `<span class="c-dim">${isUarch ? 'aperf' : 'Cyc'}</span> <span>${fmtRate(isUarch ? snap.aperfPerSec : snap.cycPerSec)}</span>`
-      : `<span class="c-dim">N/A (TLB-Only 0-Mux) │ Inst ${fmtRate(snap.instPerSec)}</span>`;
+      : (muxId === 'no-pmu'
+        ? `<span class="c-dim">N/A (No-PMU Win32-Only) │ Zero-PMC Advisor Active</span>`
+        : `<span class="c-dim">N/A (TLB-Only 0-Mux) │ Inst ${fmtRate(snap.instPerSec)}</span>`);
     document.getElementById('g-ipc-stats').innerHTML = ipcHeader;
 
     renderBrailleGraph(
@@ -4267,16 +5153,23 @@
       }).join('');
     }
 
-    // 4. Bottom 1-line OS Summary
+    // 4. Bottom 1-line OS Summary (strict anti-clutter: append GPU XX% when D3DKMT available; color yellow/red only >=97%)
     const proc = getAttachedProcess();
     const footerEl = document.getElementById('overview-footer');
     const pfCls = snap.pfRate >= 2000 ? 'c-red' : (snap.pfRate >= 500 ? 'c-yellow' : '');
+    const gpuHtml = snap.gpu3dPct !== null
+      ? (() => {
+          const gpuCls = snap.gpu3dPct >= 98.5 ? 'c-red c-bright' : (snap.gpu3dPct >= 97.0 ? 'c-yellow c-bright' : '');
+          return `<span class="sep">│</span>GPU <span class="${gpuCls}">${Math.round(snap.gpu3dPct)}%</span>`;
+        })()
+      : '';
     if (proc) {
       const totalReal = proc.hugeMiB + proc.wsMiB;
       const hugePct = totalReal > 0 ? ((proc.hugeMiB / totalReal) * 100).toFixed(0) : '0';
       const smallPct = (100 - Number(hugePct)).toFixed(0);
       footerEl.innerHTML =
         `<span>CPU <span class="c-bright">${(snap.cpuUsr + snap.cpuSys).toFixed(1)}%</span> <span class="c-dim">(usr ${snap.cpuUsr.toFixed(1)}% / sys <span class="${snap.cpuSys >= 15 ? 'c-yellow' : ''}">${snap.cpuSys.toFixed(1)}%</span>)</span>` +
+        `${gpuHtml}` +
         `<span class="sep">│</span>Page Faults <span class="${pfCls}">${snap.pfRate.toLocaleString()}/s</span>` +
         `<span class="sep">│</span>RAM 2 MiB: <span class="${proc.hugeMiB > 0 ? 'c-green' : 'c-yellow'}">${fmtMiB(proc.hugeMiB)} (${hugePct}%)</span> vs 4 KiB: ${fmtMiB(proc.wsMiB)} (${smallPct}%)</span>` +
         `<span class="c-dim">Real Physical: ${fmtMiB(totalReal)}</span>`;
@@ -4284,6 +5177,7 @@
       footerEl.innerHTML =
         `<span>Scope <span class="c-bright">System-Wide (12 Logical CPUs)</span>` +
         `<span class="sep">│</span>CPU usr ${snap.cpuUsr.toFixed(1)}% / sys ${snap.cpuSys.toFixed(1)}%` +
+        `${gpuHtml}` +
         `<span class="sep">│</span>Page Faults ~${snap.pfRate.toLocaleString()}/s</span>` +
         `<span class="c-dim">Press 'p' or '4' to attach a process</span>`;
     }
@@ -4296,7 +5190,7 @@
     const base = state.activeBaseline;
     const hasFull = muxId === 'full';
     const hasCache = muxId === 'full' || muxId === 'ipc-mem';
-    const hasL3 = muxId !== 'tlb';
+    const hasL3 = muxId !== 'tlb' && muxId !== 'no-pmu';
     const instM = snap.instPerSec / 1000.0;
 
     const rows = [
@@ -4648,6 +5542,15 @@
     const totalReal = proc.wsMiB + proc.hugeMiB;
 
     document.getElementById('mem-layer1-tag').textContent = `${proc.name} (PID ${proc.pid}) │ NtQueryInformationProcess`;
+    const isNonDefaultQos = (snap.priorityClass && snap.priorityClass !== 'NORMAL') || snap.ecoQos === 'Active';
+    const qosWarn = snap.priorityClass === 'BELOW_NORMAL' || snap.priorityClass === 'IDLE' || snap.ecoQos === 'Active';
+    const qosLabel = [
+      snap.priorityClass,
+      snap.ecoQos === 'Active' ? 'EcoQoS Active' : (snap.ecoQos === 'Unknown' ? 'EcoQoS Unknown' : null)
+    ].filter(Boolean).join(' │ ');
+    const qosRowHtml = isNonDefaultQos
+      ? `<tr><td class="k">Priority / QoS</td><td class="v ${qosWarn ? 'c-red c-bright' : 'c-cyan'}">${qosLabel}</td></tr>`
+      : '';
     document.getElementById('mem-os-tbody').innerHTML = `
       <tr><td class="k">Private Working Set</td><td class="v c-bright">${fmtMiB(proc.wsMiB)}</td></tr>
       <tr><td class="k">Shared Working Set</td><td class="v c-dim">${fmtMiB(proc.sharedMiB)}</td></tr>
@@ -4656,12 +5559,18 @@
       <tr><td class="k">Total Real Physical RAM</td><td class="v c-cyan c-bright">${fmtMiB(totalReal)}</td></tr>
       <tr><td class="k">Virtual Commit / Peak</td><td class="v">${fmtMiB(proc.commitMiB)} <span class="c-dim">/ ${fmtMiB(proc.peakCommitMiB)}</span></td></tr>
       <tr><td class="k">CPU (usr / sys / elapsed)</td><td class="v">${fmtTimeSec(proc.userSec)} / ${fmtTimeSec(proc.sysSec)} <span class="c-dim">/ ${fmtTimeSec(proc.elapsedSec)} (${(snap.cpuUsr + snap.cpuSys).toFixed(1)}%)</span></td></tr>
+      ${qosRowHtml}
     `;
 
     const pfCls = snap.pfRate >= 2000 ? 'c-red' : (snap.pfRate >= 500 ? 'c-yellow' : 'c-green');
     const pfGraphColor = snap.pfRate >= 2000 ? 'var(--red)' : (snap.pfRate >= 500 ? 'var(--yellow)' : 'var(--cyan)');
+    const hardCls = (snap.hardPageReadsPerSec >= 20.0 || snap.availPhysPct < 5.0)
+      ? 'c-red c-bright'
+      : (snap.hardPageReadsPerSec >= 5.0 ? 'c-yellow' : 'c-dim');
     document.getElementById('g-pf-stats').innerHTML =
       `<span class="${pfCls} c-bright">+${snap.pfRate.toLocaleString()}/s</span>` +
+      `<span class="c-muted">│</span>` +
+      `<span class="c-dim">Hard Faults (Disk)</span> <span class="${hardCls}">${snap.hardPageReadsPerSec.toFixed(1)}/s</span>` +
       `<span class="c-muted">│</span>` +
       `<span class="c-dim">total ${proc.pageFaults.toLocaleString()}</span>`;
 
@@ -4754,8 +5663,8 @@
             <div style="margin-bottom: 4px;">${arenaRows}${osRowsHtml}</div>
             <hr class="h-rule-tight">
             <table class="kv-table" style="font-size: 12px;">
-              <tr><td class="k">Active Huge Blocks</td><td class="v c-bright">${actBlocks}/${totalBlocks} (${fmtMiB(actBlocks * 32)}, ${((actBlocks / totalBlocks) * 100).toFixed(1)}%)</td></tr>
-              <tr><td class="k">Peak Touched Blocks</td><td class="v c-yellow">${tchBlocks}/${totalBlocks} (${fmtMiB(tchBlocks * 32)}, ${((tchBlocks / totalBlocks) * 100).toFixed(1)}%)</td></tr>
+              <tr><td class="k">Active Huge Blocks</td><td class="v c-bright">${actBlocks}/${totalBlocks} (${fmtMiB(actBlocks * 32)}, ${totalBlocks > 0 ? ((actBlocks / totalBlocks) * 100).toFixed(1) : '0.0'}%)</td></tr>
+              <tr><td class="k">Peak Touched Blocks</td><td class="v c-yellow">${tchBlocks}/${totalBlocks} (${fmtMiB(tchBlocks * 32)}, ${totalBlocks > 0 ? ((tchBlocks / totalBlocks) * 100).toFixed(1) : '0.0'}%)</td></tr>
               <tr><td class="k">Real Free Headroom</td><td class="v ${freeCls}">${freeBlocks}/${totalBlocks} (${fmtMiB(freeBlocks * 32)}, ${freePct}%)</td></tr>
               <tr><td class="k">4 KiB OS Arenas</td><td class="v">${osArenaSummary}</td></tr>
             </table>
@@ -4839,9 +5748,11 @@
     const detailEl = document.getElementById('advisor-detail');
     const healthyEl = document.getElementById('advisor-healthy');
 
-    const vCls = diag.primaryVerdict === 'CoreExecutionBound'
+    const vCls = (diag.primaryVerdict === 'CoreExecutionBound' || diag.primaryVerdict === 'Win32OnlyClear')
       ? 'c-green c-bright'
-      : (diag.primaryVerdict === 'InsufficientData' ? 'c-dim c-bright' : 'c-yellow c-bright');
+      : (diag.primaryVerdict === 'InsufficientData'
+        ? 'c-dim c-bright'
+        : (diag.primaryVerdict === 'GpuBound' ? 'c-red c-bright' : 'c-yellow c-bright'));
     const inactiveNote = diag.inactiveRules.length > 0
       ? ` <span class="c-muted">│ Skipped in ${diag.muxLabel}: ${diag.inactiveRules.join(', ')}</span>`
       : '';
@@ -4974,6 +5885,26 @@
     document.getElementById('modal-admin-val').innerHTML = state.isAdmin
       ? `<span class="c-green">Elevated (Admin)</span>`
       : `<span class="c-yellow">Unelevated (Read-Only IFEO)</span>`;
+    const gpuValEl = document.getElementById('modal-gpu-val');
+    if (gpuValEl) {
+      gpuValEl.innerHTML = state.simGpuAvailable
+        ? `<span class="c-green">D3DKMT Active</span>`
+        : `<span class="c-yellow">Unsupported (None)</span>`;
+    }
+    const ecoValEl = document.getElementById('modal-ecoqos-val');
+    if (ecoValEl) {
+      ecoValEl.innerHTML = state.simEcoQosSupported
+        ? `<span class="c-green">Win11 22H2+</span>`
+        : `<span class="c-yellow">Pre-22H2 (Unknown)</span>`;
+    }
+    const privValEl = document.getElementById('modal-priv-val');
+    if (privValEl) {
+      const p = getAttachedProcess();
+      const priv = (p && p.win32Profile && p.win32Profile.seLockMemoryPrivilege) || 'Present';
+      privValEl.innerHTML = priv === 'Present'
+        ? `<span class="c-green">Present</span>`
+        : `<span class="c-red">Missing</span>`;
+    }
     document.getElementById('modal-cal-val').innerHTML = CONFIG.calibrated
       ? `<span class="c-green">Calibrated (${CONFIG.latencies.dramFallback.toFixed(0)} cyc DRAM)</span>`
       : `~1s pointer-chase + branch`;
@@ -4991,9 +5922,9 @@
         <table class="kv-table" style="margin-bottom: 10px; font-size: 12px;">
           <tr><td class="k c-bright">1 / 2 / 3 / 4 / 5</td><td class="v">Switch tabs (Overview, Cache, TLB &amp; Pages, Memory, Advisor)</td></tr>
           <tr><td class="k c-bright">p / d</td><td class="v">Open native Win32 Process Picker ('/' filter, 's' sort, 'Enter' attach) / Detach to System-Wide</td></tr>
-          <tr><td class="k c-bright">m</td><td class="v">Cycle PMU Mux preset: Full (3-Mux) -&gt; TLB-Only (0-Mux) -&gt; IPC+Cache/DRAM (0-Mux) -&gt; Micro-Arch (0-Mux)</td></tr>
+          <tr><td class="k c-bright">m</td><td class="v">Cycle PMU Mux preset: Full (3-Mux) -&gt; TLB-Only (0-Mux) -&gt; IPC+Cache/DRAM (0-Mux) -&gt; Micro-Arch (0-Mux) -&gt; No-PMU (Win32)</td></tr>
           <tr><td class="k c-bright">c</td><td class="v">Toggle global CCX0 vs CCX1 + physical-core SMT sibling IPC/C0% strip (above all tabs)</td></tr>
-          <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', 15s Timed 'T', Exact Ret 'e', Calibrate 'C', Admin 'a', Reset 'r')</td></tr>
+          <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', Timed 'T', Exact Ret 'e', Calibrate 'C', Admin 'a', Group A 'g/o/l/v', Reset 'r')</td></tr>
           <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate PE modules (Tab 3), Advisor findings (Tab 5), or Process Picker</td></tr>
           <tr><td class="k c-bright">Space / Enter / U</td><td class="v">Pause (global) │ Toggle DLL IFEO (Tab 3) │ Toggle Master UseLargePages ('U', Tab 3) │ Jump (Tab 5)</td></tr>
           <tr><td class="k c-bright">? / q</td><td class="v">Open this reference modal / Exit cleanly</td></tr>
@@ -5081,13 +6012,16 @@ Active Zen 2 Latencies (${CONFIG.calibrated ? 'Calibrated via --calibrate' : 'De
       body.innerHTML = `
         <div class="section-label"><span>Rust Crate Layout &amp; Threading Architecture</span></div>
         <pre class="code-block">zen2top/src/
-  main.rs                 # clap CLI, RAII terminal guard, non-blocking ~20 FPS ratatui loop
+  main.rs                 # clap CLI (incl. --no-pmu), RAII terminal guard, ~20 FPS ratatui loop
   config/mod.rs           # Auto-generated config.toml (latencies, retiring, advisor, module threshold)
   pmu/{mod,uprof,csv}.rs  # PmuBackend trait, AMDuProfPcm runner, report_core/l3 parser, SHS-* unlock
-  win32/{handle,process,topology,ifeo}.rs  # RAII HANDLEs, Toolhelp32, RelationProcessorCore, HKLM IFEO
+  win32/{handle,process,topology,ifeo,gpu,sys_perf,memory,privileges}.rs
+                          # RAII HANDLEs, Toolhelp32, RelationProcessorCore, HKLM IFEO,
+                          # Group A Zero-PMC: D3DKMT GPU 3D (gdi32.dll), NtQuerySystemInformation
+                          # DPC/IRQ &amp; Thread Wait/CtxSw, EcoQoS/Priority, PDH Page Reads/s, SeLockMemoryPrivilege
   allocator/{mod,tier0_mimalloc,generic_mimalloc}.rs  # PE byte-pattern RVA resolver + bitmap reader
   metrics/{cpi_stack,history}.rs   # Two-line Exclusive CPI Stack, Retiring %, rolling buffers
-  diagnostics/mod.rs      # Deterministic DiagnosticEngine (16 rules: 11 core/OS + 5 Micro-Arch 0-Mux)
+  diagnostics/mod.rs      # Deterministic DiagnosticEngine (22 rules: 10 core/OS + 5 Micro-Arch + 7 Group A Zero-PMC)
   calibrate/mod.rs        # --calibrate ~1s pointer-chase + 50/50 branch probe
   baseline/mod.rs         # Raw cumulative totals JSON persistence + #[serde(default)] uarch fields
   ui/{chrome,overview,cache,tlb,memory,advisor,modals}.rs</pre>
@@ -5520,13 +6454,43 @@ min_inst_per_sec = 1500000000
     };
   });
 
+  function runAndShowGroupATests() {
+    const report = runGroupADiagnosticTests();
+    const out = document.getElementById('calibrate-output');
+    if (out) {
+      out.style.display = 'block';
+      const lines = report.results.map(r => `${r.pass ? '[PASS]' : '[FAIL]'} ${r.name}: ${r.detail}`).join('\n');
+      const cls = report.passed === report.total ? 'c-green' : 'c-red';
+      out.innerHTML = `<pre class="code-block ${cls}">Group A Zero-PMC Win32 Diagnostics Self-Test: ${report.passed}/${report.total} PASSED\n${lines}</pre>`;
+    }
+    const badge = document.getElementById('modal-tests-val');
+    if (badge) {
+      badge.innerHTML = report.passed === report.total
+        ? `<span class="c-green">${report.passed}/${report.total} PASS</span>`
+        : `<span class="c-red">${report.passed}/${report.total} FAIL</span>`;
+    }
+    showToast(`Group A tests: ${report.passed}/${report.total} passed`);
+  }
+
+  function toggleTargetLockPriv() {
+    const p = getAttachedProcess();
+    if (!p || !p.win32Profile) {
+      showToast('Attach a process first to toggle SeLockMemoryPrivilege');
+      return;
+    }
+    p.win32Profile.seLockMemoryPrivilege = p.win32Profile.seLockMemoryPrivilege === 'Present' ? 'Missing' : 'Present';
+    generateSample(false);
+    showToast(`${p.name} SeLockMemoryPrivilege: ${p.win32Profile.seLockMemoryPrivilege}`);
+    renderAll();
+  }
+
   document.querySelectorAll('[data-b-act]').forEach(btn => {
     btn.onclick = () => {
       const a = btn.dataset.bAct;
       if (a === 'capture') { captureBaseline(); closeModal(); }
       else if (a === 'timed-15') { startTimedCapture(15); }
-      else if (a === 'load-4k') { state.activeBaseline = { ...BASELINE_PRESETS['4K-Default'] }; state.lastDiag = evaluateDiagnostics(); showToast('Loaded deadlock_4k_default.json'); closeModal(); }
-      else if (a === 'load-2m') { state.activeBaseline = { ...BASELINE_PRESETS['2MiB-IFEO'] }; state.lastDiag = evaluateDiagnostics(); showToast('Loaded deadlock_2m_ifeo.json'); closeModal(); }
+      else if (a === 'load-4k') { state.activeBaseline = deserializeBaselineJson(BASELINE_PRESETS['4K-Default']); state.lastDiag = evaluateDiagnostics(); showToast('Loaded deadlock_4k_default.json'); closeModal(); }
+      else if (a === 'load-2m') { state.activeBaseline = deserializeBaselineJson(BASELINE_PRESETS['2MiB-IFEO']); state.lastDiag = evaluateDiagnostics(); showToast('Loaded deadlock_2m_ifeo.json'); closeModal(); }
       else if (a === 'clear') { state.activeBaseline = null; state.lastDiag = evaluateDiagnostics(); showToast('Cleared active baseline'); closeModal(); }
       else if (a === 'interval') { cycleInterval(); }
       else if (a === 'pause') { togglePause(); }
@@ -5543,6 +6507,20 @@ min_inst_per_sec = 1500000000
         showToast(state.isAdmin ? 'Admin elevation ON (IFEO editable)' : 'Admin elevation OFF (IFEO read-only)');
         renderAll();
       }
+      else if (a === 'toggle-gpu-api') {
+        state.simGpuAvailable = !state.simGpuAvailable;
+        generateSample(false);
+        showToast(state.simGpuAvailable ? 'D3DKMT GPU telemetry ON' : 'D3DKMT GPU telemetry OFF (None fallback)');
+        renderAll();
+      }
+      else if (a === 'toggle-ecoqos-api') {
+        state.simEcoQosSupported = !state.simEcoQosSupported;
+        generateSample(false);
+        showToast(state.simEcoQosSupported ? 'Win11 22H2+ EcoQoS API ON' : 'Pre-22H2 EcoQoS fallback (Unknown)');
+        renderAll();
+      }
+      else if (a === 'toggle-lock-priv') { toggleTargetLockPriv(); }
+      else if (a === 'run-tests') { runAndShowGroupATests(); }
       else if (a === 'calibrate') { startCalibration(); }
     };
   });
@@ -5628,8 +6606,8 @@ min_inst_per_sec = 1500000000
     if (state.openModal === 'baseline') {
       if (e.key === 'S' || e.key === 's') { captureBaseline(); closeModal(); }
       else if (e.key === 'T' || e.key === 't') { startTimedCapture(15); }
-      else if (e.key === '1' || e.key === 'L' || e.key === 'l') { state.activeBaseline = { ...BASELINE_PRESETS['4K-Default'] }; state.lastDiag = evaluateDiagnostics(); closeModal(); }
-      else if (e.key === '2') { state.activeBaseline = { ...BASELINE_PRESETS['2MiB-IFEO'] }; state.lastDiag = evaluateDiagnostics(); closeModal(); }
+      else if (e.key === '1') { state.activeBaseline = deserializeBaselineJson(BASELINE_PRESETS['4K-Default']); state.lastDiag = evaluateDiagnostics(); closeModal(); }
+      else if (e.key === '2') { state.activeBaseline = deserializeBaselineJson(BASELINE_PRESETS['2MiB-IFEO']); state.lastDiag = evaluateDiagnostics(); closeModal(); }
       else if (e.key === 'B') { state.activeBaseline = null; state.lastDiag = evaluateDiagnostics(); closeModal(); }
       else if (e.key === 'i') { cycleInterval(); }
       else if (e.key === ' ') { e.preventDefault(); togglePause(); }
@@ -5637,6 +6615,10 @@ min_inst_per_sec = 1500000000
       else if (e.key === 'u') { state.pmcLocked = !state.pmcLocked; closeModal(); }
       else if (e.key === 'e' || e.key === 'E') { CONFIG.retiring.exactRetiring = !CONFIG.retiring.exactRetiring; generateSample(false); renderAll(); }
       else if (e.key === 'a' || e.key === 'A') { state.isAdmin = !state.isAdmin; renderAll(); }
+      else if (e.key === 'g' || e.key === 'G') { state.simGpuAvailable = !state.simGpuAvailable; generateSample(false); renderAll(); }
+      else if (e.key === 'o' || e.key === 'O') { state.simEcoQosSupported = !state.simEcoQosSupported; generateSample(false); renderAll(); }
+      else if (e.key === 'l' || e.key === 'L') { toggleTargetLockPriv(); }
+      else if (e.key === 'v' || e.key === 'V') { runAndShowGroupATests(); }
       else if (e.key === 'C' || e.key === 'c') { startCalibration(); }
       else if (e.key === 'b') closeModal();
       return;
@@ -5763,7 +6745,9 @@ min_inst_per_sec = 1500000000
     computeMicroArchMetrics,
     parseReportCoreCsv,
     deserializeBaselineJson,
+    makeWin32Profile,
     evaluateDiagnostics,
+    runGroupADiagnosticTests,
     generateSample,
     resetHistoryAndSeed,
     cycleMux,
