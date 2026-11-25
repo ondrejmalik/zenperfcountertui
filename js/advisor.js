@@ -280,7 +280,7 @@
 
     const ctx = {
       proc, base, plan,
-      hasPmu, hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
+      hasPmu, hasL3: hasPmu, hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
       hasBranches, hasItlb, hasDtlb, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits, hasExactRetiring,
       uarchRawOverride: ov ? (ov.uarchRaw || null) : null,
       avgC0, avgInst, avgIpc, avgActualCpi, avgModeledCpi, avgOooCpi, avgRetPct, avgGhz,
@@ -306,7 +306,7 @@
       demandDramChase, demShare, branchBound, icacheBound
     } = pmuRes;
 
-    const uarchRes = evaluateMicroArchRules(ctx);
+    const uarchRes = evaluateMicroArchRules(ctx, pmuRes);
     const {
       uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound,
       crossCcxCpi, stlfCpi
