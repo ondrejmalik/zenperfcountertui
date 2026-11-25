@@ -11,7 +11,13 @@
 
   const state = {
     activeTab: 1,
-    muxIndex: 0,
+    enabledPacks: [...CONFIG.defaultPacks],
+    noPmu: false,
+    packPicker: {
+      draftPacks: null,
+      selectedIdx: 0,
+      guardrailNote: ''
+    },
     ccxOpen: false,
     paused: false,
     intervalSec: 1,
@@ -40,7 +46,7 @@
     affinityModalTid: null,
     memShowVaMap: false,
     originalAffinityByPid: {}, // { [pid]: { [tid]: originalMask } }
-    openModal: null,     // null | 'picker' | 'baseline' | 'help' | 'quit' | 'ifeo' | 'affinity' | 'burst'
+    openModal: null,     // null | 'picker' | 'packs' | 'baseline' | 'help' | 'quit' | 'ifeo' | 'affinity' | 'burst'
     helpTab: 'keys',
 
     // Tab 7 Profiler state (Live ETW On-CPU/Off-CPU + AMDuProfCLI Burst Engine)

@@ -1,12 +1,14 @@
-// Hardware PMU (Rules 1-11) and Micro-Arch/Contention (Rules 12-16) diagnostic rules
+// Hardware PMU (Rules 1-11) and Micro-Arch/Contention (Rules 12-16) pack-gated diagnostic rules
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, state, computeMicroArchMetrics, fmtMiB, fmtRate } = Z;
+  const { CONFIG, state, computeMicroArchMetrics, formatMuxShort, fmtMiB } = Z;
 
   function evaluatePmuRules(ctx, groupA) {
     const {
-      proc, base, mux, muxId, hasIpcClock, hasCacheCore, hasFull, hasTlb, hasL3,
+      proc, base, plan,
+      hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Ic, hasL2Hwpf,
+      hasBranches, hasItlb, hasDtlb,
       avgC0, avgIpc, avgActualCpi, avgGhz, avgDram, avgDemDram, avgHwpfDram, avgL2pfDram,
       avgL3Miss, avgL3HitPct, avgL3LatNs, avgL3LatCyc, avgL2IcMiss, avgL1Ic,
       avgBranch, avgBranchPct, avgL2Itlb, avgL1ItlbPct, avgL2Dtlb,
@@ -15,11 +17,11 @@
     } = ctx;
     const { largePageFailureTriggered } = groupA;
 
-    // --- RULE 1: PE Code iTLB (4 KiB Modules when IFEO Disabled; Silent Failure upgraded to Group A Rule 6) ---
-    if (proc && hasTlb) {
-      const itlbGain = hasIpcClock
+    // --- RULE 1: PE Code iTLB (gated strictly on ItlbFull) ---
+    if (proc && hasItlb) {
+      const itlbGain = hasFreeBase
         ? Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Itlb, 0.85, 'flush', 'assumes -85% L2 iTLB walks from 2 MiB PE pages')
-        : { kind: 'qualitative', label: 'iTLB walks', detail: 'Actual CPI unavailable in TLB-Only preset (switch to Full for Amdahl IPC range)' };
+        : { kind: 'qualitative', label: 'iTLB walks', detail: 'Actual CPI requires Free Base MSRs' };
 
       if (!largePageFailureTriggered) {
         const candMods = proc.modules
@@ -47,15 +49,15 @@
           pushHealthy('L2 iTLB', `${avgL2Itlb.toFixed(2)} MPKI${lpCount > 0 ? ` (${lpCount} DLLs 2M)` : ''}`);
         }
       }
-    } else if (hasTlb && avgL2Itlb < 0.35) {
+    } else if (hasItlb && avgL2Itlb < 0.35) {
       pushHealthy('L2 iTLB', `${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%)`);
     }
 
-    // --- RULE 2: Heap dTLB + Mimalloc Spillover (Tab 3 + Tab 4) ---
+    // --- RULE 2: Heap dTLB + Mimalloc Spillover (dTLB gated strictly on DtlbFull) ---
     if (proc) {
-      const dtlbGain = (hasIpcClock && hasTlb)
+      const dtlbGain = (hasFreeBase && hasDtlb)
         ? Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Dtlb, 0.80, 'mlp', 'assumes -80% L2 dTLB walks from 2 MiB heap arenas')
-        : { kind: 'qualitative', label: 'dTLB / faults', detail: 'Requires both cycles and dTLB PMCs for Amdahl IPC range' };
+        : { kind: 'qualitative', label: 'dTLB / faults', detail: 'Enable DtlbFull pack (m) for Amdahl IPC range' };
 
       if (proc.arenas) {
         const osArenaCnt = proc.arenas.osArenas.length;
@@ -71,7 +73,7 @@
             severity: osArenaCnt > 0 ? 'HI' : 'MD',
             scope: '[OS / TUI]',
             confidence: 'HIGH',
-            impact: 0.14 + (hasTlb ? avgTierCpi.l2Dtlb : 0.03),
+            impact: 0.14 + (hasDtlb ? avgTierCpi.l2Dtlb : 0.03),
             title: osArenaCnt > 0
               ? `Mimalloc spilled into ${osArenaCnt} x 4 KiB OS arena${osArenaCnt > 1 ? 's' : ''}`
               : `Mimalloc 2 MiB huge-arena headroom low (${freePct.toFixed(1)}% free)`,
@@ -79,14 +81,14 @@
             estGain: dtlbGain,
             why: `Mimalloc has ${osArenaCnt} dynamic 4 KiB OS arena(s) and ${freeHugeBlk}/${totalHugeBlk} free 32 MiB huge blocks (${freePct.toFixed(1)}% headroom) under ${proc.name}.`,
             action: `Raise MIMALLOC_RESERVE_HUGE_OS_PAGES by +1 to +2 GiB so peak allocations stay inside locked 2 MiB arenas without spilling to 4 KiB OS memory.`,
-            cascade: `Cuts L2 dTLB page walks (${hasTlb ? avgL2Dtlb.toFixed(2) + ' MPKI' : 'TLB preset off'}) and eliminates soft page-fault churn on heap growth.`,
+            cascade: `Cuts L2 dTLB page walks (${hasDtlb ? avgL2Dtlb.toFixed(2) + ' MPKI' : 'DtlbFull pack off'}) and eliminates soft page-fault churn on heap growth.`,
             quickJumpTab: 4
           });
         } else {
           pushHealthy('Mimalloc headroom', `${freePct.toFixed(0)}% free (0 x 4K)`);
         }
-        if (hasTlb && avgL2Dtlb < 0.50) pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
-      } else if (hasTlb && proc.hugeMiB === 0 && avgL2Dtlb >= 0.50 && proc.wsMiB >= 512) {
+        if (hasDtlb && avgL2Dtlb < 0.50) pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
+      } else if (hasDtlb && proc.hugeMiB === 0 && avgL2Dtlb >= 0.50 && proc.wsMiB >= 512) {
         pushFinding({
           id: 'crt_heap_dtlb',
           category: 'TlbTranslationBound',
@@ -102,17 +104,17 @@
           cascade: `Cuts L2 dTLB walks, lowers Page Faults/s (${Math.round(avgPfRate).toLocaleString()}/s), and removes page-table entry (PTE) pollution from L1d/L2/L3.`,
           quickJumpTab: 4
         });
-      } else if (hasTlb && avgL2Dtlb < 0.50) {
+      } else if (hasDtlb && avgL2Dtlb < 0.50) {
         pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
       }
-    } else if (hasTlb && avgL2Dtlb < 0.50) {
+    } else if (hasDtlb && avgL2Dtlb < 0.50) {
       pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
     }
 
-    // --- RULE 3: SMT Sibling Contention on Hot Core (Tab 1 / Global CCX Strip) ---
+    // --- RULE 3: SMT Sibling Contention on Hot Core (Always-On Free Base mperf C0%) ---
     let smtContendedHot = false;
     let hotCoreProof = '';
-    if (hasIpcClock) {
+    if (hasFreeBase) {
       const physStats = CONFIG.physicalCores.map(pc => {
         const s0 = pc.siblings[0] !== undefined ? avgCoreC0[pc.siblings[0]] : 0;
         const s1 = pc.siblings[1] !== undefined ? avgCoreC0[pc.siblings[1]] : 0;
@@ -154,9 +156,9 @@
       }
     }
 
-    // --- RULE 4: Cross-CCX Thread Spread ---
+    // --- RULE 4: Cross-CCX Thread Spread (Always-On Free Base C0% + CCX L3 Hit/Latency) ---
     let crossCcxActive = false;
-    if (hasCacheCore && hasL3) {
+    if (hasFreeBase) {
       const ccx0Active = CONFIG.physicalCores.filter(p => p.ccx === 0).flatMap(p => p.siblings).filter(id => avgCoreC0[id] >= 15.0);
       const ccx1Active = CONFIG.physicalCores.filter(p => p.ccx === 1).flatMap(p => p.siblings).filter(id => avgCoreC0[id] >= 15.0);
       const totalActiveThreads = ccx0Active.length + ccx1Active.length;
@@ -185,18 +187,18 @@
           openCcx: true
         });
       } else {
-        pushHealthy('CCX locality', `${totalActiveThreads}T active │ L3 Hit ${avgL3HitPct.toFixed(1)}%`);
+        pushHealthy('CCX locality', `${totalActiveThreads}T active | L3 Hit ${avgL3HitPct.toFixed(1)}%`);
       }
     }
 
-    // --- RULE 5: Loaded DRAM Queueing Inflation vs. Calibrated Baseline ---
+    // --- RULE 5: Loaded DRAM Queueing Inflation vs. Calibrated Baseline (DcDemand + Free Base L3) ---
     let dramQueueing = false;
-    if (hasCacheCore && hasL3) {
+    if (hasFreeBase && hasDcDemand) {
       const expectedUnloadedNs = CONFIG.calibrated
         ? Math.max(25.0, (CONFIG.latencies.dramFallback - CONFIG.latencies.l3Hit) / Math.max(0.5, avgGhz))
         : null;
       const latTriggerNs = expectedUnloadedNs !== null ? expectedUnloadedNs * 1.25 : 70.0;
-      const hwpfTotalDram = hasFull ? (avgHwpfDram + avgL2pfDram) : 0;
+      const hwpfTotalDram = (hasDcHwpf ? avgHwpfDram : 0) + (hasL2Hwpf ? avgL2pfDram : 0);
 
       if (avgL3LatNs >= latTriggerNs && (avgDram >= 3.0 || hwpfTotalDram >= 1.5)) {
         dramQueueing = true;
@@ -213,7 +215,7 @@
           title: `Loaded DRAM queueing latency inflation (${avgL3LatNs.toFixed(1)} ns)`,
           keyMetric: `${avgL3LatNs.toFixed(1)} ns | DRAM ${avgDram.toFixed(2)} MPKI`,
           estGain: Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.dram, 0.15, 'mlp', 'illustrative -15% DRAM latency/queueing from tighter DDR4 timings/FCLK'),
-          why: `Measured L3 miss latency averaged ${avgL3LatNs.toFixed(1)} ns (${avgL3LatCyc.toFixed(0)} cyc) vs ${refText}, alongside heavy DRAM traffic (${avgDram.toFixed(2)} MPKI, HWPF ${hwpfTotalDram.toFixed(2)} MPKI).`,
+          why: `Measured L3 miss latency averaged ${avgL3LatNs.toFixed(1)} ns (${avgL3LatCyc.toFixed(0)} cyc) vs ${refText}, alongside heavy DRAM traffic (${avgDram.toFixed(2)} MPKI${(hasDcHwpf || hasL2Hwpf) ? `, HWPF ${hwpfTotalDram.toFixed(2)} MPKI` : ''}).`,
           action: `[HW / BIOS] Tighten DDR4 secondary timings (tRFC, tFAW, tRRDS/tRRDL, tREFI) or raise FCLK/UCLK; [Code] shrink streaming struct footprints to cut memory controller queueing.`,
           cascade: `Drops loaded L3-miss latency in ns and increases effective IPC during heavy memory bursts.`,
           quickJumpTab: 2
@@ -245,10 +247,10 @@
       }
     }
 
-    // --- RULE 6: Demand DRAM Pointer-Chasing ---
+    // --- RULE 6: Demand DRAM Pointer-Chasing (gated strictly on DcDemand + DcHwpf) ---
     let demandDramChase = false;
     const demShare = avgDemDram / Math.max(0.01, avgDemDram + avgHwpfDram);
-    if (hasFull && avgDemDram >= 1.5 && demShare >= 0.65) {
+    if (hasDcDemand && hasDcHwpf && avgDemDram >= 1.5 && demShare >= 0.65) {
       demandDramChase = true;
       pushFinding({
         id: 'demand_dram_pointer_chase',
@@ -267,7 +269,7 @@
       });
     }
 
-    // --- RULE 7: Kernel / Page-Fault Churn ---
+    // --- RULE 7: Kernel / Page-Fault Churn (Win32 OS) ---
     if (proc) {
       if (avgPfRate >= 2000 && sysSharePct >= 20.0) {
         pushFinding({
@@ -296,9 +298,9 @@
       }
     }
 
-    // --- RULE 8: Branch Mispredictions ---
+    // --- RULE 8: Branch Mispredictions (gated strictly on Branches) ---
     let branchBound = false;
-    if (hasFull) {
+    if (hasBranches) {
       if (avgBranch >= 5.0 && avgBranchPct >= 3.5) {
         branchBound = true;
         pushFinding({
@@ -321,10 +323,10 @@
       }
     }
 
-    // --- RULE 9: L1/L2 I-Cache Capacity Pressure (true l2_ic_miss 0x430164, NOT l2icExcl) ---
+    // --- RULE 9: L1/L2 I-Cache Capacity Pressure (gated strictly on L1L2Ic) ---
     let icacheBound = false;
-    if (hasCacheCore) {
-      if (avgL2IcMiss >= 2.5 || (hasFull && avgL1Ic >= 15.0)) {
+    if (hasL1L2Ic) {
+      if (avgL2IcMiss >= 2.5 || avgL1Ic >= 15.0) {
         icacheBound = true;
         pushFinding({
           id: 'icache_capacity_pressure',
@@ -334,20 +336,20 @@
           confidence: 'HIGH',
           impact: (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 + avgTierCpi.l2Ic,
           title: `L1/L2 instruction-cache capacity pressure`,
-          keyMetric: `L2i miss ${avgL2IcMiss.toFixed(2)}${hasFull ? ' | L1i ' + avgL1Ic.toFixed(1) : ''} MPKI`,
+          keyMetric: `L2i miss ${avgL2IcMiss.toFixed(2)} | L1i ${avgL1Ic.toFixed(1)} MPKI`,
           estGain: Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Ic, 0.35, 'flush', 'illustrative -35% L2i misses via PGO + BOLT hot/cold splitting'),
-          why: `True L2->L3 I-Cache misses (0x430164) average ${avgL2IcMiss.toFixed(2)} MPKI${hasFull ? ` (L1i miss ${avgL1Ic.toFixed(1)} MPKI)` : ''}, showing hot code exceeds Zen 2's 32 KiB L1i / 512 KiB L2 / 4K uop cache.`,
+          why: `True L2->L3 I-Cache misses (0x430164) average ${avgL2IcMiss.toFixed(2)} MPKI (L1i miss ${avgL1Ic.toFixed(1)} MPKI), showing hot code exceeds Zen 2's 32 KiB L1i / 512 KiB L2 / 4K uop cache.`,
           action: `Rebuild with PGO + BOLT hot/cold function splitting and -O2 on cold paths. Note: 2 MiB PE large pages fix iTLB walks, NOT I-Cache capacity (though isolating SMT siblings helps L1i retention).`,
           cascade: `Reduces front-end fetch starvation and frees unified L2/L3 bandwidth for data loads.`,
           quickJumpTab: 2
         });
       } else {
-        pushHealthy('L2 I-Cache miss', `${avgL2IcMiss.toFixed(2)} MPKI${hasFull ? ` (L1i ${avgL1Ic.toFixed(1)})` : ''}`);
+        pushHealthy('L2 I-Cache miss', `${avgL2IcMiss.toFixed(2)} MPKI (L1i ${avgL1Ic.toFixed(1)})`);
       }
     }
 
-    // --- RULE 10: Clock / Boost Throttling ---
-    if (hasIpcClock) {
+    // --- RULE 10: Clock / Boost Throttling (Always-On Free Base aperf/mperf) ---
+    if (hasFreeBase) {
       const baseGhz = CONFIG.baseMhz / 1000.0;
       if (avgGhz < baseGhz * 0.98 && avgC0 >= 25.0) {
         const clkGainPct = Math.max(0.0, ((baseGhz / Math.max(0.1, avgGhz)) - 1.0) * 100.0);
@@ -375,10 +377,14 @@
       }
     }
 
-    // --- RULE 11: Measurement Hygiene ---
-    if (base) {
-      const baseMux = base.muxPreset || 'full';
-      if (baseMux !== muxId) {
+    // --- RULE 11: Measurement Hygiene (Mux-Aware Baseline Comparison) ---
+    if (base && hasFreeBase) {
+      const liveGroups = plan.muxGroups;
+      const baseGroups = base.muxGroups ?? base.mux_groups ?? 3;
+      const liveMuxStr = formatMuxShort(liveGroups);
+      const baseMuxStr = formatMuxShort(baseGroups);
+
+      if (liveGroups !== baseGroups) {
         pushFinding({
           id: 'hygiene_mux_mismatch',
           category: 'Meta',
@@ -386,48 +392,47 @@
           scope: '[OS / TUI]',
           confidence: 'HIGH',
           impact: 0.99,
-          title: `MUX DIFF: Baseline (${baseMux}) != active preset (${muxId})`,
-          keyMetric: `${baseMux} vs ${muxId}`,
+          title: `MUX DIFF (${liveMuxStr} vs ${baseMuxStr}): live packs != baseline mux groups`,
+          keyMetric: `${liveMuxStr} vs ${baseMuxStr}`,
           estGain: {
             kind: 'qualitative',
             label: 'A/B accuracy',
-            detail: 'Qualitative: removes cross-mux measurement skew from baseline delta columns'
+            detail: 'Qualitative: removes cross-mux duty-cycle skew from baseline delta columns'
           },
-          why: `Active baseline "${base.name}" was captured in "${baseMux}" mode, whereas live telemetry is running in "${mux.label}". Cross-mux comparisons introduce multiplexing bias.`,
-          action: `Press 'm' to match the baseline's Mux preset, or press 'b' -> S to recapture a baseline under "${mux.label}".`,
-          cascade: `Eliminates multiplexing skew from % vs Base delta columns across Tabs 1-3.`,
+          why: `Active baseline "${base.name}" was captured in ${baseMuxStr} (${base.corePmcSlots ?? base.core_pmc_slots ?? '?'} Core PMCs), whereas live telemetry is running in ${liveMuxStr} (${plan.coreSlots} Core PMCs, ${Math.round(plan.dutyCyclePct)}% duty). Cross-mux comparisons introduce multiplexing bias.`,
+          action: `Press 'm' to match the baseline's ${baseMuxStr} group count, or press 'b' -> S to recapture a baseline under ${plan.label}.`,
+          cascade: `Eliminates multiplexing duty-cycle skew from vs BASE delta columns across Tabs 1-3.`,
           quickJumpTab: 1
         });
-      } else if (muxId === 'full' && base.ipc > 0) {
+      } else if (liveGroups >= 2 && base.ipc > 0) {
         const deltaIpcPct = Math.abs(((avgIpc - base.ipc) / base.ipc) * 100.0);
         if (deltaIpcPct < 3.0) {
           pushFinding({
-            id: 'hygiene_small_delta_3mux',
+            id: 'hygiene_small_delta_mux',
             category: 'Meta',
             severity: 'LO',
             scope: '[OS / TUI]',
             confidence: 'HIGH',
             impact: 0.02,
-            title: `Small IPC delta (${deltaIpcPct.toFixed(1)}%) measured in ${mux.label}`,
-            keyMetric: `|dIPC| ${deltaIpcPct.toFixed(1)}% in ${mux.label}`,
+            title: `Small IPC delta (${deltaIpcPct.toFixed(1)}%) measured in ${liveMuxStr} (${Math.round(plan.dutyCyclePct)}% duty)`,
+            keyMetric: `|dIPC| ${deltaIpcPct.toFixed(1)}% in ${liveMuxStr}`,
             estGain: {
               kind: 'qualitative',
               label: 'A/B accuracy',
               detail: 'Qualitative: eliminates hardware PMC time-slice multiplexing variance for sub-3% A/B tuning'
             },
-            why: `IPC delta vs "${base.name}" is only ${deltaIpcPct.toFixed(1)}% (<3%), close to Zen 2 multi-group hardware PMC multiplexing variance.`,
-            action: `Press 'm' to switch to a 0-Mux preset (IPC+Cache/DRAM, TLB-Only, or Micro-Arch) and re-capture a baseline for lab-grade A/B confirmation.`,
-            cascade: `Removes PMC time-slice sampling jitter for sub-3% tuning validation.`,
+            why: `IPC delta vs "${base.name}" is only ${deltaIpcPct.toFixed(1)}% (<3%), close to Zen 2 multi-group hardware PMC multiplexing variance at ${liveMuxStr} (${Math.round(plan.dutyCyclePct)}% duty cycle).`,
+            action: `Press 'm' to trim enabled packs down to <= 6 Core PMC slots (0-Mux, 100% duty) and recapture a baseline for exact sub-3% A/B verification.`,
+            cascade: `Removes PMC time-slice sampling jitter for lab-grade sub-3% tuning validation.`,
             quickJumpTab: 1
           });
         } else {
-          pushHealthy('Baseline hygiene', `${mux.label} match`);
+          pushHealthy('Baseline hygiene', `${liveMuxStr} match`);
         }
       } else {
-        pushHealthy('Baseline hygiene', `${mux.label} match`);
+        pushHealthy('Baseline hygiene', `${liveMuxStr} match`);
       }
     }
-
 
     return {
       smtContendedHot, hotCoreProof, crossCcxActive, dramQueueing,
@@ -436,18 +441,22 @@
   }
 
   function evaluateMicroArchRules(ctx) {
-    const { hasUarch, muxId, avgActualCpi, avgL3LatNs, pushFinding, pushHealthy } = ctx;
+    const {
+      plan, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits,
+      avgActualCpi, avgL3LatNs, uarchRawOverride, pushFinding, pushHealthy
+    } = ctx;
 
-    // --- MICRO-ARCH / CONTENTION RULES (Evaluated ONLY when Micro-Arch 0-Mux is active) ---
     let uarchMetrics = null;
     let crossCcxBouncing = false;
     let lockContention = false;
     let opcacheThrash = false;
     let stlfBound = false;
     let splitsBound = false;
+    let crossCcxCpi = 0;
+    let stlfCpi = 0;
 
-    if (hasUarch) {
-      const cumUarchRaw = {
+    if (hasCrossCcxLocks || hasOpCacheDecode || hasStlfSplits) {
+      const cumUarchRaw = uarchRawOverride || {
         inst: state.cum.instRaw,
         dc_cross_ccx: state.cum.dcCrossCcxRaw,
         locks_serial: state.cum.locksSerialRaw,
@@ -456,7 +465,7 @@
         stlf_interlock: state.cum.stlfInterlockRaw,
         misal_access: state.cum.misalAccessRaw
       };
-      uarchMetrics = computeMicroArchMetrics(cumUarchRaw, muxId);
+      uarchMetrics = computeMicroArchMetrics(cumUarchRaw, plan);
 
       if (uarchMetrics) {
         const crossCcxMpki = uarchMetrics.dcCrossCcxMpki;
@@ -465,150 +474,154 @@
         const legacyPct = uarchMetrics.legacyDecodePct;
         const stlfMpki = uarchMetrics.stlfInterlockMpki;
         const misalMpki = uarchMetrics.misalAccessMpki;
-        const totalDisUops = state.cum.ocUopsRaw + state.cum.decUopsRaw;
+        const totalDisUops = (cumUarchRaw.oc_uops || 0) + (cumUarchRaw.dec_uops || 0);
 
-        const crossCcxCpi = (crossCcxMpki / 1000.0) * 90.0; // ~80-100 cyc IF probe latency
-        const stlfCpi = (stlfMpki / 1000.0) * 12.5;         // ~10-15 cyc STLF load replay penalty
+        crossCcxCpi = crossCcxMpki !== null ? (crossCcxMpki / 1000.0) * 90.0 : 0;
+        stlfCpi = stlfMpki !== null ? (stlfMpki / 1000.0) * 12.5 : 0;
         const uarchModeledRef = Math.max(avgActualCpi, crossCcxCpi + stlfCpi);
 
-        // Rule 12: Cross-CCX Cache Bouncing (0x430443)
-        if (crossCcxMpki >= 0.8) {
-          crossCcxBouncing = true;
-          const isHi = crossCcxMpki >= 2.0;
-          const crossCcxGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
-            ? Z.estimateAmdahlGain(avgActualCpi, uarchModeledRef, crossCcxCpi, 0.70, 'mlp', 'assumes -70% cross-CCX fills (~90 cyc IF probe) via single-CCX pinning / 64B padding')
-            : { kind: 'qualitative', label: 'L3 lat + IPC', detail: 'Qualitative: cuts Infinity Fabric cross-CCX coherence probes and improves IPC on both CCXs' };
-          pushFinding({
-            id: 'cross_ccx_cache_bouncing',
-            category: 'MicroArchContention',
-            severity: isHi ? 'HI' : 'MD',
-            scope: '[OS / Code]',
-            confidence: 'HIGH',
-            impact: crossCcxCpi + (isHi ? 0.12 : 0.04),
-            title: `Cross-CCX cache-line bouncing across Infinity Fabric (${crossCcxMpki.toFixed(2)} MPKI)`,
-            keyMetric: `Cross-CCX ${crossCcxMpki.toFixed(2)} MPKI | L3 ${avgL3LatNs.toFixed(1)} ns`,
-            estGain: crossCcxGain,
-            why: `Direct hardware proof (ls_dmnd_fills_from_sys.ext_cache_local 0x430443): ${crossCcxMpki.toFixed(2)} MPKI demand D-Cache fills are serviced from the other CCX's cache over Infinity Fabric (~80-100 cyc probe latency), far stronger than inferring from L3 hit rate.`,
-            action: `Pin communicating threads to a single CCX (affinity mask 0x003F for CCX0 or 0x0FC0 for CCX1). In owned code, pad hot shared structs/atomics to 64 bytes (#[repr(align(64))] / alignas(64)) to eliminate false sharing.`,
-            cascade: `Cuts Infinity Fabric coherence probes, lowers measured L3 miss latency (${avgL3LatNs.toFixed(1)} ns), and raises IPC on both CCXs.`,
-            quickJumpTab: 1,
-            openCcx: true
-          });
-        } else {
-          pushHealthy('Cross-CCX fills', `${crossCcxMpki.toFixed(2)} MPKI`);
+        // Rules 12 & 13: CrossCcxLocks pack (0x430443 + 0x430325)
+        if (hasCrossCcxLocks && crossCcxMpki !== null && locksMpki !== null) {
+          if (crossCcxMpki >= 0.8) {
+            crossCcxBouncing = true;
+            const isHi = crossCcxMpki >= 2.0;
+            const crossCcxGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
+              ? Z.estimateAmdahlGain(avgActualCpi, uarchModeledRef, crossCcxCpi, 0.70, 'mlp', 'assumes -70% cross-CCX fills (~90 cyc IF probe) via single-CCX pinning / 64B padding')
+              : { kind: 'qualitative', label: 'L3 lat + IPC', detail: 'Qualitative: cuts Infinity Fabric cross-CCX coherence probes and improves IPC on both CCXs' };
+            pushFinding({
+              id: 'cross_ccx_cache_bouncing',
+              category: 'MicroArchContention',
+              severity: isHi ? 'HI' : 'MD',
+              scope: '[OS / Code]',
+              confidence: 'HIGH',
+              impact: crossCcxCpi + (isHi ? 0.12 : 0.04),
+              title: `Cross-CCX cache-line bouncing across Infinity Fabric (${crossCcxMpki.toFixed(2)} MPKI)`,
+              keyMetric: `Cross-CCX ${crossCcxMpki.toFixed(2)} MPKI | L3 ${avgL3LatNs.toFixed(1)} ns`,
+              estGain: crossCcxGain,
+              why: `Direct hardware proof (ls_dmnd_fills_from_sys.ext_cache_local 0x430443): ${crossCcxMpki.toFixed(2)} MPKI demand D-Cache fills are serviced from the other CCX's cache over Infinity Fabric (~80-100 cyc probe latency), far stronger than inferring from L3 hit rate.`,
+              action: `Pin communicating threads to a single CCX (affinity mask 0x003F for CCX0 or 0x0FC0 for CCX1). In owned code, pad hot shared structs/atomics to 64 bytes (#[repr(align(64))] / alignas(64)) to eliminate false sharing.`,
+              cascade: `Cuts Infinity Fabric coherence probes, lowers measured L3 miss latency (${avgL3LatNs.toFixed(1)} ns), and raises IPC on both CCXs.`,
+              quickJumpTab: 1,
+              openCcx: true
+            });
+          } else {
+            pushHealthy('Cross-CCX fills', `${crossCcxMpki.toFixed(2)} MPKI`);
+          }
+
+          if ((locksMpki >= 0.5 && crossCcxMpki >= 0.5) || locksMpki >= 1.0) {
+            lockContention = true;
+            const isHi = locksMpki >= 0.5 && crossCcxMpki >= 0.5;
+            pushFinding({
+              id: 'serialized_lock_contention',
+              category: 'MicroArchContention',
+              severity: isHi ? 'HI' : 'MD',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: (locksMpki * 60.0) / 1000.0 + (isHi ? 0.14 : 0.05),
+              title: `Serialized LOCK / spinlock contention (${locksMpki.toFixed(2)} MPKI)`,
+              keyMetric: `Locks ${locksMpki.toFixed(2)} | CCX ${crossCcxMpki.toFixed(2)} MPKI`,
+              estGain: {
+                kind: 'qualitative',
+                label: 'IPC / scaling',
+                detail: 'Qualitative: removes pipeline-serializing non-speculative LOCK stalls and cross-CCX lock bounces'
+              },
+              why: `ls_locks.bus_lock|non_spec_lock (0x430325) averages ${locksMpki.toFixed(2)} MPKI${isHi ? ` alongside ${crossCcxMpki.toFixed(2)} MPKI cross-CCX fills` : ''}, proving user-mode atomics or spinlocks are failing fast cacheable speculation and serializing the core (invisible to Windows context-switch counters).`,
+              action: `Use thread-local sharding (TLS counters), batch atomic updates, or add exponential backoff on spinloops. On closed binaries, pinning contended threads to one CCX (0x003F / 0x0FC0) still reduces per-lock coherence cost.`,
+              cascade: `Drops dc_cross_ccx coherence traffic and frees Load/Store Queue slots for surrounding instructions.`,
+              quickJumpTab: 1,
+              openCcx: isHi
+            });
+          } else {
+            pushHealthy('Serialized locks', `${locksMpki.toFixed(2)} MPKI`);
+          }
         }
 
-        // Rule 13: Serialized Lock Contention (0x430325)
-        if ((locksMpki >= 0.5 && crossCcxMpki >= 0.5) || locksMpki >= 1.0) {
-          lockContention = true;
-          const isHi = locksMpki >= 0.5 && crossCcxMpki >= 0.5;
-          pushFinding({
-            id: 'serialized_lock_contention',
-            category: 'MicroArchContention',
-            severity: isHi ? 'HI' : 'MD',
-            scope: '[Code / Build]',
-            confidence: 'HIGH',
-            impact: (locksMpki * 60.0) / 1000.0 + (isHi ? 0.14 : 0.05),
-            title: `Serialized LOCK / spinlock contention (${locksMpki.toFixed(2)} MPKI)`,
-            keyMetric: `Locks ${locksMpki.toFixed(2)} | CCX ${crossCcxMpki.toFixed(2)} MPKI`,
-            estGain: {
-              kind: 'qualitative',
-              label: 'IPC / scaling',
-              detail: 'Qualitative: removes pipeline-serializing non-speculative LOCK stalls and cross-CCX lock bounces'
-            },
-            why: `ls_locks.bus_lock|non_spec_lock (0x430325) averages ${locksMpki.toFixed(2)} MPKI${isHi ? ` alongside ${crossCcxMpki.toFixed(2)} MPKI cross-CCX fills` : ''}, proving user-mode atomics or spinlocks are failing fast cacheable speculation and serializing the core (invisible to Windows context-switch counters).`,
-            action: `Use thread-local sharding (TLS counters), batch atomic updates, or add exponential backoff on spinloops. On closed binaries, pinning contended threads to one CCX (0x003F / 0x0FC0) still reduces per-lock coherence cost.`,
-            cascade: `Drops dc_cross_ccx coherence traffic and frees Load/Store Queue slots for surrounding instructions.`,
-            quickJumpTab: 1,
-            openCcx: isHi
-          });
-        } else {
-          pushHealthy('Serialized locks', `${locksMpki.toFixed(2)} MPKI`);
+        // Rule 14: OpCacheDecode pack (0x4301AA vs 0x4302AA)
+        if (hasOpCacheDecode && legacyPct !== null && ocHitPct !== null) {
+          if (totalDisUops > 0 && legacyPct >= 30.0) {
+            opcacheThrash = true;
+            pushFinding({
+              id: 'opcache_thrashing',
+              category: 'FrontendCodeBound',
+              severity: 'MD',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: (legacyPct / 100.0) * 0.22,
+              title: `Op-Cache thrashing: ${legacyPct.toFixed(1)}% ops on 4-wide legacy decoder`,
+              keyMetric: `Legacy ${legacyPct.toFixed(1)}% | Op-Cache ${ocHitPct.toFixed(1)}%`,
+              estGain: {
+                kind: 'qualitative',
+                label: 'FE dispatch width',
+                detail: 'Qualitative: restores Zen 2 8-wide 4K-entry Op-Cache dispatch via PGO + llvm-bolt layout'
+              },
+              why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% of dispatched ops falling back to the 4-wide legacy x86 decoder (Op-Cache hit ${ocHitPct.toFixed(1)}% <= 70%), proving hot instruction streams overflow Zen 2's 4K-entry 8-wide Op-Cache.`,
+              action: `Strongest hardware proof that PGO + llvm-bolt hot/cold code layout or loop alignment will unlock front-end throughput (even if L1i miss MPKI looks moderate). No Windows or OS tweak fixes this on closed-source binaries.`,
+              cascade: `Increases front-end dispatch width (4-wide -> 8-wide Op-Cache) and lowers L1i/L2i fetch stalls.`,
+              quickJumpTab: 1
+            });
+          } else if (totalDisUops > 0) {
+            pushHealthy('Op-Cache hit', `${ocHitPct.toFixed(1)}% (legacy ${legacyPct.toFixed(1)}%)`);
+          }
         }
 
-        // Rule 14: Op-Cache Thrashing / Legacy 4-Wide Decode Fallback (0x4301AA vs 0x4302AA)
-        if (totalDisUops > 0 && legacyPct >= 30.0) {
-          opcacheThrash = true;
-          pushFinding({
-            id: 'opcache_thrashing',
-            category: 'FrontendCodeBound',
-            severity: 'MD',
-            scope: '[Code / Build]',
-            confidence: 'HIGH',
-            impact: (legacyPct / 100.0) * 0.22,
-            title: `Op-Cache thrashing: ${legacyPct.toFixed(1)}% ops on 4-wide legacy decoder`,
-            keyMetric: `Legacy ${legacyPct.toFixed(1)}% | Op-Cache ${ocHitPct.toFixed(1)}%`,
-            estGain: {
-              kind: 'qualitative',
-              label: 'FE dispatch width',
-              detail: 'Qualitative: restores Zen 2 8-wide 4K-entry Op-Cache dispatch via PGO + llvm-bolt layout'
-            },
-            why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% of dispatched ops falling back to the 4-wide legacy x86 decoder (Op-Cache hit ${ocHitPct.toFixed(1)}% <= 70%), proving hot instruction streams overflow Zen 2's 4K-entry 8-wide Op-Cache.`,
-            action: `Strongest hardware proof that PGO + llvm-bolt hot/cold code layout or loop alignment will unlock front-end throughput (even if L1i miss MPKI looks moderate). No Windows or OS tweak fixes this on closed-source binaries.`,
-            cascade: `Increases front-end dispatch width (4-wide -> 8-wide Op-Cache) and lowers L1i/L2i fetch stalls.`,
-            quickJumpTab: 1
-          });
-        } else if (totalDisUops > 0) {
-          pushHealthy('Op-Cache hit', `${ocHitPct.toFixed(1)}% (legacy ${legacyPct.toFixed(1)}%)`);
-        }
+        // Rules 15 & 16: StlfSplits pack (0x430224 + 0x430047)
+        if (hasStlfSplits && stlfMpki !== null && misalMpki !== null) {
+          if (stlfMpki >= 3.0) {
+            stlfBound = true;
+            const stlfGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
+              ? Z.estimateAmdahlGain(avgActualCpi, uarchModeledRef, stlfCpi, 0.60, 'mlp', 'assumes -60% STLF load replays (~12.5 cyc) via matched store/load widths')
+              : { kind: 'qualitative', label: 'LSQ / replays', detail: 'Qualitative: eliminates ~10-15 cyc store-to-load forwarding replay stalls' };
+            pushFinding({
+              id: 'stlf_interlocks',
+              category: 'MicroArchContention',
+              severity: 'MD',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: stlfCpi + 0.03,
+              title: `Store-to-load forwarding (STLF) interlock stalls (${stlfMpki.toFixed(2)} MPKI)`,
+              keyMetric: `STLF ${stlfMpki.toFixed(2)} MPKI`,
+              estGain: stlfGain,
+              why: `Hardware-exact proof (ls_bad_status2.stli_other 0x430224): ${stlfMpki.toFixed(2)} MPKI loads stalled because an older overlapping store could not forward (e.g., narrow scalar writes followed immediately by a wider struct or AVX2 load).`,
+              action: `Match store and load widths and alignment on hot data structures, and assemble SIMD vectors in registers (shuffles/blends) before storing to memory.`,
+              cascade: `Eliminates ~10-15 cyc load replays and relieves Load/Store Queue pressure.`,
+              quickJumpTab: 1
+            });
+          } else {
+            pushHealthy('STLF interlocks', `${stlfMpki.toFixed(2)} MPKI`);
+          }
 
-        // Rule 15: Store-to-Load Forwarding Interlocks (0x430224)
-        if (stlfMpki >= 3.0) {
-          stlfBound = true;
-          const stlfGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
-            ? Z.estimateAmdahlGain(avgActualCpi, uarchModeledRef, stlfCpi, 0.60, 'mlp', 'assumes -60% STLF load replays (~12.5 cyc) via matched store/load widths')
-            : { kind: 'qualitative', label: 'LSQ / replays', detail: 'Qualitative: eliminates ~10-15 cyc store-to-load forwarding replay stalls' };
-          pushFinding({
-            id: 'stlf_interlocks',
-            category: 'MicroArchContention',
-            severity: 'MD',
-            scope: '[Code / Build]',
-            confidence: 'HIGH',
-            impact: stlfCpi + 0.03,
-            title: `Store-to-load forwarding (STLF) interlock stalls (${stlfMpki.toFixed(2)} MPKI)`,
-            keyMetric: `STLF ${stlfMpki.toFixed(2)} MPKI`,
-            estGain: stlfGain,
-            why: `Hardware-exact proof (ls_bad_status2.stli_other 0x430224): ${stlfMpki.toFixed(2)} MPKI loads stalled because an older overlapping store could not forward (e.g., narrow scalar writes followed immediately by a wider struct or AVX2 load).`,
-            action: `Match store and load widths and alignment on hot data structures, and assemble SIMD vectors in registers (shuffles/blends) before storing to memory.`,
-            cascade: `Eliminates ~10-15 cyc load replays and relieves Load/Store Queue pressure.`,
-            quickJumpTab: 1
-          });
-        } else {
-          pushHealthy('STLF interlocks', `${stlfMpki.toFixed(2)} MPKI`);
-        }
-
-        // Rule 16: 64-Byte Cache-Line Splits / Misaligned Accesses (0x430047)
-        if (misalMpki >= 10.0) {
-          splitsBound = true;
-          const isMd = misalMpki >= 20.0;
-          pushFinding({
-            id: 'cache_line_splits',
-            category: 'MicroArchContention',
-            severity: isMd ? 'MD' : 'LO',
-            scope: '[Code / Build]',
-            confidence: 'HIGH',
-            impact: (misalMpki / 1000.0) * 3.0 + (isMd ? 0.02 : 0.0),
-            title: `64-byte cache-line split / misaligned accesses (${misalMpki.toFixed(1)} MPKI)`,
-            keyMetric: `Splits ${misalMpki.toFixed(1)} MPKI`,
-            estGain: {
-              kind: 'qualitative',
-              label: 'L1d ports / LSQ',
-              detail: 'Qualitative: halves split cache lookups and relieves L1d port + LSQ contention'
-            },
-            why: `ls_misal_accesses (0x430047) averages ${misalMpki.toFixed(2)} MPKI loads/stores straddling 64-byte cache-line boundaries, doubling L1d tag lookups and consuming extra Load/Store Queue slots.`,
-            action: `Enforce 32B/64B alignment on hot structs and SIMD buffers (#[repr(align(64))] / alignas(64) / aligned allocators).`,
-            cascade: `Reduces L1d port contention and L1d miss amplification.`,
-            quickJumpTab: 1
-          });
-        } else {
-          pushHealthy('Cache-line splits', `${misalMpki.toFixed(1)} MPKI`);
+          if (misalMpki >= 10.0) {
+            splitsBound = true;
+            const isMd = misalMpki >= 20.0;
+            pushFinding({
+              id: 'cache_line_splits',
+              category: 'MicroArchContention',
+              severity: isMd ? 'MD' : 'LO',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: (misalMpki / 1000.0) * 3.0 + (isMd ? 0.02 : 0.0),
+              title: `64-byte cache-line split / misaligned accesses (${misalMpki.toFixed(1)} MPKI)`,
+              keyMetric: `Splits ${misalMpki.toFixed(1)} MPKI`,
+              estGain: {
+                kind: 'qualitative',
+                label: 'L1d ports / LSQ',
+                detail: 'Qualitative: halves split cache lookups and relieves L1d port + LSQ contention'
+              },
+              why: `ls_misal_accesses (0x430047) averages ${misalMpki.toFixed(2)} MPKI loads/stores straddling 64-byte cache-line boundaries, doubling L1d tag lookups and consuming extra Load/Store Queue slots.`,
+              action: `Enforce 32B/64B alignment on hot structs and SIMD buffers (#[repr(align(64))] / alignas(64) / aligned allocators).`,
+              cascade: `Reduces L1d port contention and L1d miss amplification.`,
+              quickJumpTab: 1
+            });
+          } else {
+            pushHealthy('Cache-line splits', `${misalMpki.toFixed(1)} MPKI`);
+          }
         }
       }
     }
 
-
     return {
-      uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound
+      uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound,
+      crossCcxCpi, stlfCpi
     };
   }
 

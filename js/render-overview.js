@@ -1,15 +1,19 @@
-// Top/bottom chrome, CCX/SMT strip, CPI stack, and Tab 1 Overview renderer
+// Top/bottom chrome, CCX/SMT strip, CPI stack, and pack-driven Tab 1 Overview renderer
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, state, computeMicroArchMetrics, getActiveMux, getAttachedProcess, fmtDeltaPct, fmtMiB, fmtRate, formatRetiringTag, severityClass, renderBrailleGraph } = Z;
+  const {
+    CONFIG, MetricPack, state, computeMicroArchMetrics, getActivePlan,
+    formatMuxShort, getMuxAccuracyClass, getAttachedProcess,
+    fmtDeltaPct, fmtMiB, fmtRate, formatRetiringTag, severityClass, renderBrailleGraph
+  } = Z;
 
   // =========================================================================
   // 7. RENDER FUNCTIONS
   // =========================================================================
   function renderChrome() {
     const proc = getAttachedProcess();
-    const mux = getActiveMux();
+    const plan = getActivePlan();
     const snap = state.lastSnap;
 
     const targetEl = document.getElementById('hdr-target');
@@ -21,13 +25,17 @@
       targetEl.innerHTML = `<span class="c-cyan c-bright">SYSTEM-WIDE</span>`;
     }
 
-    document.getElementById('hdr-mux').innerHTML = `<span class="c-cyan">${mux.label}</span>`;
-    document.getElementById('hdr-ghz').textContent = (mux.id === 'tlb' || mux.id === 'no-pmu' || !snap) ? 'GHz N/A' : `${snap.effGhz.toFixed(2)} GHz`;
+    const muxCls = getMuxAccuracyClass(plan.muxGroups);
+    document.getElementById('hdr-mux').innerHTML = `<span class="${muxCls}">${plan.label}</span>`;
+    document.getElementById('hdr-ghz').textContent = (plan.noPmu || !snap) ? 'GHz N/A' : `${snap.effGhz.toFixed(2)} GHz`;
 
     const baseEl = document.getElementById('hdr-base');
     if (state.activeBaseline) {
-      const muxDiff = (state.activeBaseline.muxPreset || 'full') !== mux.id;
-      const diffTag = muxDiff ? ` <span class="c-red c-bright">[MUX DIFF]</span>` : '';
+      const baseGroups = state.activeBaseline.muxGroups ?? state.activeBaseline.mux_groups ?? 3;
+      const muxDiff = !plan.noPmu && plan.muxGroups !== baseGroups;
+      const diffTag = muxDiff
+        ? ` <span class="c-red c-bright">[MUX DIFF (${formatMuxShort(plan.muxGroups)} vs ${formatMuxShort(baseGroups)})]</span>`
+        : '';
       baseEl.innerHTML = `Base: <span class="c-bright">${state.activeBaseline.name}</span>${diffTag}`;
     } else {
       baseEl.innerHTML = `Base: <span class="c-dim">none</span>`;
@@ -74,7 +82,7 @@
     } else if (state.activeTab === 4 && proc) {
       hintEl.textContent = 'v Toggle VA/JIT Map │ Space Pause │ d Detach';
     } else if (state.activeTab === 5) {
-      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ Space Pause';
+      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ m Packs';
     } else if (state.activeTab === 6 && proc) {
       hintEl.textContent = 'j/k Select Thread │ s Sort │ a Affinity │ R Revert Edits';
     } else if (state.activeTab === 7 && proc) {
@@ -82,7 +90,7 @@
     } else if ((state.activeTab === 4 || state.activeTab === 6 || state.activeTab === 7) && !proc) {
       hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ w Wait Mode';
     } else {
-      hintEl.textContent = 'Space Pause │ d Detach │ c CCX+SMT';
+      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ c CCX+SMT';
     }
 
     // Status Banner
@@ -117,33 +125,33 @@
     }
   }
 
-  // GLOBAL CCX + PHYSICAL-CORE SMT SIBLING STRIP (opens above everything on every page)
+  // GLOBAL CCX + PHYSICAL-CORE SMT SIBLING STRIP (Always-On Free Base IPC/GHz/L3/C0%)
   function renderCcxStrip() {
     const strip = document.getElementById('ccx-strip');
     strip.classList.toggle('visible', state.ccxOpen);
     if (!state.ccxOpen || !state.lastSnap) return;
 
     const snap = state.lastSnap;
-    const muxId = MUX_PRESETS[state.muxIndex].id;
-    const hasCore = muxId !== 'tlb' && muxId !== 'no-pmu';
-    const hasDram = muxId === 'full' || muxId === 'ipc-mem';
-    const isNoPmu = muxId === 'no-pmu';
+    const plan = getActivePlan();
+    const isNoPmu = plan.noPmu;
+    const hasFreeBase = !isNoPmu;
+    const hasDram = plan.has(MetricPack.DcDemand);
 
     document.getElementById('ccx-tbody').innerHTML = snap.ccx.map(c => `
       <tr>
         <td class="c-bright">CCX${c.id}</td>
         <td class="c-dim">${c.cpus}</td>
-        <td class="${hasCore ? severityClass(c.ipc, 1.2, 0.8, true) : 'c-muted'}">${hasCore ? c.ipc.toFixed(2) : '--'}</td>
-        <td>${hasCore ? c.ghz.toFixed(2) : '--'}</td>
-        <td>${hasCore ? c.l3HitPct.toFixed(1) + '%' : '--'}</td>
-        <td>${hasCore ? c.latNs.toFixed(0) + ' ns' : '--'}</td>
+        <td class="${hasFreeBase ? severityClass(c.ipc, 1.2, 0.8, true) : 'c-muted'}">${hasFreeBase ? c.ipc.toFixed(2) : '--'}</td>
+        <td>${hasFreeBase ? c.ghz.toFixed(2) : '--'}</td>
+        <td>${hasFreeBase ? c.l3HitPct.toFixed(1) + '%' : '--'}</td>
+        <td>${hasFreeBase ? c.latNs.toFixed(0) + ' ns' : '--'}</td>
         <td class="${hasDram ? '' : 'c-muted'}">${hasDram ? c.dramMpki.toFixed(2) : '--'}</td>
         <td class="c-dim">${c.avgC0.toFixed(0)}%</td>
       </tr>
     `).join('');
 
     const fmtThread = (cpuId) => {
-      const duty = (hasCore || isNoPmu) ? snap.coreC0[cpuId] : snap.coreRelInstPct[cpuId];
+      const duty = snap.coreC0[cpuId];
       const ipcVal = snap.coreIpc[cpuId];
       const dpcIrq = (snap.coreDpcPct ? snap.coreDpcPct[cpuId] : 0) + (snap.coreIrqPct ? snap.coreIrqPct[cpuId] : 0);
       const dpcTip = `, DPC+IRQ ${dpcIrq.toFixed(1)}%`;
@@ -154,9 +162,6 @@
         const cls = (duty >= 60.0 && dpcIrq >= 5.0) ? 'c-yellow' : (duty >= 15.0 ? 'c-green' : 'c-dim');
         return `<span class="${cls}" title="CPU ${cpuId}: Win32 C0 ${duty.toFixed(1)}%${dpcTip}">${Math.round(duty)}%</span>`;
       }
-      if (!hasCore) {
-        return `<span class="${duty >= 15.0 ? 'c-green' : 'c-dim'}" title="CPU ${cpuId}: ${duty.toFixed(1)}% relative instruction share${dpcTip}">${Math.round(duty)}%</span>`;
-      }
       const ipcCls = ipcVal >= 1.25 ? 'c-green' : 'c-dim';
       return `<span class="${ipcCls}" title="CPU ${cpuId}: IPC ${ipcVal.toFixed(2)}, C0 ${duty.toFixed(1)}%${dpcTip}">${ipcVal.toFixed(2)}</span><span class="c-dim">(${Math.round(duty)}%)</span>`;
     };
@@ -166,8 +171,8 @@
       const cells = physList.map(pc => {
         const s0 = pc.siblings[0];
         const s1 = pc.siblings[1];
-        const d0 = (hasCore || isNoPmu) ? snap.coreC0[s0] : snap.coreRelInstPct[s0];
-        const d1 = s1 !== undefined ? ((hasCore || isNoPmu) ? snap.coreC0[s1] : snap.coreRelInstPct[s1]) : 0;
+        const d0 = snap.coreC0[s0];
+        const d1 = s1 !== undefined ? snap.coreC0[s1] : 0;
         const contended = s1 !== undefined && d0 >= 15.0 && d1 >= 15.0;
         const sep = s1 === undefined
           ? ''
@@ -176,7 +181,7 @@
             : `<span class="c-muted"> │ </span>`);
         return `<span class="smt-pair"><span class="c-bright">P${pc.id}</span> ${fmtThread(s0)}${sep}${s1 !== undefined ? fmtThread(s1) : ''}</span>`;
       }).join('');
-      const modeTag = hasCore ? 'IPC(C0%)' : (isNoPmu ? 'Win32 C0%' : 'rel-inst%');
+      const modeTag = hasFreeBase ? 'IPC(C0%)' : 'Win32 C0%';
       return `
         <div class="core-spark-row">
           <span class="c-dim">CCX${ccxId} ${modeTag}</span>
@@ -188,8 +193,7 @@
     document.getElementById('core-spark-line').innerHTML = makeCcxCoreRow(0) + makeCcxCoreRow(1);
   }
 
-  function renderCpiStack(snap) {
-    const muxId = MUX_PRESETS[state.muxIndex].id;
+  function renderCpiStack(snap, plan) {
     const sumEl = document.getElementById('cpi-summary');
     const legendEl = document.getElementById('cpi-legend');
     const actualEl = document.getElementById('cpi-track-actual');
@@ -197,56 +201,76 @@
     const lbl1 = document.getElementById('cpi-label-1');
     const lbl2 = document.getElementById('cpi-label-2');
 
-    if (muxId === 'tlb' || muxId === 'no-pmu') {
+    if (plan.noPmu) {
       if (lbl1) lbl1.textContent = 'Actual';
       if (lbl2) lbl2.textContent = 'Modeled';
-      const reason = muxId === 'no-pmu'
-        ? `Hardware PMCs disabled (--no-pmu); Group A Zero-PMC Win32 diagnostics remain active on Tabs 1, 4 &amp; 5`
-        : `Actual CPI requires cycles PMC or aperf (press 'm' for Full, IPC+Cache/DRAM, or Micro-Arch)`;
-      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ ${reason}</span>`;
+      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ Hardware PMCs disabled (--no-pmu); Group A Zero-PMC Win32 diagnostics remain active on Tabs 1, 4 &amp; 5</span>`;
       legendEl.innerHTML = '';
-      actualEl.innerHTML = `<span class="c-muted">N/A in ${getActiveMux().label} preset</span>`;
+      actualEl.innerHTML = `<span class="c-muted">N/A in No-PMU (Win32) mode (press 'm' to configure Metric Packs)</span>`;
       modeledEl.innerHTML = '';
       return;
     }
 
-    if (muxId === 'uarch' && snap.uarch) {
-      const ua = snap.uarch;
-      if (lbl1) lbl1.textContent = 'Actual';
-      if (lbl2) lbl2.textContent = 'Decode';
-      sumEl.innerHTML =
-        `<span class="c-bright">Micro-Arch Front-End &amp; L3 (0-Mux)</span>` +
-        `<span class="c-dim"> │ </span>Actual CPI (aperf) <span class="c-bright">${snap.actualCpi.toFixed(2)}</span>` +
-        `<span class="c-dim"> │ </span>Op-Cache <span class="${ua.legacyDecodePct >= 30.0 ? 'c-yellow c-bright' : 'c-green'}">${ua.opcacheHitPct.toFixed(1)}%</span>` +
-        `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
+    const active = snap.activeTiers.filter(t => t.cpi > 0.0005);
 
-      legendEl.innerHTML =
-        `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> Op-Cache (8-wide) <span style="color:${ua.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Legacy (4-wide)</span>`;
-
+    // If no CPI stall packs are enabled, show either Op-Cache Decode strip or Free Base Actual CPI + L3 strip
+    if (active.length === 0) {
       const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
       const actScale = Math.max(snap.actualCpi, 1.5) * 1.15;
       const actualPx = Math.max(36, Math.min(wrapW, Math.round((snap.actualCpi / actScale) * wrapW)));
       const actTxt = actualPx >= 96 ? `Actual ${snap.actualCpi.toFixed(2)} (aperf)` : `CPI ${snap.actualCpi.toFixed(2)}`;
-      actualEl.innerHTML =
-        `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual CPI derived from fixed MSR aperf / irperf: ${snap.actualCpi.toFixed(3)}">${actTxt}</span>` +
-        `<span class="cpi-marker" title="Actual CPI boundary (${snap.actualCpi.toFixed(3)})"></span>` +
-        `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">0-Mux: 6 Core PMCs + 3 Fixed MSRs + 4 L3 PMCs</span>`;
 
-      const ocPx = Math.max(12, Math.round((ua.opcacheHitPct / 100.0) * wrapW));
-      const decPx = Math.max(4, wrapW - ocPx);
-      const decHex = ua.legacyDecodePct >= 30.0 ? '#e06464' : '#d98d59';
-      const ocLbl = ocPx >= 95 ? `Op-Cache ${ua.opcacheHitPct.toFixed(1)}%` : (ocPx >= 36 ? `${ua.opcacheHitPct.toFixed(0)}%` : '');
-      const decLbl = decPx >= 86 ? `Legacy ${ua.legacyDecodePct.toFixed(1)}%` : (decPx >= 32 ? `${ua.legacyDecodePct.toFixed(0)}%` : '');
+      if (plan.has(MetricPack.OpCacheDecode) && snap.uarch && snap.uarch.opcacheHitPct !== null) {
+        const ua = snap.uarch;
+        if (lbl1) lbl1.textContent = 'Actual';
+        if (lbl2) lbl2.textContent = 'Decode';
+        sumEl.innerHTML =
+          `<span class="c-bright">Micro-Arch Front-End &amp; L3 (${plan.muxShort})</span>` +
+          `<span class="c-dim"> │ </span>Actual CPI <span class="c-bright">${snap.actualCpi.toFixed(2)}</span>` +
+          `<span class="c-dim"> │ </span>Op-Cache <span class="${ua.legacyDecodePct >= 30.0 ? 'c-yellow c-bright' : 'c-green'}">${ua.opcacheHitPct.toFixed(1)}%</span>` +
+          `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
+
+        legendEl.innerHTML =
+          `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> Op-Cache (8-wide) <span style="color:${ua.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Legacy (4-wide)</span>`;
+
+        actualEl.innerHTML =
+          `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual CPI derived from Free Base fixed MSR aperf / irperf: ${snap.actualCpi.toFixed(3)}">${actTxt}</span>` +
+          `<span class="cpi-marker" title="Actual CPI boundary (${snap.actualCpi.toFixed(3)})"></span>` +
+          `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">${plan.coreSlots} Core PMCs + 3 Fixed MSRs + 4 L3 PMCs</span>`;
+
+        const ocPx = Math.max(12, Math.round((ua.opcacheHitPct / 100.0) * wrapW));
+        const decPx = Math.max(4, wrapW - ocPx);
+        const decHex = ua.legacyDecodePct >= 30.0 ? '#e06464' : '#d98d59';
+        const ocLbl = ocPx >= 95 ? `Op-Cache ${ua.opcacheHitPct.toFixed(1)}%` : (ocPx >= 36 ? `${ua.opcacheHitPct.toFixed(0)}%` : '');
+        const decLbl = decPx >= 86 ? `Legacy ${ua.legacyDecodePct.toFixed(1)}%` : (decPx >= 32 ? `${ua.legacyDecodePct.toFixed(0)}%` : '');
+        modeledEl.innerHTML =
+          `<span class="cpi-seg" style="width:${ocPx}px; background:#5dc27f;" title="Op-Cache dispatched ops (0x4302AA): ${ua.opcacheHitPct.toFixed(1)}%">${ocLbl}</span>` +
+          `<span class="cpi-seg" style="width:${decPx}px; background:${decHex};" title="Legacy 4-wide x86 decoder ops (0x4301AA): ${ua.legacyDecodePct.toFixed(1)}%">${decLbl}</span>`;
+        return;
+      }
+
+      if (lbl1) lbl1.textContent = 'Actual';
+      if (lbl2) lbl2.textContent = 'L3 Hit%';
+      sumEl.innerHTML =
+        `<span class="c-bright">Free Base Execution &amp; L3 (${plan.muxShort})</span>` +
+        `<span class="c-dim"> │ </span>Actual CPI <span class="c-bright">${snap.actualCpi.toFixed(2)}</span>` +
+        `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
+      legendEl.innerHTML = `<span class="c-dim">Press 'm' to add CPI stall packs</span>`;
+      actualEl.innerHTML =
+        `<span class="cpi-actual-fill" style="width:${actualPx}px;">${actTxt}</span>` +
+        `<span class="cpi-marker"></span>` +
+        `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">${plan.coreSlots}/${plan.capacitySlots} Core PMCs (${Math.round(plan.dutyCyclePct)}% duty)</span>`;
+      const hitPx = Math.max(12, Math.round((snap.l3HitPct / 100.0) * wrapW));
+      const missPx = Math.max(4, wrapW - hitPx);
       modeledEl.innerHTML =
-        `<span class="cpi-seg" style="width:${ocPx}px; background:#5dc27f;" title="Op-Cache dispatched ops (0x4302AA): ${ua.opcacheHitPct.toFixed(1)}%">${ocLbl}</span>` +
-        `<span class="cpi-seg" style="width:${decPx}px; background:${decHex};" title="Legacy 4-wide x86 decoder ops (0x4301AA): ${ua.legacyDecodePct.toFixed(1)}%">${decLbl}</span>`;
+        `<span class="cpi-seg" style="width:${hitPx}px; background:#5dc27f;">L3 Hit ${snap.l3HitPct.toFixed(1)}%</span>` +
+        `<span class="cpi-seg" style="width:${missPx}px; background:#dfb052;">${missPx >= 50 ? 'Miss ' + (100 - snap.l3HitPct).toFixed(1) + '%' : ''}</span>`;
       return;
     }
 
     if (lbl1) lbl1.textContent = 'Actual';
     if (lbl2) lbl2.textContent = 'Modeled';
 
-    const active = snap.activeTiers.filter(t => t.cpi > 0.0005);
     const modeledCpi = snap.modeledCpi;
     const actualCpi = snap.actualCpi;
     const oooHidden = snap.oooHiddenCpi;
@@ -261,11 +285,11 @@
     const flushTiers = active.filter(t => t.group === 'flush');
     const mlpTiers = active.filter(t => t.group === 'mlp');
     const fmtLeg = list => list.map(t => `<span><span style="color:${t.barColor}">█</span> ${t.short}</span>`).join(' ');
-    legendEl.innerHTML =
-      `<span><span class="c-muted">Flush:</span> ${fmtLeg(flushTiers)}</span>` +
-      `<span><span class="c-muted">MLP:</span> ${fmtLeg(mlpTiers)}</span>`;
+    const legParts = [];
+    if (flushTiers.length > 0) legParts.push(`<span><span class="c-muted">Flush:</span> ${fmtLeg(flushTiers)}</span>`);
+    if (mlpTiers.length > 0) legParts.push(`<span><span class="c-muted">MLP:</span> ${fmtLeg(mlpTiers)}</span>`);
+    legendEl.innerHTML = legParts.join('');
 
-    // Measure exact available pixel width so Actual & Modeled share identical horizontal scale (NEVER normalized to 100%)
     const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
     const maxScale = Math.max(actualCpi, modeledCpi, 0.4) * 1.06;
     const actualPx = Math.max(24, Math.round((actualCpi / maxScale) * wrapW));
@@ -276,11 +300,10 @@
     const oooTxt = oooPx >= 96 ? `OoO/MLP +${oooHidden.toFixed(2)}` : (oooPx >= 46 ? `+${oooHidden.toFixed(2)}` : '');
 
     actualEl.innerHTML =
-      `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual Measured CPI: ${actualCpi.toFixed(3)}">${actTxt}</span>` +
+      `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual Measured CPI (aperf / irperf): ${actualCpi.toFixed(3)}">${actTxt}</span>` +
       `<span class="cpi-marker" title="Actual CPI boundary (${actualCpi.toFixed(3)})"></span>` +
       (oooPx > 2 ? `<span class="cpi-ooo-fill" style="width:${oooPx}px;" title="OoO/MLP overlapped latency hidden: ${oooHidden.toFixed(3)} CPI">${oooTxt}</span>` : '');
 
-    // Modeled track: Flush left, MLP right, exact pixel sum = modeledPx
     const totalMod = Math.max(0.001, active.reduce((a, t) => a + t.cpi, 0));
     const ordered = [...flushTiers, ...mlpTiers];
     const rawPx = ordered.map(t => (t.cpi / totalMod) * modeledPx);
@@ -305,65 +328,29 @@
     modeledEl.innerHTML = modHtml;
   }
 
-  function renderTab1Overview() {
-    const snap = state.lastSnap;
-    if (!snap) return;
-    const muxId = MUX_PRESETS[state.muxIndex].id;
-    const base = state.activeBaseline;
-    const hasIpc = muxId !== 'tlb' && muxId !== 'no-pmu';
-    const isUarch = muxId === 'uarch';
-    const avgIpc = state.cum.samples > 0 ? state.cum.ipc / state.cum.samples : snap.ipc;
+  function buildActiveMicroArchRows(snap, plan, base) {
+    if (!snap.uarch) return [];
+    const ua = snap.uarch;
+    const cumUa = computeMicroArchMetrics({
+      inst: state.cum.instRaw,
+      dc_cross_ccx: state.cum.dcCrossCcxRaw,
+      locks_serial: state.cum.locksSerialRaw,
+      dec_uops: state.cum.decUopsRaw,
+      oc_uops: state.cum.ocUopsRaw,
+      stlf_interlock: state.cum.stlfInterlockRaw,
+      misal_access: state.cum.misalAccessRaw
+    }, plan) || ua;
 
-    // 1. Top Colored Braille Graphs
-    const ipcTitleEl = document.getElementById('g-ipc-title');
-    if (ipcTitleEl) ipcTitleEl.textContent = isUarch ? 'IPC (aperf)' : 'IPC';
-
-    const ipcColor = !hasIpc ? 'var(--fg-muted)' : (snap.ipc >= 1.2 ? 'var(--green)' : (snap.ipc >= 0.85 ? 'var(--cyan)' : 'var(--yellow)'));
-    const ipcHeader = hasIpc
-      ? `<span class="${severityClass(snap.ipc, 1.2, 0.75, true)} c-bright">${snap.ipc.toFixed(2)}</span>` +
-        `${fmtDeltaPct(snap.ipc, base ? base.ipc : null, true)}` +
-        `<span class="c-muted">│</span>` +
-        `${formatRetiringTag(snap.retiringPct, snap.retiringExact)}` +
-        `<span class="c-muted">│</span>` +
-        `<span class="c-dim">avg ${avgIpc.toFixed(2)}</span>` +
-        `<span class="c-muted">│</span>` +
-        `<span class="c-dim">Inst</span> <span>${fmtRate(snap.instPerSec)}</span>` +
-        `<span class="c-dim">${isUarch ? 'aperf' : 'Cyc'}</span> <span>${fmtRate(isUarch ? snap.aperfPerSec : snap.cycPerSec)}</span>`
-      : (muxId === 'no-pmu'
-        ? `<span class="c-dim">N/A (No-PMU Win32-Only) │ Zero-PMC Advisor Active</span>`
-        : `<span class="c-dim">N/A (TLB-Only 0-Mux) │ Inst ${fmtRate(snap.instPerSec)}</span>`);
-    document.getElementById('g-ipc-stats').innerHTML = ipcHeader;
-
-    renderBrailleGraph(
-      document.getElementById('g-ipc-canvas'),
-      document.getElementById('g-ipc-axis'),
-      hasIpc ? state.history.ipc : state.history.ipc.map(() => 0),
-      { minVal: 0.4, baseline: (hasIpc && base) ? base.ipc : null, color: ipcColor }
-    );
-
-    const theadEl = document.getElementById('overview-stall-thead');
-    const tbodyEl = document.getElementById('overview-stall-tbody');
-
-    if (isUarch && snap.uarch) {
-      const ua = snap.uarch;
-      const cumUa = computeMicroArchMetrics({
-        inst: state.cum.instRaw,
-        dc_cross_ccx: state.cum.dcCrossCcxRaw,
-        locks_serial: state.cum.locksSerialRaw,
-        dec_uops: state.cum.decUopsRaw,
-        oc_uops: state.cum.ocUopsRaw,
-        stlf_interlock: state.cum.stlfInterlockRaw,
-        misal_access: state.cum.misalAccessRaw
-      }, 'uarch') || ua;
-
-      const uarchRows = [
+    const rows = [];
+    if (plan.has(MetricPack.CrossCcxLocks) && ua.dcCrossCcxMpki !== null) {
+      rows.push(
         {
           key: 'dcCrossCcx',
           name: 'Cross-CCX Fills',
           hex: '0x430443',
           unit: 'MPKI',
           live: ua.dcCrossCcxMpki,
-          avg: cumUa.dcCrossCcxMpki,
+          avg: cumUa.dcCrossCcxMpki ?? ua.dcCrossCcxMpki,
           baseVal: base ? base.dcCrossCcxMpki : null,
           higherIsBetter: false,
           sev: ua.dcCrossCcxMpki >= 2.0 ? 'HI' : (ua.dcCrossCcxMpki >= 0.8 ? 'MD' : 'OK'),
@@ -378,7 +365,7 @@
           hex: '0x430325',
           unit: 'MPKI',
           live: ua.locksSerialMpki,
-          avg: cumUa.locksSerialMpki,
+          avg: cumUa.locksSerialMpki ?? ua.locksSerialMpki,
           baseVal: base ? base.locksSerialMpki : null,
           higherIsBetter: false,
           sev: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'HI' : (ua.locksSerialMpki >= 1.0 ? 'MD' : 'OK'),
@@ -386,14 +373,18 @@
           barColor: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'var(--red)' : (ua.locksSerialMpki >= 1.0 ? 'var(--yellow)' : 'var(--orange)'),
           graphTitle: 'Serialized Locks MPKI',
           series: state.history.locksSerial
-        },
+        }
+      );
+    }
+    if (plan.has(MetricPack.OpCacheDecode) && ua.legacyDecodePct !== null) {
+      rows.push(
         {
           key: 'legacyDecodePct',
           name: 'Legacy Decode %',
           hex: '0x4301AA',
           unit: '%',
           live: ua.legacyDecodePct,
-          avg: cumUa.legacyDecodePct,
+          avg: cumUa.legacyDecodePct ?? ua.legacyDecodePct,
           baseVal: base ? base.legacyDecodePct : null,
           higherIsBetter: false,
           sev: ua.legacyDecodePct >= 30.0 ? 'MD' : 'OK',
@@ -408,7 +399,7 @@
           hex: '0x4302AA',
           unit: '%',
           live: ua.opcacheHitPct,
-          avg: cumUa.opcacheHitPct,
+          avg: cumUa.opcacheHitPct ?? ua.opcacheHitPct,
           baseVal: base ? base.opcacheHitPct : null,
           higherIsBetter: true,
           sev: ua.opcacheHitPct <= 70.0 ? 'MD' : 'OK',
@@ -416,14 +407,18 @@
           barColor: ua.opcacheHitPct <= 70.0 ? 'var(--yellow)' : 'var(--green)',
           graphTitle: 'Op-Cache Hit %',
           series: state.history.opcacheHitPct
-        },
+        }
+      );
+    }
+    if (plan.has(MetricPack.StlfSplits) && ua.stlfInterlockMpki !== null) {
+      rows.push(
         {
           key: 'stlfInterlock',
           name: 'STLF Interlocks',
           hex: '0x430224',
           unit: 'MPKI',
           live: ua.stlfInterlockMpki,
-          avg: cumUa.stlfInterlockMpki,
+          avg: cumUa.stlfInterlockMpki ?? ua.stlfInterlockMpki,
           baseVal: base ? base.stlfInterlockMpki : null,
           higherIsBetter: false,
           sev: ua.stlfInterlockMpki >= 3.0 ? 'MD' : 'OK',
@@ -438,7 +433,7 @@
           hex: '0x430047',
           unit: 'MPKI',
           live: ua.misalAccessMpki,
-          avg: cumUa.misalAccessMpki,
+          avg: cumUa.misalAccessMpki ?? ua.misalAccessMpki,
           baseVal: base ? base.misalAccessMpki : null,
           higherIsBetter: false,
           sev: ua.misalAccessMpki >= 20.0 ? 'MD' : (ua.misalAccessMpki >= 10.0 ? 'LO' : 'OK'),
@@ -447,77 +442,94 @@
           graphTitle: 'Cache-Line Splits MPKI',
           series: state.history.misalAccess
         }
-      ];
-
-      // Pick top-right graph: default to Cross-CCX Fills MPKI when active or when all are OK; else highest-severity active micro-arch stall
-      const sevWeight = { HI: 3, MD: 2, LO: 1, OK: 0 };
-      const activeStallRows = uarchRows.filter(r => r.key !== 'opcacheHitPct' && sevWeight[r.sev] > 0);
-      const topGraphRow = (sevWeight[uarchRows[0].sev] >= 2 || activeStallRows.length === 0)
-        ? uarchRows[0]
-        : [...activeStallRows].sort((a, b) => (sevWeight[b.sev] - sevWeight[a.sev]) || ((b.live / b.scaleMax) - (a.live / a.scaleMax)))[0];
-
-      const fmtVal = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : (v < 1.0 ? v.toFixed(3) : v.toFixed(2));
-      const topSevCls = topGraphRow.sev === 'HI' ? 'c-red' : (topGraphRow.sev === 'MD' ? 'c-yellow' : (topGraphRow.sev === 'LO' ? 'c-cyan' : 'c-green'));
-
-      document.getElementById('g-top-title').textContent = topGraphRow.graphTitle;
-      document.getElementById('g-top-stats').innerHTML =
-        `<span class="${topSevCls} c-bright">${fmtVal(topGraphRow.live, topGraphRow.unit)}</span>` +
-        `${fmtDeltaPct(topGraphRow.live, topGraphRow.baseVal, topGraphRow.higherIsBetter)}` +
-        `<span class="c-muted">│</span>` +
-        `<span class="c-dim">avg ${fmtVal(topGraphRow.avg, topGraphRow.unit)}</span>`;
-
-      renderBrailleGraph(
-        document.getElementById('g-top-canvas'),
-        document.getElementById('g-top-axis'),
-        topGraphRow.series,
-        { minVal: 0, baseline: topGraphRow.baseVal, color: topGraphRow.barColor }
       );
+    }
+    return rows;
+  }
 
-      // 2. Micro-Arch Front-End & Execution Strip
-      renderCpiStack(snap);
+  function renderMicroArchTableRows(uarchRows, highlightTopKey) {
+    const sevBadge = s => {
+      if (s === 'HI') return `<span class="sev-hi">HI</span>`;
+      if (s === 'MD') return `<span class="sev-md">MD</span>`;
+      if (s === 'LO') return `<span class="sev-lo">LO</span>`;
+      return `<span class="c-green">OK</span>`;
+    };
+    return uarchRows.map(r => {
+      const isTop = r.key === highlightTopKey;
+      const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
+      const ratio = Math.max(0.0, Math.min(1.0, r.live / r.scaleMax));
+      const barLen = Math.max(1, Math.round(ratio * 20));
+      const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
+      const liveStr = r.unit === '%' ? `${r.live.toFixed(1)}%` : `${r.live < 1.0 ? r.live.toFixed(3) : r.live.toFixed(2)} MPKI`;
+      const avgStr = r.unit === '%' ? `${r.avg.toFixed(1)}%` : (r.avg < 1.0 ? r.avg.toFixed(3) : r.avg.toFixed(2));
+      return `
+        <tr class="${isTop ? 'top-bottleneck' : ''}" title="${r.name} (${r.hex})">
+          <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
+          <td class="${isTop ? 'c-bright' : ''}">${liveStr}</td>
+          <td class="c-dim">${avgStr}</td>
+          <td>${fmtDeltaPct(r.live, r.baseVal, r.higherIsBetter)}</td>
+          <td>${sevBadge(r.sev)}</td>
+          <td style="font-size: 12px;"><span style="color:${r.sev !== 'OK' || r.key === 'opcacheHitPct' ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
+        </tr>
+      `;
+    }).join('');
+  }
 
-      // 3. Dedicated 6-row Micro-Arch & Contention Table (zero empty '--' rows)
-      if (theadEl) {
-        theadEl.innerHTML = `
-          <tr>
-            <th class="left">MICRO-ARCH &amp; CONTENTION</th>
-            <th>LIVE</th>
-            <th>AVG</th>
-            <th>vs BASE</th>
-            <th>SEVERITY</th>
-            <th>IMPACT BAR</th>
-          </tr>
-        `;
-      }
+  function renderTab1Overview() {
+    const snap = state.lastSnap;
+    if (!snap) return;
+    const plan = getActivePlan();
+    const base = state.activeBaseline;
+    const hasFreeBase = !plan.noPmu;
+    const avgIpc = state.cum.samples > 0 ? state.cum.ipc / state.cum.samples : snap.ipc;
 
-      const topActiveKey = activeStallRows.length > 0 ? topGraphRow.key : null;
-      const sevBadge = s => {
-        if (s === 'HI') return `<span class="sev-hi">HI</span>`;
-        if (s === 'MD') return `<span class="sev-md">MD</span>`;
-        if (s === 'LO') return `<span class="sev-lo">LO</span>`;
-        return `<span class="c-green">OK</span>`;
-      };
+    // 1. Top-Left IPC Braille Graph (Always-On Free Base aperf/irperf)
+    const ipcTitleEl = document.getElementById('g-ipc-title');
+    if (ipcTitleEl) ipcTitleEl.textContent = 'IPC';
 
-      tbodyEl.innerHTML = uarchRows.map(r => {
-        const isTop = r.key === topActiveKey;
-        const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
-        const ratio = Math.max(0.0, Math.min(1.0, r.live / r.scaleMax));
-        const barLen = Math.max(1, Math.round(ratio * 20));
-        const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
-        const liveStr = r.unit === '%' ? `${r.live.toFixed(1)}%` : `${r.live < 1.0 ? r.live.toFixed(3) : r.live.toFixed(2)} MPKI`;
-        const avgStr = r.unit === '%' ? `${r.avg.toFixed(1)}%` : (r.avg < 1.0 ? r.avg.toFixed(3) : r.avg.toFixed(2));
-        return `
-          <tr class="${isTop ? 'top-bottleneck' : ''}" title="${r.name} (${r.hex})">
-            <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
-            <td class="${isTop ? 'c-bright' : ''}">${liveStr}</td>
-            <td class="c-dim">${avgStr}</td>
-            <td>${fmtDeltaPct(r.live, r.baseVal, r.higherIsBetter)}</td>
-            <td>${sevBadge(r.sev)}</td>
-            <td style="font-size: 12px;"><span style="color:${r.sev !== 'OK' || r.key === 'opcacheHitPct' ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
-          </tr>
-        `;
-      }).join('');
-    } else {
+    const ipcColor = !hasFreeBase ? 'var(--fg-muted)' : (snap.ipc >= 1.2 ? 'var(--green)' : (snap.ipc >= 0.85 ? 'var(--cyan)' : 'var(--yellow)'));
+    const ipcHeader = hasFreeBase
+      ? `<span class="${severityClass(snap.ipc, 1.2, 0.75, true)} c-bright">${snap.ipc.toFixed(2)}</span>` +
+        `${fmtDeltaPct(snap.ipc, base ? base.ipc : null, true)}` +
+        `<span class="c-muted">│</span>` +
+        `${formatRetiringTag(snap.retiringPct, snap.retiringExact)}` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">avg ${avgIpc.toFixed(2)}</span>` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">Inst</span> <span>${fmtRate(snap.instPerSec)}</span>` +
+        `<span class="c-dim">aperf</span> <span>${fmtRate(snap.aperfPerSec)}</span>`
+      : `<span class="c-dim">N/A (No-PMU Win32-Only) │ Zero-PMC Advisor Active</span>`;
+    document.getElementById('g-ipc-stats').innerHTML = ipcHeader;
+
+    renderBrailleGraph(
+      document.getElementById('g-ipc-canvas'),
+      document.getElementById('g-ipc-axis'),
+      hasFreeBase ? state.history.ipc : state.history.ipc.map(() => 0),
+      { minVal: 0.4, baseline: (hasFreeBase && base) ? base.ipc : null, color: ipcColor }
+    );
+
+    const activeCpiRows = snap.tableTiers
+      .filter(t => plan.has(t.requiredPack))
+      .map(t => {
+        const baseKey = {
+          dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
+          l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
+        }[t.key];
+        const avgVal = state.cum.samples > 0 ? state.cum[t.key] / state.cum.samples : t.mpki;
+        return { ...t, baseVal: base ? base[baseKey] : null, avgVal };
+      });
+    const activeUarchRows = buildActiveMicroArchRows(snap, plan, base);
+
+    const sevWeight = { HI: 3, MD: 2, LO: 1, OK: 0 };
+    const hotUarchRows = activeUarchRows.filter(r => r.key !== 'opcacheHitPct' && sevWeight[r.sev] > 0);
+    const topUarchRow = activeUarchRows.length > 0
+      ? ((hotUarchRows.length === 0)
+        ? activeUarchRows[0]
+        : [...hotUarchRows].sort((a, b) => (sevWeight[b.sev] - sevWeight[a.sev]) || ((b.live / b.scaleMax) - (a.live / a.scaleMax)))[0])
+      : null;
+
+    // 2. Top-Right Graph: Active Top CPI Stall -> Active Top Micro-Arch -> Free Base L3 Latency
+    if (activeCpiRows.length > 0 && snap.topTier) {
       const topTier = snap.topTier;
       const topBaseKey = {
         dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
@@ -538,11 +550,58 @@
         state.history.topStall,
         { minVal: 0, baseline: base ? base[topBaseKey] : null, color: topTier.barColor }
       );
+    } else if (topUarchRow) {
+      const fmtVal = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : (v < 1.0 ? v.toFixed(3) : v.toFixed(2));
+      const topSevCls = topUarchRow.sev === 'HI' ? 'c-red' : (topUarchRow.sev === 'MD' ? 'c-yellow' : (topUarchRow.sev === 'LO' ? 'c-cyan' : 'c-green'));
 
-      // 2. Two-Line Exclusive CPI Stack
-      renderCpiStack(snap);
+      document.getElementById('g-top-title').textContent = topUarchRow.graphTitle;
+      document.getElementById('g-top-stats').innerHTML =
+        `<span class="${topSevCls} c-bright">${fmtVal(topUarchRow.live, topUarchRow.unit)}</span>` +
+        `${fmtDeltaPct(topUarchRow.live, topUarchRow.baseVal, topUarchRow.higherIsBetter)}` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">avg ${fmtVal(topUarchRow.avg, topUarchRow.unit)}</span>`;
 
-      // 3. Unified Stall Table
+      renderBrailleGraph(
+        document.getElementById('g-top-canvas'),
+        document.getElementById('g-top-axis'),
+        topUarchRow.series,
+        { minVal: 0, baseline: topUarchRow.baseVal, color: topUarchRow.barColor }
+      );
+    } else if (hasFreeBase) {
+      const avgLat = state.cum.samples > 0 ? state.cum.latNs / state.cum.samples : snap.l3LatNs;
+      document.getElementById('g-top-title').textContent = 'L3 Miss Latency (ns)';
+      document.getElementById('g-top-stats').innerHTML =
+        `<span class="${severityClass(snap.l3LatNs, 55, 70)} c-bright">${snap.l3LatNs.toFixed(1)} ns</span>` +
+        `${fmtDeltaPct(snap.l3LatNs, base ? base.l3LatNs : null, false)}` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">avg ${avgLat.toFixed(1)} ns</span>`;
+      renderBrailleGraph(
+        document.getElementById('g-top-canvas'),
+        document.getElementById('g-top-axis'),
+        state.history.latNs,
+        { minVal: 25, baseline: base ? base.l3LatNs : null, color: 'var(--yellow)', fmtAxis: v => v.toFixed(0) }
+      );
+    } else {
+      document.getElementById('g-top-title').textContent = 'Top Stall MPKI';
+      document.getElementById('g-top-stats').innerHTML = `<span class="c-dim">N/A (No-PMU)</span>`;
+      renderBrailleGraph(
+        document.getElementById('g-top-canvas'),
+        document.getElementById('g-top-axis'),
+        state.history.topStall.map(() => 0),
+        { minVal: 0, color: 'var(--fg-muted)' }
+      );
+    }
+
+    // 3. Two-Line Exclusive CPI Stack (or Micro-Arch Decode / Free Base strip)
+    renderCpiStack(snap, plan);
+
+    // 4. Unified Stall Table + Compact Micro-Arch Sub-Table (NEVER pad with empty '--' rows)
+    const theadEl = document.getElementById('overview-stall-thead');
+    const tbodyEl = document.getElementById('overview-stall-tbody');
+    const uarchWrap = document.getElementById('overview-uarch-wrap');
+    const uarchTbody = document.getElementById('overview-uarch-tbody');
+
+    if (activeCpiRows.length > 0) {
       if (theadEl) {
         theadEl.innerHTML = `
           <tr>
@@ -555,32 +614,12 @@
           </tr>
         `;
       }
+      const maxCpi = Math.max(0.05, ...activeCpiRows.map(r => r.cpi));
+      const topKey = snap.topTier ? snap.topTier.key : null;
 
-      const rowsData = snap.tableTiers.map(t => {
-        const enabled = t.avail.includes(muxId);
-        const baseKey = {
-          dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
-          l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
-        }[t.key];
-        const avgVal = state.cum.samples > 0 ? state.cum[t.key] / state.cum.samples : t.mpki;
-        return { ...t, enabled, baseVal: base ? base[baseKey] : null, avgVal };
-      });
-
-      const maxCpi = Math.max(0.05, ...rowsData.filter(r => r.enabled).map(r => r.cpi));
-      const topKey = snap.topTier.key;
-
-      tbodyEl.innerHTML = rowsData.map(r => {
-        const isTop = r.enabled && r.key === topKey;
+      tbodyEl.innerHTML = activeCpiRows.map(r => {
+        const isTop = r.key === topKey;
         const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
-        if (!r.enabled) {
-          return `
-            <tr class="c-muted">
-              <td class="left">${prefix}${r.name}</td>
-              <td>--</td><td>--</td><td>--</td><td>--</td>
-              <td class="c-muted">not in ${getActiveMux().label}</td>
-            </tr>
-          `;
-        }
         const barLen = Math.max(1, Math.round((r.cpi / maxCpi) * 20));
         const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
         const mpkiDisp = r.mpki < 1.0 ? r.mpki.toFixed(3) : r.mpki.toFixed(2);
@@ -596,9 +635,65 @@
           </tr>
         `;
       }).join('');
+
+      // Whenever any Micro-Arch pack is enabled alongside CPI packs, show compact Micro-Arch sub-table below
+      if (activeUarchRows.length > 0 && uarchWrap && uarchTbody) {
+        uarchWrap.classList.remove('is-hidden');
+        const topUaKey = hotUarchRows.length > 0 ? topUarchRow.key : null;
+        uarchTbody.innerHTML = renderMicroArchTableRows(activeUarchRows, topUaKey);
+      } else if (uarchWrap) {
+        uarchWrap.classList.add('is-hidden');
+      }
+    } else if (activeUarchRows.length > 0) {
+      if (uarchWrap) uarchWrap.classList.add('is-hidden');
+      if (theadEl) {
+        theadEl.innerHTML = `
+          <tr>
+            <th class="left">MICRO-ARCH &amp; CONTENTION</th>
+            <th>LIVE</th>
+            <th>AVG</th>
+            <th>vs BASE</th>
+            <th>SEVERITY</th>
+            <th>IMPACT BAR</th>
+          </tr>
+        `;
+      }
+      const topUaKey = hotUarchRows.length > 0 ? topUarchRow.key : null;
+      tbodyEl.innerHTML = renderMicroArchTableRows(activeUarchRows, topUaKey);
+    } else {
+      if (uarchWrap) uarchWrap.classList.add('is-hidden');
+      if (theadEl) {
+        theadEl.innerHTML = `
+          <tr>
+            <th class="left">ACTIVE TELEMETRY</th>
+            <th>LIVE</th>
+            <th>AVG</th>
+            <th>vs BASE</th>
+            <th>STATUS</th>
+            <th>NOTE</th>
+          </tr>
+        `;
+      }
+      if (plan.noPmu) {
+        tbodyEl.innerHTML = `
+          <tr>
+            <td colspan="6" class="left c-dim" style="padding: 10px 2px;">
+              Hardware PMCs disabled (--no-pmu). Zero-PMC Win32 telemetry remains active on Tabs 1, 4, 5, 6, and 7. Press 'm' to enable Metric Packs.
+            </td>
+          </tr>
+        `;
+      } else {
+        tbodyEl.innerHTML = `
+          <tr>
+            <td colspan="6" class="left c-dim" style="padding: 10px 2px;">
+              Active packs (${plan.selectedPacks.join(', ')}) have no Overview stall rows. Free Base IPC, CPI, GHz, C0%, and L3 Latency remain live. Press 'm' to add CPI or Micro-Arch packs.
+            </td>
+          </tr>
+        `;
+      }
     }
 
-    // 4. Bottom 1-line OS Summary (strict anti-clutter: append GPU XX% when D3DKMT available; color yellow/red only >=97%)
+    // 5. Bottom 1-line OS Summary
     const proc = getAttachedProcess();
     const footerEl = document.getElementById('overview-footer');
     const pfCls = snap.pfRate >= 2000 ? 'c-red' : (snap.pfRate >= 500 ? 'c-yellow' : '');

@@ -1,8 +1,11 @@
-// Deterministic evidence-gated diagnostic engine (Tab 5 Advisor)
+// Deterministic pack-driven evidence-gated diagnostic engine (Tab 5 Advisor)
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, MUX_PRESETS, state, getActiveMux, getAttachedProcess, fmtRate, evaluateGroupARules, evaluatePmuRules, evaluateMicroArchRules } = Z;
+  const {
+    CONFIG, MetricPack, state, getActivePlan, resolvePlanFromLegacyOrPacks, buildNoPmuPlan,
+    getAttachedProcess, fmtRate, evaluateGroupARules, evaluatePmuRules, evaluateMicroArchRules
+  } = Z;
 
   // =========================================================================
   // 5B. DETERMINISTIC EVIDENCE-GATED DIAGNOSTIC ENGINE (Tab 5 Advisor)
@@ -72,10 +75,18 @@
     const ov = testOverride || null;
     const n = (ov && ov.samples !== undefined) ? ov.samples : state.cum.samples;
     const minSamples = CONFIG.advisor.minSamples;
-    const mux = (ov && ov.muxId)
-      ? (MUX_PRESETS.find(m => m.id === ov.muxId) || getActiveMux())
-      : getActiveMux();
-    const muxId = mux.id;
+
+    let plan;
+    if (ov && (ov.noPmu || ov.muxId === 'no-pmu')) {
+      plan = buildNoPmuPlan();
+    } else if (ov && ov.packs) {
+      plan = resolvePlanFromLegacyOrPacks(ov.packs);
+    } else if (ov && ov.muxId) {
+      plan = resolvePlanFromLegacyOrPacks(ov.muxId);
+    } else {
+      plan = getActivePlan();
+    }
+
     const proc = (ov && ('proc' in ov)) ? ov.proc : getAttachedProcess();
     const base = (ov && ('base' in ov)) ? ov.base : state.activeBaseline;
 
@@ -92,25 +103,39 @@
     const avgRetPct = avg('retiringPct');
     const avgGhz = avg('effGhz');
     const oooPct = avgModeledCpi > 0.001 ? Math.min(100, (avgOooCpi / avgModeledCpi) * 100) : 0;
-    const retExact = CONFIG.retiring.exactRetiring && muxId === 'full';
-    const retCtxStr = `Ret ${retExact ? '' : '~'}${Math.round(avgRetPct)}% of 6-wide Zen 2 (typical C++ ceiling ~45-60%)`;
 
-    const hasPmu = muxId !== 'no-pmu';
-    const hasIpcClock = hasPmu && muxId !== 'tlb';
-    const hasCacheCore = muxId === 'full' || muxId === 'ipc-mem';
-    const hasFull = muxId === 'full';
-    const hasTlb = muxId === 'full' || muxId === 'tlb';
-    const hasL3 = hasPmu && muxId !== 'tlb';
-    const hasUarch = muxId === 'uarch';
+    // Pack-driven capability flags (zero hardcoded preset branches)
+    const hasPmu = !plan.noPmu;
+    const hasFreeBase = hasPmu;
+    const hasDcDemand = plan.has(MetricPack.DcDemand);
+    const hasDcHwpf = plan.has(MetricPack.DcHwpf);
+    const hasL1L2Dc = plan.has(MetricPack.L1L2Dc);
+    const hasL1L2Ic = plan.has(MetricPack.L1L2Ic);
+    const hasL2Hwpf = plan.has(MetricPack.L2Hwpf);
+    const hasBranches = plan.has(MetricPack.Branches);
+    const hasItlb = plan.has(MetricPack.ItlbFull);
+    const hasDtlb = plan.has(MetricPack.DtlbFull);
+    const hasCrossCcxLocks = plan.has(MetricPack.CrossCcxLocks);
+    const hasOpCacheDecode = plan.has(MetricPack.OpCacheDecode);
+    const hasStlfSplits = plan.has(MetricPack.StlfSplits);
+    const hasExactRetiring = plan.has(MetricPack.ExactRetiring);
+    const hasAnyUarch = hasCrossCcxLocks || hasOpCacheDecode || hasStlfSplits;
+
+    const retCtxStr = `Ret ${hasExactRetiring ? '' : '~'}${Math.round(avgRetPct)}% of 6-wide Zen 2 (typical C++ ceiling ~45-60%)`;
 
     const inactiveRules = [];
     if (!hasPmu) {
       inactiveRules.push('Hardware PMCs (No-PMU: Group A Win32 active)');
     } else {
-      if (!hasTlb) inactiveRules.push('PE/Heap TLB');
-      if (!hasIpcClock) inactiveRules.push('Cache/DRAM/L3', 'Clock', 'SMT/CCX');
-      else if (hasUarch) inactiveRules.push('Cache/DRAM', 'Branch%', 'L1i/L2i');
-      else if (!hasFull) inactiveRules.push('Branch%', 'Demand/HWPF Split', 'L1i Capacity');
+      if (!hasDcDemand) inactiveRules.push('DRAM/L3');
+      else if (!hasDcHwpf) inactiveRules.push('Dem/HWPF');
+      if (!hasBranches) inactiveRules.push('Branches');
+      if (!hasL1L2Ic) inactiveRules.push('I-Cache');
+      if (!hasItlb) inactiveRules.push('iTLB');
+      if (!hasDtlb) inactiveRules.push('dTLB');
+      if (!hasCrossCcxLocks) inactiveRules.push('CCX/Locks');
+      if (!hasOpCacheDecode) inactiveRules.push('Op-Cache');
+      if (!hasStlfSplits) inactiveRules.push('STLF/Splits');
     }
 
     if (n < minSamples) {
@@ -121,8 +146,8 @@
         primaryVerdict: 'InsufficientData',
         verdictLabel: VERDICT_LABELS.InsufficientData,
         winningStallLine: `waiting for ${minSamples} rolling samples (${n}/${minSamples})`,
-        proofLine: `Mux: ${mux.label} │ Rolling cumulative window suppresses 1s single-tick flicker.`,
-        samples: n, muxLabel: mux.label, avgIpc, avgActualCpi, oooPct,
+        proofLine: `PMU: ${plan.label} | Rolling cumulative window suppresses 1s single-tick flicker.`,
+        samples: n, muxLabel: plan.label, plan, avgIpc, avgActualCpi, oooPct,
         inactiveRules, findings: [], healthyChecks: [], highCount: 0
       };
     }
@@ -135,8 +160,8 @@
         primaryVerdict: 'InsufficientData',
         verdictLabel: VERDICT_LABELS.InsufficientData,
         winningStallLine: 'workload mostly idle',
-        proofLine: `Avg C0 ${avgC0.toFixed(1)}%${hasPmu ? ` │ Inst ${fmtRate(avgInst)}` : ''} │ Waiting for active load.`,
-        samples: n, muxLabel: mux.label, avgIpc, avgActualCpi, oooPct,
+        proofLine: `Avg C0 ${avgC0.toFixed(1)}%${hasPmu ? ` | Inst ${fmtRate(avgInst)}` : ''} | Waiting for active load.`,
+        samples: n, muxLabel: plan.label, plan, avgIpc, avgActualCpi, oooPct,
         inactiveRules, findings: [], healthyChecks: [], highCount: 0
       };
     }
@@ -213,7 +238,7 @@
           return { name: b.name, pid: b.pid, sysCpuPct, singleCorePct: sysCpuPct * CONFIG.logicalCpus };
         });
 
-    // Deep-Dive Zero-PMC telemetry context (Present ETW, Spike Correlation, VA/JIT Map, Disk I/O)
+    // Deep-Dive Zero-PMC telemetry context
     const presentStats = (ov && ('presentStats' in ov))
       ? ov.presentStats
       : (state.lastSnap ? state.lastSnap.presentStats : null);
@@ -238,13 +263,13 @@
 
     const dramLatForCpi = avgL3LatCyc > 0 ? avgL3LatCyc : CONFIG.latencies.dramFallback;
     const avgTierCpi = {
-      dram:   hasCacheCore ? (avgDram * dramLatForCpi) / 1000.0 : 0,
-      l3Hit:  hasCacheCore ? (avgL3Hit * CONFIG.latencies.l3Hit) / 1000.0 : 0,
-      l2Dc:   hasCacheCore ? (avgL2DcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
-      l2Ic:   hasCacheCore ? (avgL2IcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
-      branch: hasFull ? (avgBranch * CONFIG.latencies.branchMispredict) / 1000.0 : 0,
-      l2Dtlb: hasTlb  ? (avgL2Dtlb * CONFIG.latencies.l2DtlbWalk) / 1000.0 : 0,
-      l2Itlb: hasTlb  ? (avgL2Itlb * CONFIG.latencies.l2ItlbWalk) / 1000.0 : 0
+      dram:   hasDcDemand ? (avgDram * dramLatForCpi) / 1000.0 : 0,
+      l3Hit:  hasDcDemand ? (avgL3Hit * CONFIG.latencies.l3Hit) / 1000.0 : 0,
+      l2Dc:   hasL1L2Dc   ? (avgL2DcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
+      l2Ic:   hasL1L2Ic   ? (avgL2IcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
+      branch: hasBranches ? (avgBranch * CONFIG.latencies.branchMispredict) / 1000.0 : 0,
+      l2Dtlb: hasDtlb     ? (avgL2Dtlb * CONFIG.latencies.l2DtlbWalk) / 1000.0 : 0,
+      l2Itlb: hasItlb     ? (avgL2Itlb * CONFIG.latencies.l2ItlbWalk) / 1000.0 : 0
     };
     const sumModeledCpi = Math.max(0.001, Object.values(avgTierCpi).reduce((a, b) => a + b, 0));
 
@@ -253,10 +278,11 @@
     const pushFinding = f => findings.push(f);
     const pushHealthy = (label, metric) => healthyChecks.push({ label, metric });
 
-
     const ctx = {
-      proc, base, mux, muxId,
-      hasPmu, hasIpcClock, hasCacheCore, hasFull, hasTlb, hasL3, hasUarch,
+      proc, base, plan,
+      hasPmu, hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
+      hasBranches, hasItlb, hasDtlb, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits, hasExactRetiring,
+      uarchRawOverride: ov ? (ov.uarchRaw || null) : null,
       avgC0, avgInst, avgIpc, avgActualCpi, avgModeledCpi, avgOooCpi, avgRetPct, avgGhz,
       avgDram, avgDemDram, avgHwpfDram, avgL2pfDram, avgL3Hit, avgL3Miss, avgL3HitPct,
       avgL3LatNs, avgL3LatCyc, avgL2IcMiss, avgL2IcExcl, avgL1Ic, avgL2DcExcl,
@@ -282,65 +308,62 @@
 
     const uarchRes = evaluateMicroArchRules(ctx);
     const {
-      uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound
+      uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound,
+      crossCcxCpi, stlfCpi
     } = uarchRes;
 
     const stallRankList = [
-      { key: 'dram',   name: 'DRAM',       cpi: avgTierCpi.dram },
-      { key: 'l3Hit',  name: 'L3 Hit',     cpi: avgTierCpi.l3Hit },
-      { key: 'l2Dc',   name: 'L2 D-Cache', cpi: avgTierCpi.l2Dc },
-      { key: 'l2Ic',   name: 'L2 I-Cache', cpi: avgTierCpi.l2Ic },
-      { key: 'branch', name: 'Branch',     cpi: avgTierCpi.branch },
-      { key: 'l2Dtlb', name: 'L2 dTLB',    cpi: avgTierCpi.l2Dtlb },
-      { key: 'l2Itlb', name: 'L2 iTLB',    cpi: avgTierCpi.l2Itlb }
-    ].sort((a, b) => b.cpi - a.cpi);
-    const winStall = stallRankList[0];
-    const winSharePct = Math.round((winStall.cpi / sumModeledCpi) * 100);
+      { key: 'dram',   name: 'DRAM',       cpi: avgTierCpi.dram,   active: hasDcDemand },
+      { key: 'l3Hit',  name: 'L3 Hit',     cpi: avgTierCpi.l3Hit,  active: hasDcDemand },
+      { key: 'l2Dc',   name: 'L2 D-Cache', cpi: avgTierCpi.l2Dc,   active: hasL1L2Dc },
+      { key: 'l2Ic',   name: 'L2 I-Cache', cpi: avgTierCpi.l2Ic,   active: hasL1L2Ic },
+      { key: 'branch', name: 'Branch',     cpi: avgTierCpi.branch, active: hasBranches },
+      { key: 'l2Dtlb', name: 'L2 dTLB',    cpi: avgTierCpi.l2Dtlb, active: hasDtlb },
+      { key: 'l2Itlb', name: 'L2 iTLB',    cpi: avgTierCpi.l2Itlb, active: hasItlb }
+    ].filter(x => x.active).sort((a, b) => b.cpi - a.cpi);
+    const winStall = stallRankList[0] || null;
+    const winSharePct = winStall ? Math.round((winStall.cpi / sumModeledCpi) * 100) : 0;
 
-    const feMissCpi = hasCacheCore ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
+    const feMissCpi = hasL1L2Ic ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
     const tlbCpi = avgTierCpi.l2Itlb + avgTierCpi.l2Dtlb;
+    const uarchBound = crossCcxBouncing || lockContention || stlfBound || splitsBound;
+    const uarchPeakCpi = Math.max(crossCcxCpi, stlfCpi);
 
     let primaryVerdict = hasPmu ? 'CoreExecutionBound' : 'Win32OnlyClear';
     if (!hasPmu) {
       primaryVerdict = 'Win32OnlyClear';
-    } else if (!hasIpcClock && hasTlb) {
-      primaryVerdict = (avgL2Itlb >= 0.35 || avgL2Dtlb >= 0.50) ? 'TlbTranslationBound' : 'CoreExecutionBound';
-    } else if (hasUarch) {
-      if (crossCcxBouncing || lockContention || stlfBound || splitsBound) {
-        primaryVerdict = 'MicroArchContention';
-      } else if (opcacheThrash) {
-        primaryVerdict = 'FrontendCodeBound';
-      } else if (smtContendedHot) {
-        primaryVerdict = 'SmtContentionBound';
-      } else {
-        primaryVerdict = 'CoreExecutionBound';
-      }
     } else if (dramQueueing) {
       primaryVerdict = 'MemoryBandwidthQueueing';
-    } else if (avgTierCpi.dram >= Math.max(avgTierCpi.l3Hit, avgTierCpi.branch, feMissCpi, tlbCpi) && (avgDram >= 1.5 || demandDramChase)) {
+    } else if (hasDcDemand && avgTierCpi.dram >= Math.max(avgTierCpi.l3Hit, avgTierCpi.branch, feMissCpi, tlbCpi) && (avgDram >= 1.5 || demandDramChase)) {
       primaryVerdict = 'MemoryLatencyBound';
+    } else if (uarchBound && (!hasDcDemand || uarchPeakCpi >= avgTierCpi.dram * 0.6 || avgDram < 1.5)) {
+      primaryVerdict = 'MicroArchContention';
     } else if (branchBound && avgTierCpi.branch >= Math.max(avgTierCpi.dram, avgTierCpi.l3Hit, feMissCpi)) {
       primaryVerdict = 'BranchMispredictBound';
-    } else if (icacheBound && feMissCpi >= Math.max(avgTierCpi.dram, avgTierCpi.branch) * 0.55) {
+    } else if ((icacheBound && feMissCpi >= Math.max(avgTierCpi.dram, avgTierCpi.branch) * 0.55) || (opcacheThrash && !winStall)) {
       primaryVerdict = 'FrontendCodeBound';
-    } else if (crossCcxActive || (avgTierCpi.l3Hit >= avgTierCpi.dram && avgL3Hit >= 5.0)) {
+    } else if (crossCcxActive || (hasDcDemand && avgTierCpi.l3Hit >= avgTierCpi.dram && avgL3Hit >= 5.0)) {
       primaryVerdict = 'L3CapacityOrCrossCcx';
-    } else if (tlbCpi >= 0.04 && (avgL2Itlb >= 0.50 || avgL2Dtlb >= 0.60)) {
+    } else if ((hasItlb || hasDtlb) && ((hasItlb && avgL2Itlb >= 0.35) || (hasDtlb && avgL2Dtlb >= 0.50)) && (tlbCpi >= 0.04 || (!hasDcDemand && !hasBranches && !hasL1L2Ic))) {
       primaryVerdict = 'TlbTranslationBound';
+    } else if (opcacheThrash) {
+      primaryVerdict = 'FrontendCodeBound';
+    } else if (uarchBound) {
+      primaryVerdict = 'MicroArchContention';
     } else if (smtContendedHot) {
       primaryVerdict = 'SmtContentionBound';
     }
 
-    // No orphan verdicts: always emit a top diagnostic row explaining the winning regime if no HI/MD rule fired for it
+    // No orphan verdicts: emit a top diagnostic anchor if no HI/MD rule fired for the winning regime
     const hasRegimeExplanation = findings.some(f =>
       (f.severity === 'HI' || f.severity === 'MD') && f.category === primaryVerdict
     );
 
     if (!hasRegimeExplanation && !gpuBound && primaryVerdict !== 'CoreExecutionBound' && primaryVerdict !== 'Win32OnlyClear') {
-      if (primaryVerdict === 'MemoryLatencyBound') {
-        const splitDesc = hasFull
+      if (primaryVerdict === 'MemoryLatencyBound' && hasDcDemand) {
+        const splitDesc = hasDcHwpf
           ? `Dem ${avgDemDram.toFixed(2)} (${(demShare * 100).toFixed(0)}%) + HWPF ${avgHwpfDram.toFixed(2)}`
-          : `Total ${avgDram.toFixed(2)} MPKI`;
+          : `Demand ${avgDemDram.toFixed(2)} MPKI`;
         pushFinding({
           id: 'primary_dram_latency',
           category: 'MemoryLatencyBound',
@@ -357,7 +380,7 @@
           cascade: `Every 10% drop in L3-miss latency directly reduces the largest stall tier (~${avgTierCpi.dram.toFixed(2)} CPI) and increases effective IPC.`,
           quickJumpTab: 2
         });
-      } else if (primaryVerdict === 'L3CapacityOrCrossCcx') {
+      } else if (primaryVerdict === 'L3CapacityOrCrossCcx' && hasDcDemand) {
         pushFinding({
           id: 'primary_l3_capacity',
           category: 'L3CapacityOrCrossCcx',
@@ -374,7 +397,10 @@
           cascade: `Improves L2 hit rate -> cuts 39-cycle L3 traffic and frees L3 bandwidth for neighboring threads.`,
           quickJumpTab: 2
         });
-      } else if (primaryVerdict === 'TlbTranslationBound') {
+      } else if (primaryVerdict === 'TlbTranslationBound' && (hasItlb || hasDtlb)) {
+        const parts = [];
+        if (hasItlb) parts.push(`iTLB ${avgL2Itlb.toFixed(2)}`);
+        if (hasDtlb) parts.push(`dTLB ${avgL2Dtlb.toFixed(2)}`);
         pushFinding({
           id: 'primary_tlb_bound',
           category: 'TlbTranslationBound',
@@ -384,11 +410,9 @@
           confidence: 'HIGH',
           impact: tlbCpi + 0.05,
           title: `Dominant stall: Hardware L2 TLB page walks`,
-          keyMetric: `iTLB ${avgL2Itlb.toFixed(2)} | dTLB ${avgL2Dtlb.toFixed(2)} MPKI`,
-          estGain: hasIpcClock
-            ? estimateAmdahlGain(avgActualCpi, sumModeledCpi, tlbCpi, 0.80, 'mlp', 'assumes -80% L2 TLB walks via 2 MiB large pages')
-            : { kind: 'qualitative', label: 'TLB walks', detail: 'Actual CPI unavailable in TLB-Only preset' },
-          why: `L2 iTLB (${avgL2Itlb.toFixed(2)} MPKI) and L2 dTLB (${avgL2Dtlb.toFixed(2)} MPKI) hardware page-table walks dominate translation overhead in the current window.`,
+          keyMetric: `${parts.join(' | ')} MPKI`,
+          estGain: estimateAmdahlGain(avgActualCpi, sumModeledCpi, tlbCpi, 0.80, 'mlp', 'assumes -80% L2 TLB walks via 2 MiB large pages'),
+          why: `${parts.join(' and ')} MPKI hardware page-table walks dominate translation overhead in the current window.`,
           action: `Inspect Tab 3 PE modules and Tab 4 heap arenas to back hot code and data working sets with 2 MiB large pages.`,
           cascade: `Cuts 4-level x86-64 page walks and reduces PTE cache eviction in L1d/L2/L3.`,
           quickJumpTab: 3
@@ -415,41 +439,57 @@
     let proofLine = '';
     if (!hasPmu) {
       const gpuStr = avgGpu3dPct !== null ? `GPU 3D ${avgGpu3dPct.toFixed(1)}%` : 'GPU N/A';
-      winningStallLine = `No-PMU Win32-Only: ${gpuStr} │ Max CPU ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 │ Hard Faults ${avgHardPageReads.toFixed(1)}/s`;
-      proofLine = `${gpuStr} │ Avg C0 ${avgC0.toFixed(1)}% │ Hard Faults ${avgHardPageReads.toFixed(1)}/s (Avail RAM ${avgAvailPhysPct.toFixed(1)}%) │ Priority ${priorityClass} / EcoQoS ${ecoQos}`;
-    } else if (!hasIpcClock) {
-      winningStallLine = `TLB-Only 0-Mux: L2 iTLB ${avgL2Itlb.toFixed(2)} / dTLB ${avgL2Dtlb.toFixed(2)} MPKI`;
-      proofLine = `L2 iTLB ${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%) │ L2 dTLB ${avgL2Dtlb.toFixed(2)} MPKI │ Inst ${fmtRate(avgInst)}`;
-    } else if (hasUarch && uarchMetrics) {
-      winningStallLine = `Micro-Arch 0-Mux: Cross-CCX ${uarchMetrics.dcCrossCcxMpki.toFixed(2)} │ Locks ${uarchMetrics.locksSerialMpki.toFixed(2)} │ Op-Cache ${uarchMetrics.opcacheHitPct.toFixed(1)}%`;
-      proofLine = `IPC (aperf) ${avgIpc.toFixed(2)} (CPI ${avgActualCpi.toFixed(2)}) │ Cross-CCX ${uarchMetrics.dcCrossCcxMpki.toFixed(2)} │ Locks ${uarchMetrics.locksSerialMpki.toFixed(2)} │ Op-Cache ${uarchMetrics.opcacheHitPct.toFixed(1)}% │ STLF ${uarchMetrics.stlfInterlockMpki.toFixed(2)} │ Splits ${uarchMetrics.misalAccessMpki.toFixed(1)} MPKI │ L3 ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns`;
+      winningStallLine = `No-PMU Win32-Only: ${gpuStr} | Max CPU ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 | Hard Faults ${avgHardPageReads.toFixed(1)}/s`;
+      proofLine = `${gpuStr} | Avg C0 ${avgC0.toFixed(1)}% | Hard Faults ${avgHardPageReads.toFixed(1)}/s (Avail RAM ${avgAvailPhysPct.toFixed(1)}%) | Priority ${priorityClass} / EcoQoS ${ecoQos}`;
+    } else if (!winStall && hasAnyUarch && uarchMetrics) {
+      const uaParts = [];
+      if (hasCrossCcxLocks && uarchMetrics.dcCrossCcxMpki !== null) {
+        uaParts.push(`Cross-CCX ${uarchMetrics.dcCrossCcxMpki.toFixed(2)}`);
+        uaParts.push(`Locks ${uarchMetrics.locksSerialMpki.toFixed(2)}`);
+      }
+      if (hasOpCacheDecode && uarchMetrics.opcacheHitPct !== null) {
+        uaParts.push(`Op-Cache ${uarchMetrics.opcacheHitPct.toFixed(1)}%`);
+      }
+      if (hasStlfSplits && uarchMetrics.stlfInterlockMpki !== null) {
+        uaParts.push(`STLF ${uarchMetrics.stlfInterlockMpki.toFixed(2)}`);
+        uaParts.push(`Splits ${uarchMetrics.misalAccessMpki.toFixed(1)}`);
+      }
+      winningStallLine = `${plan.label}: ${uaParts.slice(0, 3).join(' | ')}`;
+      proofLine = `IPC ${avgIpc.toFixed(2)} (CPI ${avgActualCpi.toFixed(2)}) | ${uaParts.join(' | ')} | L3 ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns`;
+    } else if (!winStall) {
+      winningStallLine = `${plan.label}: Free Base IPC ${avgIpc.toFixed(2)} | L3 ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns`;
+      proofLine = `Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr} | L3 Hit ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns`;
     } else {
       winningStallLine = `${winStall.name} is #1 stall: ${winStall.cpi.toFixed(2)} CPI / ${winSharePct}% of modeled stalls`;
-      if (primaryVerdict === 'MemoryLatencyBound' || primaryVerdict === 'MemoryBandwidthQueueing') {
-        const splitStr = hasFull
+      if ((primaryVerdict === 'MemoryLatencyBound' || primaryVerdict === 'MemoryBandwidthQueueing') && hasDcDemand) {
+        const splitStr = hasDcHwpf
           ? ` (Dem ${avgDemDram.toFixed(2)} / ${(demShare * 100).toFixed(0)}% + HWPF ${avgHwpfDram.toFixed(2)})`
           : '';
-        proofLine = `DRAM ${avgDram.toFixed(2)} MPKI${splitStr} @ ${avgL3LatNs.toFixed(1)} ns (${avgL3LatCyc.toFixed(0)} cyc) │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr} │ OoO hides ${oooPct.toFixed(0)}%`;
-      } else if (primaryVerdict === 'BranchMispredictBound') {
-        proofLine = `Branch ${avgBranch.toFixed(2)} MPKI (${avgBranchPct.toFixed(2)}% miss @ ${CONFIG.latencies.branchMispredict.toFixed(0)} cyc) │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr}`;
-      } else if (primaryVerdict === 'FrontendCodeBound') {
-        proofLine = `L2 I-Cache miss ${avgL2IcMiss.toFixed(2)} MPKI${hasFull ? ` │ L1i miss ${avgL1Ic.toFixed(1)} MPKI` : ''} │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr}`;
+        proofLine = `DRAM ${avgDram.toFixed(2)} MPKI${splitStr} @ ${avgL3LatNs.toFixed(1)} ns (${avgL3LatCyc.toFixed(0)} cyc) | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr} | OoO hides ${oooPct.toFixed(0)}%`;
+      } else if (primaryVerdict === 'BranchMispredictBound' && hasBranches) {
+        proofLine = `Branch ${avgBranch.toFixed(2)} MPKI (${avgBranchPct.toFixed(2)}% miss @ ${CONFIG.latencies.branchMispredict.toFixed(0)} cyc) | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr}`;
+      } else if (primaryVerdict === 'FrontendCodeBound' && hasL1L2Ic) {
+        proofLine = `L2 I-Cache miss ${avgL2IcMiss.toFixed(2)} MPKI | L1i miss ${avgL1Ic.toFixed(1)} MPKI | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr}`;
       } else if (primaryVerdict === 'L3CapacityOrCrossCcx') {
-        proofLine = `L3 Hit ${avgL3Hit.toFixed(2)} MPKI │ Unified L3 Hit ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr}`;
+        proofLine = `${hasDcDemand ? `L3 Hit ${avgL3Hit.toFixed(2)} MPKI | ` : ''}Unified L3 Hit ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr}`;
       } else if (primaryVerdict === 'SmtContentionBound') {
-        proofLine = `${hotCoreProof} │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr}`;
+        proofLine = `${hotCoreProof} | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr}`;
       } else if (primaryVerdict === 'TlbTranslationBound') {
-        proofLine = `L2 iTLB ${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%) │ L2 dTLB ${avgL2Dtlb.toFixed(2)} MPKI │ Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr}`;
+        const tlbParts = [];
+        if (hasItlb) tlbParts.push(`L2 iTLB ${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%)`);
+        if (hasDtlb) tlbParts.push(`L2 dTLB ${avgL2Dtlb.toFixed(2)} MPKI`);
+        proofLine = `${tlbParts.join(' | ')} | Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr}`;
       } else {
-        proofLine = `Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) │ ${retCtxStr} │ DRAM ${avgDram.toFixed(2)} MPKI @ ${avgL3LatNs.toFixed(1)} ns │ OoO hides ${oooPct.toFixed(0)}%`;
+        const dramPart = hasDcDemand ? `DRAM ${avgDram.toFixed(2)} MPKI @ ` : `L3 ${avgL3HitPct.toFixed(1)}% @ `;
+        proofLine = `Actual CPI ${avgActualCpi.toFixed(2)} (${avgIpc.toFixed(2)} IPC) | ${retCtxStr} | ${dramPart}${avgL3LatNs.toFixed(1)} ns | OoO hides ${oooPct.toFixed(0)}%`;
       }
     }
 
     let verdictLabel = VERDICT_LABELS[primaryVerdict] || primaryVerdict;
     if (gpuBound) {
       verdictLabel = VERDICT_LABELS.GpuBound;
-      winningStallLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% │ Hottest ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 │ CPU: ${VERDICT_LABELS[primaryVerdict] || primaryVerdict}`;
-      proofLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% (>=97%) with ${hottestCpuTag} at ${hottestCpuC0.toFixed(0)}% C0 (<75%) │ ${proofLine}`;
+      winningStallLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% | Hottest ${hottestCpuTag} ${hottestCpuC0.toFixed(0)}% C0 | CPU: ${VERDICT_LABELS[primaryVerdict] || primaryVerdict}`;
+      proofLine = `GPU 3D ${avgGpu3dPct.toFixed(1)}% (>=97%) with ${hottestCpuTag} at ${hottestCpuC0.toFixed(0)}% C0 (<75%) | ${proofLine}`;
     }
 
     const highCount = findings.filter(f => f.severity === 'HI').length;
@@ -462,7 +502,8 @@
       winningStallLine,
       proofLine,
       samples: n,
-      muxLabel: mux.label,
+      muxLabel: plan.label,
+      plan,
       avgIpc, avgActualCpi, oooPct,
       inactiveRules,
       findings,

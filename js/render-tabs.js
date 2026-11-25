@@ -3,7 +3,7 @@
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
-    CONFIG, MUX_PRESETS, PROCESSES, state, getActiveMux, getAttachedProcess,
+    CONFIG, MetricPack, PROCESSES, state, getActivePlan, getAttachedProcess,
     fmtAddr, fmtDeltaPct, fmtMiB, fmtRate, fmtTimeSec, severityClass,
     evaluateDiagnostics, formatEstGainCell, renderBrailleGraph,
     formatThreadEntry, formatAffinityHex, describeAffinityMask,
@@ -13,17 +13,20 @@
   function renderTab2Cache() {
     const snap = state.lastSnap;
     if (!snap) return;
-    const muxId = MUX_PRESETS[state.muxIndex].id;
+    const plan = getActivePlan();
     const base = state.activeBaseline;
-    const hasFull = muxId === 'full';
-    const hasCache = muxId === 'full' || muxId === 'ipc-mem';
-    const hasL3 = muxId !== 'tlb' && muxId !== 'no-pmu';
+    const hasL1L2Ic = plan.has(MetricPack.L1L2Ic);
+    const hasL1L2Dc = plan.has(MetricPack.L1L2Dc);
+    const hasDcDemand = plan.has(MetricPack.DcDemand);
+    const hasDcHwpf = plan.has(MetricPack.DcHwpf);
+    const hasL2Hwpf = plan.has(MetricPack.L2Hwpf);
+    const hasL3 = !plan.noPmu;
     const instM = snap.instPerSec / 1000.0;
 
     const rows = [
       {
         label: 'L1 -> L2 I-Cache',
-        avail: hasFull,
+        avail: hasL1L2Ic,
         rate: fmtRate(snap.l1ic * instM),
         dem: snap.l1ic.toFixed(2),
         hwpf: '--',
@@ -33,7 +36,7 @@
       },
       {
         label: 'L1 -> L2 D-Cache',
-        avail: hasFull,
+        avail: hasL1L2Dc,
         rate: fmtRate(snap.l1dc * instM),
         dem: snap.l1dc.toFixed(2),
         hwpf: '--',
@@ -43,27 +46,29 @@
       },
       {
         label: 'D-Cache -> L3 Hit',
-        avail: hasCache,
-        rate: fmtRate((snap.demL3 + (hasFull ? snap.hwpfL3 : 0)) * instM),
+        avail: hasDcDemand,
+        rate: fmtRate((snap.demL3 + (hasDcHwpf ? snap.hwpfL3 : 0)) * instM),
         dem: snap.demL3.toFixed(2),
-        hwpf: hasFull ? snap.hwpfL3.toFixed(2) : '--',
-        total: snap.demL3 + (hasFull ? snap.hwpfL3 : 0),
+        hwpf: hasDcHwpf ? snap.hwpfL3.toFixed(2) : '--',
+        total: snap.demL3 + (hasDcHwpf ? snap.hwpfL3 : 0),
         base: base ? base.l3HitMpki : null,
         note: `${((snap.demL3 / Math.max(0.01, snap.demL3 + snap.demDram)) * 100).toFixed(1)}% of DC fills`
       },
       {
         label: 'D-Cache -> DRAM',
-        avail: hasCache,
-        rate: fmtRate((snap.demDram + (hasFull ? snap.hwpfDram : 0)) * instM),
+        avail: hasDcDemand,
+        rate: fmtRate((snap.demDram + (hasDcHwpf ? snap.hwpfDram : 0)) * instM),
         dem: snap.demDram.toFixed(2),
-        hwpf: hasFull ? snap.hwpfDram.toFixed(2) : '--',
-        total: snap.demDram + (hasFull ? snap.hwpfDram : 0),
+        hwpf: hasDcHwpf ? snap.hwpfDram.toFixed(2) : '--',
+        total: snap.demDram + (hasDcHwpf ? snap.hwpfDram : 0),
         base: base ? base.dramMpki : null,
-        note: `${((snap.demDram / Math.max(0.01, snap.demDram + (hasFull ? snap.hwpfDram : 0))) * 100).toFixed(0)}% Demand`
+        note: hasDcHwpf
+          ? `${((snap.demDram / Math.max(0.01, snap.demDram + snap.hwpfDram)) * 100).toFixed(0)}% Demand`
+          : `Demand only (enable DcHwpf for split)`
       },
       {
         label: 'L2 HWPF -> L3',
-        avail: hasFull,
+        avail: hasL2Hwpf,
         rate: fmtRate(snap.l2pfL3 * instM),
         dem: '--',
         hwpf: snap.l2pfL3.toFixed(2),
@@ -73,7 +78,7 @@
       },
       {
         label: 'L2 HWPF -> DRAM',
-        avail: hasFull,
+        avail: hasL2Hwpf,
         rate: fmtRate(snap.l2pfDram * instM),
         dem: '--',
         hwpf: snap.l2pfDram.toFixed(2),
@@ -124,19 +129,19 @@
         `<span>Unified L3 Hit Rate: <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span>` +
         `<span class="sep">│</span>L3 Access: ${fmtRate(snap.l3Acc * instM)}` +
         `<span class="sep">│</span>Measured L3 Miss Latency: <span class="${latCls} c-bright">${snap.l3LatCyc.toFixed(0)} cyc (${snap.l3LatNs.toFixed(1)} ns)</span></span>` +
-        `<span class="c-dim">${muxId === 'uarch' ? 'CCX L3 PMU active in Micro-Arch (0-Mux)' : 'CCX0 + CCX1 Aggregate'}</span>`;
+        `<span class="c-dim">Always-On Free Base (CCX0 + CCX1, 0-Mux)</span>`;
     } else {
-      l3El.innerHTML = `<span class="c-dim">Cache &amp; CCX L3 counters inactive in TLB-Only (0-Mux) preset. Press 'm' to switch.</span>`;
+      l3El.innerHTML = `<span class="c-dim">Cache &amp; CCX L3 counters inactive in No-PMU mode. Press 'm' to enable Metric Packs.</span>`;
     }
 
-    const avgDram = state.cum.samples > 0 ? state.cum.dram / state.cum.samples : snap.dramTotal;
+    const avgDram = state.cum.samples > 0 ? state.cum.dram / state.cum.samples : snap.dramExcl;
     const avgLat = state.cum.samples > 0 ? state.cum.latNs / state.cum.samples : snap.l3LatNs;
 
-    document.getElementById('g-dram-stats').innerHTML = hasCache
-      ? `<span class="${severityClass(snap.dramTotal, 1.5, 3.0)} c-bright">${snap.dramTotal.toFixed(2)}</span>` +
-        `${fmtDeltaPct(snap.dramTotal, base ? base.dramMpki : null, false)}` +
+    document.getElementById('g-dram-stats').innerHTML = hasDcDemand
+      ? `<span class="${severityClass(snap.dramExcl, 1.5, 3.0)} c-bright">${snap.dramExcl.toFixed(2)}</span>` +
+        `${fmtDeltaPct(snap.dramExcl, base ? base.dramMpki : null, false)}` +
         `<span class="c-dim">avg ${avgDram.toFixed(2)}</span>`
-      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
+      : `<span class="c-dim">N/A (enable DcDemand via 'm')</span>`;
 
     document.getElementById('g-lat-stats').innerHTML = hasL3
       ? `<span class="${severityClass(snap.l3LatNs, 55, 70)} c-bright">${snap.l3LatNs.toFixed(1)} ns</span>` +
@@ -147,8 +152,8 @@
     renderBrailleGraph(
       document.getElementById('g-dram-canvas'),
       document.getElementById('g-dram-axis'),
-      hasCache ? state.history.dram : state.history.dram.map(() => 0),
-      { minVal: 0, baseline: (hasCache && base) ? base.dramMpki : null, color: hasCache ? 'var(--red)' : 'var(--fg-muted)' }
+      hasDcDemand ? state.history.dram : state.history.dram.map(() => 0),
+      { minVal: 0, baseline: (hasDcDemand && base) ? base.dramMpki : null, color: hasDcDemand ? 'var(--red)' : 'var(--fg-muted)' }
     );
     renderBrailleGraph(
       document.getElementById('g-lat-canvas'),
@@ -161,36 +166,37 @@
   function renderTab3Tlb() {
     const snap = state.lastSnap;
     if (!snap) return;
-    const muxId = MUX_PRESETS[state.muxIndex].id;
-    const hasTlb = muxId === 'full' || muxId === 'tlb';
+    const plan = getActivePlan();
+    const hasItlb = plan.has(MetricPack.ItlbFull);
+    const hasDtlb = plan.has(MetricPack.DtlbFull);
     const base = state.activeBaseline;
 
     const avgItlb = state.cum.samples > 0 ? state.cum.l2itlb / state.cum.samples : snap.l2Itlb;
     const avgDtlb = state.cum.samples > 0 ? state.cum.l2dtlb / state.cum.samples : snap.l2Dtlb;
 
-    document.getElementById('g-itlb-stats').innerHTML = hasTlb
+    document.getElementById('g-itlb-stats').innerHTML = hasItlb
       ? `<span class="${severityClass(snap.l2Itlb, 0.35, 0.80)} c-bright">${snap.l2Itlb.toFixed(3)}</span>` +
         `${fmtDeltaPct(snap.l2Itlb, base ? base.l2itlbMpki : null, false)}` +
         `<span class="c-dim">L1m ${snap.l1ItlbMissPct.toFixed(2)}% │ avg ${avgItlb.toFixed(3)}</span>`
-      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
+      : `<span class="c-dim">N/A (enable ItlbFull via 'm')</span>`;
 
-    document.getElementById('g-dtlb-stats').innerHTML = hasTlb
+    document.getElementById('g-dtlb-stats').innerHTML = hasDtlb
       ? `<span class="${severityClass(snap.l2Dtlb, 0.50, 1.00)} c-bright">${snap.l2Dtlb.toFixed(3)}</span>` +
         `${fmtDeltaPct(snap.l2Dtlb, base ? base.l2dtlbMpki : null, false)}` +
         `<span class="c-dim">L1m ${snap.l1DtlbMissPct.toFixed(2)}% │ avg ${avgDtlb.toFixed(3)}</span>`
-      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
+      : `<span class="c-dim">N/A (enable DtlbFull via 'm')</span>`;
 
     renderBrailleGraph(
       document.getElementById('g-itlb-canvas'),
       document.getElementById('g-itlb-axis'),
-      hasTlb ? state.history.l2itlb : state.history.l2itlb.map(() => 0),
-      { minVal: 0, minSpan: 0.25, baseline: (hasTlb && base) ? base.l2itlbMpki : null, color: hasTlb ? 'var(--cyan)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(2) }
+      hasItlb ? state.history.l2itlb : state.history.l2itlb.map(() => 0),
+      { minVal: 0, minSpan: 0.25, baseline: (hasItlb && base) ? base.l2itlbMpki : null, color: hasItlb ? 'var(--cyan)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(2) }
     );
     renderBrailleGraph(
       document.getElementById('g-dtlb-canvas'),
       document.getElementById('g-dtlb-axis'),
-      hasTlb ? state.history.l2dtlb : state.history.l2dtlb.map(() => 0),
-      { minVal: 0, minSpan: 0.35, baseline: (hasTlb && base) ? base.l2dtlbMpki : null, color: hasTlb ? 'var(--blue)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(2) }
+      hasDtlb ? state.history.l2dtlb : state.history.l2dtlb.map(() => 0),
+      { minVal: 0, minSpan: 0.35, baseline: (hasDtlb && base) ? base.l2dtlbMpki : null, color: hasDtlb ? 'var(--blue)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(2) }
     );
 
     const proc = getAttachedProcess();

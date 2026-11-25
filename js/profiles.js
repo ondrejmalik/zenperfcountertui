@@ -972,11 +972,18 @@
     coreC0: [44, 6, 36, 4, 22, 1, 31, 5, 16, 1, 10, 0]
   };
 
-  // Built-in saved baseline fixtures (with muxPreset + metadata)
+  // Built-in saved baseline fixtures (with enabled_packs, core_pmc_slots, mux_groups)
+  const FULL_FIXTURE_PACKS = [
+    'DcDemand', 'DcHwpf', 'L1L2Dc', 'L1L2Ic', 'L2Hwpf',
+    'Branches', 'ItlbFull', 'DtlbFull', 'ExactRetiring'
+  ];
   const BASELINE_PRESETS = {
     '4K-Default': {
       name: 'deadlock_4k_default.json',
       muxPreset: 'full',
+      enabled_packs: [...FULL_FIXTURE_PACKS],
+      core_pmc_slots: 18,
+      mux_groups: 3,
       target: 'deadlock.exe',
       elapsedSec: 30,
       samples: 30,
@@ -1005,6 +1012,9 @@
     '2MiB-IFEO': {
       name: 'deadlock_2m_ifeo.json',
       muxPreset: 'full',
+      enabled_packs: [...FULL_FIXTURE_PACKS],
+      core_pmc_slots: 18,
+      mux_groups: 3,
       target: 'deadlock.exe',
       elapsedSec: 30,
       samples: 30,

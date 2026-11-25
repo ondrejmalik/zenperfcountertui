@@ -1181,3 +1181,105 @@ table.tui-table tr.selected {
   padding-top: 5px;
   border-top: 1px solid var(--border-dim);
 }
+
+/* Modular Metric Pack Picker Modal ('m') & Overview Micro-Arch Sub-Table */
+.overview-uarch-wrap {
+  margin-top: 4px;
+}
+
+.pack-budget-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  margin-bottom: 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.pack-budget-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pack-bins-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: 0;
+}
+
+.pack-bin-block {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.pack-free-line {
+  font-size: 11.5px;
+}
+
+.pack-presets-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-dim);
+  flex-shrink: 0;
+}
+
+.pack-preset-btn {
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  color: var(--fg-dim);
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 2px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pack-preset-btn:hover {
+  border-color: var(--fg-dim);
+  color: var(--fg-bright);
+  background: var(--bg-select);
+}
+
+.pack-preset-btn.active {
+  border-color: var(--cyan);
+  color: var(--fg-bright);
+  background: rgba(95, 180, 201, 0.12);
+}
+
+.pack-guardrail-note {
+  display: none;
+  font-size: 11.5px;
+  color: var(--yellow);
+  padding: 2px 4px 5px 4px;
+  flex-shrink: 0;
+}
+
+.pack-guardrail-note.visible {
+  display: block;
+}
+
+.pack-picker-scroll {
+  max-height: 360px;
+}
+
+.btn-pack-apply {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.btn-pack-apply:hover {
+  border-color: var(--green);
+  background: rgba(93, 194, 127, 0.14);
+  color: var(--fg-bright);
+}

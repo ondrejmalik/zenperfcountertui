@@ -6,7 +6,7 @@
 
   function evaluateGroupARules(ctx) {
     const {
-      proc, hasTlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
+      proc, hasItlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
       avgGpu3dPct, avgCoreDpc, avgCoreIrq, avgCoreIrqRate,
       avgHardPageReads, avgAvailPhysPct, avgCommitPct,
       avgCtxSw, avgSyncWaitPct, topWaitReason,
@@ -232,7 +232,7 @@
           severity: 'HI',
           scope: '[OS / TUI]',
           confidence: 'HIGH',
-          impact: 0.46 + (hasTlb ? avgTierCpi.l2Itlb : 0),
+          impact: 0.46 + (hasItlb ? avgTierCpi.l2Itlb : 0),
           title: privMissing
             ? `Missing SeLockMemoryPrivilege (${shortTag} failed 2 MiB backing)`
             : `Contiguous 2 MiB RAM Fragmentation (${shortTag} failed 2 MiB backing)`,
@@ -305,7 +305,7 @@
 
     // --- GROUP A RULE 9: Residual 4 KiB JIT iTLB Misses (PE Already >=75% 2 MiB) ---
     let jitResidualTriggered = false;
-    if (proc && hasTlb && avgL2Itlb >= 0.35 && vaMap && vaMap.imageLarge2mPct >= 75.0 && vaMap.privateJitExec4kMiB >= 8.0) {
+    if (proc && hasItlb && avgL2Itlb >= 0.35 && vaMap && vaMap.imageLarge2mPct >= 75.0 && vaMap.privateJitExec4kMiB >= 8.0) {
       jitResidualTriggered = true;
       pushFinding({
         id: 'jit_4k_itlb_residual',

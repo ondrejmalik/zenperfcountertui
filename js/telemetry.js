@@ -3,8 +3,8 @@
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
-    CONFIG, MUX_PRESETS, SYSTEM_WIDE_PROFILE, SYSTEM_WIDE_WIN32, HISTORY_LEN, state,
-    computeMicroArchMetrics, getAttachedProcess, pushRing,
+    CONFIG, MetricPack, SYSTEM_WIDE_PROFILE, SYSTEM_WIDE_WIN32, HISTORY_LEN, state,
+    getActivePlan, computeMicroArchMetrics, getAttachedProcess, pushRing,
     PRESENT_RING_LEN, firstSetBit, isThreadSmtContended,
     computeFrametimeStats, recordFrametimeSpikeIfMatched, analyzeSpikeCorrelations,
     aggregateVaRegions, buildSimulatedVaRegionsForProcess
@@ -28,32 +28,28 @@
 
     const burst = Math.sin(noisePhase * 0.14) > 0.72 ? 1.12 : 1.0;
 
-    const muxId = MUX_PRESETS[state.muxIndex].id;
+    const plan = getActivePlan();
     const simEffGhz = Math.min(4.40, Math.max(3.40, jitter(prof.effGhz, 0.014, 0.4)));
     const simIpc = Math.max(0.45, jitter(prof.ipc / Math.sqrt(burst), 0.052, 1.1));
     const instPerSec = simEffGhz * 1e9 * simIpc * 4.2;
-    // Fixed MSRs: aperf (actual unhalted C0 cycles), mperf (nominal base clock cycles), irperf (retired instructions)
+    // Always-On Free Base Fixed MSRs: aperf (actual unhalted C0 cycles), mperf (nominal base clock cycles), irperf (retired instructions)
     const aperfPerSec = instPerSec / simIpc;
     const mperfPerSec = aperfPerSec / Math.max(0.1, simEffGhz / (CONFIG.baseMhz / 1000.0));
-    const cycPerSec = muxId === 'uarch' ? aperfPerSec : (instPerSec / simIpc);
-    const ipc = muxId === 'uarch'
-      ? (instPerSec / Math.max(1.0, aperfPerSec))
-      : (instPerSec / Math.max(1.0, cycPerSec));
-    const actualCpi = muxId === 'uarch'
-      ? (aperfPerSec / Math.max(1.0, instPerSec))
-      : (cycPerSec / Math.max(1.0, instPerSec));
+    const cycPerSec = aperfPerSec;
+    const ipc = instPerSec / Math.max(1.0, aperfPerSec);
+    const actualCpi = aperfPerSec / Math.max(1.0, instPerSec);
     const effGhz = (aperfPerSec / Math.max(1.0, mperfPerSec)) * (CONFIG.baseMhz / 1000.0);
 
-    // Zen 2 Pipeline Retiring % (6-wide dispatch)
-    const retiringExact = CONFIG.retiring.exactRetiring && muxId === 'full';
+    // Zen 2 Pipeline Retiring % (6-wide dispatch): Exact when ExactRetiring pack is active (or auto-padded)
+    const retiringExact = plan.has(MetricPack.ExactRetiring);
     const hwUopsRatio = jitter(1.16, 0.022, 0.8);
     const retUopsPerSec = instPerSec * hwUopsRatio;
     const rawRetPct = retiringExact
-      ? (retUopsPerSec / Math.max(1.0, 6.0 * cycPerSec)) * 100.0
+      ? (retUopsPerSec / Math.max(1.0, 6.0 * aperfPerSec)) * 100.0
       : ((ipc * CONFIG.retiring.uopsPerInst) / 6.0) * 100.0;
     const retiringPct = Math.min(100.0, Math.max(0.0, rawRetPct));
 
-    // Micro-Arch / Contention (0-Mux) raw hardware counts + derived metrics
+    // Micro-Arch / Contention raw hardware counts + pack-gated derived metrics
     const dtSec = Math.max(1, state.intervalSec);
     const instDelta = instPerSec * dtSec;
     const aperfDelta = aperfPerSec * dtSec;
@@ -75,7 +71,7 @@
       misal_access: (simMisal / 1000.0) * instDelta
     };
     const uarchDerived = computeMicroArchMetrics(uarchRawDelta, 'uarch');
-    const uarchActive = computeMicroArchMetrics(uarchRawDelta, muxId);
+    const uarchActive = computeMicroArchMetrics(uarchRawDelta, plan);
 
     // Cache & DRAM MPKIs
     const l1dc = jitter(prof.l1dc * burst, 0.055, 2.1);
@@ -113,36 +109,37 @@
     const cpuUsr = Math.min(95, jitter(prof.cpuUsr, 0.04, 13.5));
     const cpuSys = Math.min(45, jitter(prof.cpuSys, 0.06, 13.9));
 
-    // Exclusive tier MPKIs (strictly clamped >= 0.0)
-    const dramExcl = Math.max(0.0, demDram + (muxId === 'full' ? hwpfDram : 0));
+    // Exclusive tier MPKIs (strictly clamped >= 0.0; pack-gated via DcHwpf)
+    const hasDcHwpf = plan.has(MetricPack.DcHwpf);
+    const dramExcl = Math.max(0.0, demDram + (hasDcHwpf ? hwpfDram : 0));
     const dramTotal = Math.max(0.0, demDram + hwpfDram);
-    const l3HitExcl = Math.max(0.0, demL3 + (muxId === 'full' ? hwpfL3 : 0));
+    const l3HitExcl = Math.max(0.0, demL3 + (hasDcHwpf ? hwpfL3 : 0));
     const l3HitTotal = Math.max(0.0, demL3 + hwpfL3);
     const l2dcExcl = Math.max(0.0, l1dc - l2dc);
     const l2icExcl = Math.max(0.0, l1ic - l2ic);
     const dramLatForCpi = l3LatCyc > 0 ? l3LatCyc : CONFIG.latencies.dramFallback;
 
-    // Ordered for Two-Line CPI Stack: Flush/FE left -> MLP Memory right
+    // Ordered for Two-Line CPI Stack: Flush/FE left -> MLP Memory right (strictly pack-gated)
     const cpiTiers = [
       // Flush / Front-End
-      { key: 'branch',   name: 'Branch',     short: 'Br',     group: 'flush', mpki: brMiss,    cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', avail: ['full', 'ipc-mem'] },
-      { key: 'l2icExcl', name: 'L2 I-Cache', short: 'L2I',    group: 'flush', mpki: l2icExcl,  cpi: (l2icExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-blue',    barColor: 'var(--blue)',    hex: '#6b96d6', avail: ['full'] },
-      { key: 'l2itlb',   name: 'L2 iTLB',    short: 'iTLB',   group: 'flush', mpki: l2Itlb,    cpi: (l2Itlb / 1000) * CONFIG.latencies.l2ItlbWalk,       colorClass: 'c-orange',  barColor: 'var(--orange)',  hex: '#d98d59', avail: ['full', 'tlb'] },
+      { key: 'branch',   name: 'Branch',     short: 'Br',     group: 'flush', mpki: brMiss,    cpi: (brMiss / 1000) * CONFIG.latencies.branchMispredict, colorClass: 'c-magenta', barColor: 'var(--magenta)', hex: '#b380d6', requiredPack: MetricPack.Branches },
+      { key: 'l2icExcl', name: 'L2 I-Cache', short: 'L2I',    group: 'flush', mpki: l2icExcl,  cpi: (l2icExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-blue',    barColor: 'var(--blue)',    hex: '#6b96d6', requiredPack: MetricPack.L1L2Ic },
+      { key: 'l2itlb',   name: 'L2 iTLB',    short: 'iTLB',   group: 'flush', mpki: l2Itlb,    cpi: (l2Itlb / 1000) * CONFIG.latencies.l2ItlbWalk,       colorClass: 'c-orange',  barColor: 'var(--orange)',  hex: '#d98d59', requiredPack: MetricPack.ItlbFull },
       // MLP-Overlappable Memory
-      { key: 'l2dcExcl', name: 'L2 D-Cache', short: 'L2D',    group: 'mlp',   mpki: l2dcExcl,  cpi: (l2dcExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-cyan',    barColor: 'var(--cyan)',    hex: '#5fb4c9', avail: ['full'] },
-      { key: 'l3Hit',    name: 'L3 Hit',     short: 'L3',     group: 'mlp',   mpki: l3HitExcl, cpi: (l3HitExcl / 1000) * CONFIG.latencies.l3Hit,         colorClass: 'c-yellow',  barColor: 'var(--yellow)',  hex: '#dfb052', avail: ['full', 'ipc-mem'] },
-      { key: 'dram',     name: 'DRAM',       short: 'DRAM',   group: 'mlp',   mpki: dramExcl,  cpi: (dramExcl / 1000) * dramLatForCpi,                   colorClass: 'c-red',     barColor: 'var(--red)',     hex: '#e06464', avail: ['full', 'ipc-mem'] },
-      { key: 'l2dtlb',   name: 'L2 dTLB',    short: 'dTLB',   group: 'mlp',   mpki: l2Dtlb,    cpi: (l2Dtlb / 1000) * CONFIG.latencies.l2DtlbWalk,       colorClass: 'c-green',   barColor: 'var(--green)',   hex: '#5dc27f', avail: ['full', 'tlb'] }
+      { key: 'l2dcExcl', name: 'L2 D-Cache', short: 'L2D',    group: 'mlp',   mpki: l2dcExcl,  cpi: (l2dcExcl / 1000) * CONFIG.latencies.l2Hit,          colorClass: 'c-cyan',    barColor: 'var(--cyan)',    hex: '#5fb4c9', requiredPack: MetricPack.L1L2Dc },
+      { key: 'l3Hit',    name: 'L3 Hit',     short: 'L3',     group: 'mlp',   mpki: l3HitExcl, cpi: (l3HitExcl / 1000) * CONFIG.latencies.l3Hit,         colorClass: 'c-yellow',  barColor: 'var(--yellow)',  hex: '#dfb052', requiredPack: MetricPack.DcDemand },
+      { key: 'dram',     name: 'DRAM',       short: 'DRAM',   group: 'mlp',   mpki: dramExcl,  cpi: (dramExcl / 1000) * dramLatForCpi,                   colorClass: 'c-red',     barColor: 'var(--red)',     hex: '#e06464', requiredPack: MetricPack.DcDemand },
+      { key: 'l2dtlb',   name: 'L2 dTLB',    short: 'dTLB',   group: 'mlp',   mpki: l2Dtlb,    cpi: (l2Dtlb / 1000) * CONFIG.latencies.l2DtlbWalk,       colorClass: 'c-green',   barColor: 'var(--green)',   hex: '#5dc27f', requiredPack: MetricPack.DtlbFull }
     ];
 
     // Table display order (DRAM -> L3 -> L2D -> L2I -> Branch -> dTLB -> iTLB)
     const tableOrderKeys = ['dram', 'l3Hit', 'l2dcExcl', 'l2icExcl', 'branch', 'l2dtlb', 'l2itlb'];
     const tableTiers = tableOrderKeys.map(k => cpiTiers.find(t => t.key === k));
 
-    const activeTiers = cpiTiers.filter(t => t.avail.includes(muxId));
+    const activeTiers = cpiTiers.filter(t => plan.has(t.requiredPack));
     const modeledCpi = activeTiers.reduce((acc, t) => acc + t.cpi, 0);
     const oooHiddenCpi = Math.max(0, modeledCpi - actualCpi);
-    const topTier = [...activeTiers].sort((a, b) => b.cpi - a.cpi)[0] || cpiTiers[5];
+    const topTier = [...activeTiers].sort((a, b) => b.cpi - a.cpi)[0] || null;
 
     // Per-core C0% (mperf duty cycle) & per-core IPC
     const coreC0 = prof.coreC0.map((c, idx) => Math.min(100, Math.max(0, jitter(c, 0.055, 11 + idx * 0.35))));
@@ -329,12 +326,13 @@
     }
 
     const snap = {
+      plan,
       effGhz, ipc, actualCpi, instPerSec, cycPerSec, aperfPerSec, mperfPerSec,
       retiringPct, retiringExact, retUopsPerSec,
       uarch: uarchActive, uarchRawDelta,
       l1dc, l2dc, l1ic, l2ic, l2dcExcl, l2icExcl,
       demL3, hwpfL3, demDram, hwpfDram, l2pfL3, l2pfDram,
-      dramTotal, l3HitTotal,
+      dramExcl, dramTotal, l3HitExcl, l3HitTotal,
       l3Acc, l3Miss, l3HitPct, l3LatCyc, l3LatNs,
       br, brMiss, brMissPct,
       l1ItlbMissPct, l2Itlb, l1Dtlb, l2Dtlb, l1DtlbMissPct,
@@ -369,12 +367,12 @@
       state.cum.ocUopsRaw += uarchRawDelta.oc_uops;
       state.cum.stlfInterlockRaw += uarchRawDelta.stlf_interlock;
       state.cum.misalAccessRaw += uarchRawDelta.misal_access;
-      state.cum.dram += dramTotal;
+      state.cum.dram += dramExcl;
       state.cum.demDram += demDram;
       state.cum.hwpfDram += hwpfDram;
       state.cum.l2pfL3 += l2pfL3;
       state.cum.l2pfDram += l2pfDram;
-      state.cum.l3Hit += l3HitTotal;
+      state.cum.l3Hit += l3HitExcl;
       state.cum.l3Miss += l3Miss;
       state.cum.l3HitPct += l3HitPct;
       state.cum.latNs += l3LatNs;
@@ -432,8 +430,8 @@
       }
 
       pushRing(state.history.ipc, ipc);
-      pushRing(state.history.topStall, topTier.mpki);
-      pushRing(state.history.dram, dramTotal);
+      pushRing(state.history.topStall, topTier ? topTier.mpki : 0);
+      pushRing(state.history.dram, dramExcl);
       pushRing(state.history.latNs, l3LatNs);
       pushRing(state.history.l2itlb, l2Itlb);
       pushRing(state.history.l2dtlb, l2Dtlb);
@@ -465,8 +463,8 @@
         tc.ocUopsRaw += uarchRawDelta.oc_uops;
         tc.stlfInterlockRaw += uarchRawDelta.stlf_interlock;
         tc.misalAccessRaw += uarchRawDelta.misal_access;
-        tc.dram += dramTotal;
-        tc.l3Hit += l3HitTotal;
+        tc.dram += dramExcl;
+        tc.l3Hit += l3HitExcl;
         tc.l2dcExcl += l2dcExcl;
         tc.l2icExcl += l2icExcl;
         tc.branch += brMiss;

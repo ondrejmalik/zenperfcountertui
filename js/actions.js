@@ -3,8 +3,9 @@
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
-    CONFIG, MUX_PRESETS, state, computeMicroArchMetrics, deserializeBaselineJson,
-    getActiveMux, getAttachedProcess, showToast, generateSample, resetHistoryAndSeed,
+    CONFIG, MetricPack, QUICK_PRESETS, state, computeMicroArchMetrics, deserializeBaselineJson,
+    getActivePlan, getPresetBySlug, normalizePackList, packsEqual, buildUprofMetrics, saveDefaultPacksToConfig,
+    getAttachedProcess, showToast, generateSample, resetHistoryAndSeed,
     evaluateDiagnostics, runGroupADiagnosticTests, renderAll,
     getCcxMask, getPrimaryPhysicalCoresMask, formatAffinityHex,
     applyThreadAffinityEdit, revertAllThreadAffinities,
@@ -69,11 +70,117 @@
     renderAll();
   }
 
-  function cycleMux() {
-    state.muxIndex = (state.muxIndex + 1) % MUX_PRESETS.length;
-    generateSample(false);
-    showToast(`Mux preset: ${getActiveMux().label}`);
+  function openPackPickerModal() {
+    state.packPicker.draftPacks = [...state.enabledPacks];
+    state.packPicker.guardrailNote = '';
+    openModal('packs');
+  }
+
+  function toggleDraftPack(packId) {
+    if (!state.packPicker.draftPacks) {
+      state.packPicker.draftPacks = [...state.enabledPacks];
+    }
+    const cur = state.packPicker.draftPacks;
+    const has = cur.includes(packId);
+    if (has && cur.length <= 1) {
+      state.packPicker.guardrailNote = 'Guardrail: AMDuProfPcm requires >= 1 Core PMC pack alongside fixed MSRs.';
+      renderAll();
+      return false;
+    }
+    state.packPicker.guardrailNote = '';
+    if (has) {
+      state.packPicker.draftPacks = cur.filter(id => id !== packId);
+    } else {
+      state.packPicker.draftPacks = normalizePackList([...cur, packId]);
+    }
     renderAll();
+    return true;
+  }
+
+  function selectDraftPreset(slugOrKey) {
+    const preset = QUICK_PRESETS.find(p => p.slug === slugOrKey || p.key === String(slugOrKey));
+    if (!preset) return false;
+    state.packPicker.draftPacks = [...preset.packs];
+    state.packPicker.guardrailNote = '';
+    renderAll();
+    return true;
+  }
+
+  function applyDraftPacks() {
+    const draft = normalizePackList(state.packPicker.draftPacks || state.enabledPacks);
+    if (draft.length === 0) {
+      state.packPicker.guardrailNote = 'Guardrail: AMDuProfPcm requires >= 1 Core PMC pack alongside fixed MSRs.';
+      renderAll();
+      return false;
+    }
+    state.enabledPacks = draft;
+    state.noPmu = false;
+    state.packPicker.guardrailNote = '';
+    const plan = buildUprofMetrics(draft);
+    generateSample(false);
+    closeModal(false);
+    const padNote = plan.autoPaddedRetiring ? ' (+auto-pad ExactRetiring)' : '';
+    showToast(`PMU restarted: ${plan.label} (${plan.coreSlots} Core PMCs${padNote})`);
+    renderAll();
+    return true;
+  }
+
+  function saveDraftPacksAsDefault() {
+    const draft = normalizePackList(state.packPicker.draftPacks || state.enabledPacks);
+    if (draft.length === 0) {
+      state.packPicker.guardrailNote = 'Guardrail: select >= 1 Core PMC pack before saving defaults.';
+      renderAll();
+      return false;
+    }
+    saveDefaultPacksToConfig(draft);
+    const plan = buildUprofMetrics(draft);
+    showToast(`Saved default_packs to config.toml (${plan.label}, ${draft.length} packs)`);
+    renderAll();
+    return true;
+  }
+
+  function fastCyclePreset() {
+    state.noPmu = false;
+    const curIdx = QUICK_PRESETS.findIndex(p => packsEqual(state.enabledPacks, p.packs));
+    const next = QUICK_PRESETS[(curIdx + 1) % QUICK_PRESETS.length];
+    state.enabledPacks = [...next.packs];
+    const plan = buildUprofMetrics(state.enabledPacks);
+    generateSample(false);
+    showToast(`Quick preset: ${plan.label} (${plan.coreSlots}/${plan.capacitySlots} Core PMCs)`);
+    renderAll();
+  }
+
+  function toggleExactRetiringPack() {
+    if (state.noPmu) {
+      showToast('No-PMU mode active; enable PMU packs first (m)');
+      return;
+    }
+    const has = state.enabledPacks.includes(MetricPack.ExactRetiring);
+    if (has && state.enabledPacks.length <= 1) {
+      showToast('Guardrail: cannot uncheck the final Core PMC pack');
+      return;
+    }
+    state.enabledPacks = has
+      ? state.enabledPacks.filter(id => id !== MetricPack.ExactRetiring)
+      : normalizePackList([...state.enabledPacks, MetricPack.ExactRetiring]);
+    const plan = getActivePlan();
+    generateSample(false);
+    const status = plan.autoPaddedRetiring
+      ? 'ExactRetiring auto-padded (+0 mux cost)'
+      : (plan.has(MetricPack.ExactRetiring) ? `ExactRetiring ON (${plan.label})` : `ExactRetiring OFF (${plan.label})`);
+    showToast(status);
+    renderAll();
+  }
+
+  function toggleNoPmuMode() {
+    state.noPmu = !state.noPmu;
+    generateSample(false);
+    showToast(state.noPmu ? 'No-PMU mode ON (Win32-only diagnostics)' : `PMU active: ${getActivePlan().label}`);
+    renderAll();
+  }
+
+  function cycleMux() {
+    fastCyclePreset();
   }
 
   function cycleInterval() {
@@ -94,47 +201,51 @@
     renderAll();
   }
 
-  function captureBaseline() {
-    const n = Math.max(1, state.cum.samples);
-    const proc = getAttachedProcess();
-    const mux = getActiveMux();
-    const slug = proc ? `${proc.name.replace('.exe', '')}_${mux.id}` : `sys_${mux.id}`;
+  function buildBaselinePayload(name, target, elapsedSec, samples, ifeoEnabled, acc, plan) {
+    const n = Math.max(1, samples);
     const uarchRaw = {
-      inst: state.cum.instRaw,
-      dc_cross_ccx: state.cum.dcCrossCcxRaw,
-      locks_serial: state.cum.locksSerialRaw,
-      dec_uops: state.cum.decUopsRaw,
-      oc_uops: state.cum.ocUopsRaw,
-      stlf_interlock: state.cum.stlfInterlockRaw,
-      misal_access: state.cum.misalAccessRaw
+      inst: acc.instRaw,
+      dc_cross_ccx: acc.dcCrossCcxRaw,
+      locks_serial: acc.locksSerialRaw,
+      dec_uops: acc.decUopsRaw,
+      oc_uops: acc.ocUopsRaw,
+      stlf_interlock: acc.stlfInterlockRaw,
+      misal_access: acc.misalAccessRaw
     };
-    const uarchMetrics = computeMicroArchMetrics(uarchRaw, mux.id);
-    state.activeBaseline = deserializeBaselineJson({
-      name: `${slug}_${n}s.json`,
-      muxPreset: mux.id,
-      target: proc ? proc.name : 'SYSTEM-WIDE',
-      elapsedSec: state.cum.elapsedSec,
+    const uarchMetrics = computeMicroArchMetrics(uarchRaw, plan);
+    const hasFree = !plan.noPmu;
+    const avgIpc = hasFree ? (acc.ipc / n) : null;
+    const avgCpi = hasFree ? ((acc.actualCpi !== undefined ? acc.actualCpi / n : 1.0 / Math.max(0.01, avgIpc))) : null;
+
+    return deserializeBaselineJson({
+      name,
+      muxPreset: plan.presetSlug,
+      enabled_packs: [...plan.selectedPacks],
+      core_pmc_slots: plan.coreSlots,
+      mux_groups: plan.muxGroups,
+      target,
+      elapsedSec,
       samples: n,
-      ifeoEnabled: proc ? proc.ifeoEnabled : false,
-      ipc: state.cum.ipc / n,
-      cpi: state.cum.actualCpi / n,
-      fps: state.cum.presentSamples > 0 ? state.cum.fpsSum / state.cum.presentSamples : null,
-      avgFrameMs: state.cum.presentSamples > 0 ? state.cum.avgFrameMsSum / state.cum.presentSamples : null,
-      dramMpki: state.cum.dram / n,
-      l3HitMpki: state.cum.l3Hit / n,
-      l2dcExclMpki: state.cum.l2dcExcl / n,
-      l2icExclMpki: state.cum.l2icExcl / n,
-      branchMpki: state.cum.branch / n,
-      l2dtlbMpki: state.cum.l2dtlb / n,
-      l2itlbMpki: state.cum.l2itlb / n,
-      l3MissMpki: state.cum.l3Miss / n,
-      l3LatNs: state.cum.latNs / n,
-      l1icMpki: state.cum.l1ic / n,
-      l2icMpki: state.cum.l2icMiss / n,
-      l1dcMpki: state.cum.l1dc / n,
-      l2dcMpki: state.cum.l2dcMiss / n,
-      l2pfL3Mpki: state.cum.l2pfL3 / n,
-      l2pfDramMpki: state.cum.l2pfDram / n,
+      ifeoEnabled,
+      ipc: avgIpc,
+      cpi: avgCpi,
+      fps: acc.presentSamples > 0 ? acc.fpsSum / acc.presentSamples : null,
+      avgFrameMs: acc.presentSamples > 0 ? acc.avgFrameMsSum / acc.presentSamples : null,
+      dramMpki: plan.has(MetricPack.DcDemand) ? (acc.dram / n) : null,
+      l3HitMpki: plan.has(MetricPack.DcDemand) ? (acc.l3Hit / n) : null,
+      l2dcExclMpki: plan.has(MetricPack.L1L2Dc) ? (acc.l2dcExcl / n) : null,
+      l1dcMpki: plan.has(MetricPack.L1L2Dc) ? (acc.l1dc / n) : null,
+      l2dcMpki: plan.has(MetricPack.L1L2Dc) ? (acc.l2dc / n) : null,
+      l2icExclMpki: plan.has(MetricPack.L1L2Ic) ? (acc.l2icExcl / n) : null,
+      l1icMpki: plan.has(MetricPack.L1L2Ic) ? (acc.l1ic / n) : null,
+      l2icMpki: plan.has(MetricPack.L1L2Ic) ? (acc.l2ic / n) : null,
+      l2pfL3Mpki: plan.has(MetricPack.L2Hwpf) ? (acc.l2pfL3 / n) : null,
+      l2pfDramMpki: plan.has(MetricPack.L2Hwpf) ? (acc.l2pfDram / n) : null,
+      branchMpki: plan.has(MetricPack.Branches) ? (acc.branch / n) : null,
+      l2dtlbMpki: plan.has(MetricPack.DtlbFull) ? (acc.l2dtlb / n) : null,
+      l2itlbMpki: plan.has(MetricPack.ItlbFull) ? (acc.l2itlb / n) : null,
+      l3MissMpki: hasFree ? (acc.l3Miss / n) : null,
+      l3LatNs: hasFree ? (acc.latNs / n) : null,
       dcCrossCcxMpki: uarchMetrics ? uarchMetrics.dcCrossCcxMpki : null,
       locksSerialMpki: uarchMetrics ? uarchMetrics.locksSerialMpki : null,
       opcacheHitPct: uarchMetrics ? uarchMetrics.opcacheHitPct : null,
@@ -142,20 +253,36 @@
       stlfInterlockMpki: uarchMetrics ? uarchMetrics.stlfInterlockMpki : null,
       misalAccessMpki: uarchMetrics ? uarchMetrics.misalAccessMpki : null,
       cumulative_totals: {
-        inst: state.cum.instRaw,
-        cycles: mux.id === 'uarch' ? 0 : state.cum.aperfRaw,
-        aperf: state.cum.aperfRaw,
-        mperf: state.cum.mperfRaw,
-        dc_cross_ccx: mux.id === 'uarch' ? state.cum.dcCrossCcxRaw : 0,
-        locks_serial: mux.id === 'uarch' ? state.cum.locksSerialRaw : 0,
-        dec_uops: mux.id === 'uarch' ? state.cum.decUopsRaw : 0,
-        oc_uops: mux.id === 'uarch' ? state.cum.ocUopsRaw : 0,
-        stlf_interlock: mux.id === 'uarch' ? state.cum.stlfInterlockRaw : 0,
-        misal_access: mux.id === 'uarch' ? state.cum.misalAccessRaw : 0
+        inst: hasFree ? acc.instRaw : 0,
+        cycles: 0,
+        aperf: hasFree ? acc.aperfRaw : 0,
+        mperf: hasFree ? acc.mperfRaw : 0,
+        dc_cross_ccx: plan.has(MetricPack.CrossCcxLocks) ? acc.dcCrossCcxRaw : 0,
+        locks_serial: plan.has(MetricPack.CrossCcxLocks) ? acc.locksSerialRaw : 0,
+        dec_uops: plan.has(MetricPack.OpCacheDecode) ? acc.decUopsRaw : 0,
+        oc_uops: plan.has(MetricPack.OpCacheDecode) ? acc.ocUopsRaw : 0,
+        stlf_interlock: plan.has(MetricPack.StlfSplits) ? acc.stlfInterlockRaw : 0,
+        misal_access: plan.has(MetricPack.StlfSplits) ? acc.misalAccessRaw : 0
       }
     });
+  }
+
+  function captureBaseline() {
+    const n = Math.max(1, state.cum.samples);
+    const proc = getAttachedProcess();
+    const plan = getActivePlan();
+    const slug = proc ? `${proc.name.replace('.exe', '')}_${plan.presetSlug}` : `sys_${plan.presetSlug}`;
+    state.activeBaseline = buildBaselinePayload(
+      `${slug}_${n}s.json`,
+      proc ? proc.name : 'SYSTEM-WIDE',
+      state.cum.elapsedSec,
+      n,
+      proc ? proc.ifeoEnabled : false,
+      { ...state.cum, l2ic: state.cum.l2icMiss, l2dc: state.cum.l2dcMiss },
+      plan
+    );
     state.lastDiag = evaluateDiagnostics();
-    showToast(`Pinned baseline: ${state.activeBaseline.name} (${n} samples)`);
+    showToast(`Pinned baseline: ${state.activeBaseline.name} (${plan.muxShort}, ${n} samples)`);
     renderAll();
   }
 
@@ -186,67 +313,19 @@
   function finishTimedCapture() {
     const tc = state.timedCapture;
     if (!tc) return;
-    const n = Math.max(1, tc.samples);
     const proc = getAttachedProcess();
-    const mux = getActiveMux();
-    const avgIpc = tc.ipc / n;
-    const uarchRaw = {
-      inst: tc.instRaw,
-      dc_cross_ccx: tc.dcCrossCcxRaw,
-      locks_serial: tc.locksSerialRaw,
-      dec_uops: tc.decUopsRaw,
-      oc_uops: tc.ocUopsRaw,
-      stlf_interlock: tc.stlfInterlockRaw,
-      misal_access: tc.misalAccessRaw
-    };
-    const uarchMetrics = computeMicroArchMetrics(uarchRaw, mux.id);
-    state.activeBaseline = deserializeBaselineJson({
-      name: `${proc ? proc.name.replace('.exe', '') : 'sys'}_cap${tc.totalSec}s.json`,
-      muxPreset: mux.id,
-      target: proc ? proc.name : 'SYSTEM-WIDE',
-      elapsedSec: tc.elapsedSec,
-      samples: n,
-      ifeoEnabled: proc ? proc.ifeoEnabled : false,
-      ipc: avgIpc,
-      cpi: 1.0 / Math.max(0.01, avgIpc),
-      fps: tc.presentSamples > 0 ? tc.fpsSum / tc.presentSamples : null,
-      avgFrameMs: tc.presentSamples > 0 ? tc.avgFrameMsSum / tc.presentSamples : null,
-      dramMpki: tc.dram / n,
-      l3HitMpki: tc.l3Hit / n,
-      l2dcExclMpki: tc.l2dcExcl / n,
-      l2icExclMpki: tc.l2icExcl / n,
-      branchMpki: tc.branch / n,
-      l2dtlbMpki: tc.l2dtlb / n,
-      l2itlbMpki: tc.l2itlb / n,
-      l3MissMpki: tc.l3Miss / n,
-      l3LatNs: tc.latNs / n,
-      l1icMpki: tc.l1ic / n,
-      l2icMpki: tc.l2ic / n,
-      l1dcMpki: tc.l1dc / n,
-      l2dcMpki: tc.l2dc / n,
-      l2pfL3Mpki: tc.l2pfL3 / n,
-      l2pfDramMpki: tc.l2pfDram / n,
-      dcCrossCcxMpki: uarchMetrics ? uarchMetrics.dcCrossCcxMpki : null,
-      locksSerialMpki: uarchMetrics ? uarchMetrics.locksSerialMpki : null,
-      opcacheHitPct: uarchMetrics ? uarchMetrics.opcacheHitPct : null,
-      legacyDecodePct: uarchMetrics ? uarchMetrics.legacyDecodePct : null,
-      stlfInterlockMpki: uarchMetrics ? uarchMetrics.stlfInterlockMpki : null,
-      misalAccessMpki: uarchMetrics ? uarchMetrics.misalAccessMpki : null,
-      cumulative_totals: {
-        inst: tc.instRaw,
-        cycles: mux.id === 'uarch' ? 0 : tc.aperfRaw,
-        aperf: tc.aperfRaw,
-        mperf: tc.mperfRaw,
-        dc_cross_ccx: mux.id === 'uarch' ? tc.dcCrossCcxRaw : 0,
-        locks_serial: mux.id === 'uarch' ? tc.locksSerialRaw : 0,
-        dec_uops: mux.id === 'uarch' ? tc.decUopsRaw : 0,
-        oc_uops: mux.id === 'uarch' ? tc.ocUopsRaw : 0,
-        stlf_interlock: mux.id === 'uarch' ? tc.stlfInterlockRaw : 0,
-        misal_access: mux.id === 'uarch' ? tc.misalAccessRaw : 0
-      }
-    });
+    const plan = getActivePlan();
+    state.activeBaseline = buildBaselinePayload(
+      `${proc ? proc.name.replace('.exe', '') : 'sys'}_cap${tc.totalSec}s.json`,
+      proc ? proc.name : 'SYSTEM-WIDE',
+      tc.elapsedSec,
+      tc.samples,
+      proc ? proc.ifeoEnabled : false,
+      tc,
+      plan
+    );
     state.timedCapture = null;
-    showToast(`Timed capture complete -> pinned ${state.activeBaseline.name}`);
+    showToast(`Timed capture complete -> pinned ${state.activeBaseline.name} (${plan.muxShort})`);
   }
 
   function startCalibration() {
@@ -822,6 +901,8 @@
 
   Object.assign(Z, {
     switchTab, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode,
+    openPackPickerModal, toggleDraftPack, selectDraftPreset, applyDraftPacks,
+    saveDraftPacksAsDefault, fastCyclePreset, toggleExactRetiringPack, toggleNoPmuMode,
     cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline, startTimedCapture,
     finishTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle, openModal,
     closeModal, cyclePickerSort, cycleModSort, cycleThreadSort, toggleVaMapView,

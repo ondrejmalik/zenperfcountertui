@@ -3,13 +3,15 @@
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
-    CONFIG, MUX_PRESETS, PROCESSES, BASELINE_PRESETS, state,
-    getActiveMux, buildUprofMetricSpec, computeMicroArchMetrics, parseReportCoreCsv,
-    deserializeBaselineJson, makeWin32Profile, getAttachedProcess, showToast,
+    CONFIG, MetricPack, METRIC_PACKS, QUICK_PRESETS, PROCESSES, BASELINE_PRESETS, state,
+    getActivePlan, getActiveMux, buildUprofMetrics, buildUprofMetricSpec, computeMicroArchMetrics,
+    parseReportCoreCsv, deserializeBaselineJson, makeWin32Profile, getAttachedProcess, showToast,
     generateSample, resetHistoryAndSeed, evaluateDiagnostics, runGroupADiagnosticTests,
     renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderTab6Threads, renderTab7Profiler, renderHelpModal, renderAll,
     getFilteredProcesses, switchTab, jumpToFindingTab, attachProcess, detachProcess,
-    startWaitingMode, cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline,
+    startWaitingMode, openPackPickerModal, toggleDraftPack, selectDraftPreset, applyDraftPacks,
+    saveDraftPacksAsDefault, fastCyclePreset, toggleExactRetiringPack, toggleNoPmuMode,
+    cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline,
     startTimedCapture, startCalibration, requestIfeoToggle, applyIfeoToggle,
     openModal, closeModal, cyclePickerSort, cycleModSort, cycleThreadSort,
     toggleVaMapView, toggleProtectedProcess, openAffinityModal, applyAffinityPreset,
@@ -27,19 +29,24 @@
   });
 
   document.getElementById('hdr-target').onclick = () => openModal('picker');
-  document.getElementById('hdr-mux').onclick = cycleMux;
+  document.getElementById('hdr-mux').onclick = openPackPickerModal;
   document.getElementById('hdr-base').onclick = () => openModal('baseline');
   document.getElementById('hdr-state').onclick = () => {
     if (state.pmcLocked) unlockPmc();
     else togglePause();
   };
 
+  const btnPacksSave = document.getElementById('btn-packs-save');
+  if (btnPacksSave) btnPacksSave.onclick = saveDraftPacksAsDefault;
+  const btnPacksApply = document.getElementById('btn-packs-apply');
+  if (btnPacksApply) btnPacksApply.onclick = applyDraftPacks;
+
   document.querySelectorAll('.key-btn').forEach(btn => {
     btn.onclick = () => {
       const act = btn.dataset.action;
       if (act === 'tabs') switchTab((state.activeTab % 7) + 1);
       else if (act === 'picker') openModal('picker');
-      else if (act === 'mux') cycleMux();
+      else if (act === 'mux') openPackPickerModal();
       else if (act === 'baseline') openModal('baseline');
       else if (act === 'ccx') { state.ccxOpen = !state.ccxOpen; renderAll(); }
       else if (act === 'help') openModal('help');
@@ -141,12 +148,8 @@
       else if (a === 'pause') { togglePause(); }
       else if (a === 'reset-avg') { resetHistoryAndSeed(1); closeModal(); showToast('Rolling window reset (N=1) -> Advisor evidence gate active'); }
       else if (a === 'toggle-lock') { state.pmcLocked = !state.pmcLocked; closeModal(); }
-      else if (a === 'toggle-exact-ret') {
-        CONFIG.retiring.exactRetiring = !CONFIG.retiring.exactRetiring;
-        generateSample(false);
-        showToast(CONFIG.retiring.exactRetiring ? 'Exact Retiring ON (0x4300C1, Full 4-Mux)' : 'Estimated Retiring ON (~XX%, Full 3-Mux)');
-        renderAll();
-      }
+      else if (a === 'toggle-exact-ret') { toggleExactRetiringPack(); }
+      else if (a === 'toggle-no-pmu') { toggleNoPmuMode(); }
       else if (a === 'toggle-admin') {
         state.isAdmin = !state.isAdmin;
         showToast(state.isAdmin ? 'Admin elevation ON (IFEO editable)' : 'Admin elevation OFF (IFEO read-only)');
@@ -260,6 +263,34 @@
       return;
     }
 
+    if (state.openModal === 'packs') {
+      if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
+        e.preventDefault();
+        selectDraftPreset(e.key);
+      } else if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        state.packPicker.selectedIdx = Math.min(METRIC_PACKS.length - 1, (state.packPicker.selectedIdx || 0) + 1);
+        renderAll();
+      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        state.packPicker.selectedIdx = Math.max(0, (state.packPicker.selectedIdx || 0) - 1);
+        renderAll();
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        const pack = METRIC_PACKS[state.packPicker.selectedIdx || 0];
+        if (pack) toggleDraftPack(pack.id);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        applyDraftPacks();
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        saveDraftPacksAsDefault();
+      } else if (e.key === 'm') {
+        closeModal();
+      }
+      return;
+    }
+
     if (state.openModal === 'burst') {
       const dur = state.profiler.burstDurationSec || 5;
       if (e.key === '1') { startHardwareBurst('ibs_op', dur); }
@@ -320,7 +351,8 @@
       else if (e.key === ' ') { e.preventDefault(); togglePause(); }
       else if (e.key === 'r') { resetHistoryAndSeed(1); closeModal(); showToast('Rolling window reset (N=1)'); }
       else if (e.key === 'u') { state.pmcLocked = !state.pmcLocked; closeModal(); }
-      else if (e.key === 'e' || e.key === 'E') { CONFIG.retiring.exactRetiring = !CONFIG.retiring.exactRetiring; generateSample(false); renderAll(); }
+      else if (e.key === 'e' || e.key === 'E') { toggleExactRetiringPack(); }
+      else if (e.key === 'n' || e.key === 'N') { toggleNoPmuMode(); }
       else if (e.key === 'a' || e.key === 'A') { state.isAdmin = !state.isAdmin; renderAll(); }
       else if (e.key === 'g' || e.key === 'G') { state.simGpuAvailable = !state.simGpuAvailable; generateSample(false); renderAll(); }
       else if (e.key === 'o' || e.key === 'O') { state.simEcoQosSupported = !state.simEcoQosSupported; generateSample(false); renderAll(); }
@@ -353,7 +385,8 @@
     // Main TUI hotkeys (1-7)
     if (['1', '2', '3', '4', '5', '6', '7'].includes(e.key)) { switchTab(Number(e.key)); return; }
     if (e.key === 'p') { openModal('picker'); return; }
-    if (e.key === 'm') { cycleMux(); return; }
+    if (e.key === 'm') { openPackPickerModal(); return; }
+    if (e.key === 'M' && state.activeTab !== 7) { fastCyclePreset(); return; }
     if (e.key === 'b') { openModal('baseline'); return; }
     if (e.key === 'c') { state.ccxOpen = !state.ccxOpen; renderAll(); return; }
     if (e.key === '?') { openModal('help'); return; }
@@ -543,17 +576,22 @@
   // Expose read-only & test hooks for automated verification
   window.__zen2top = {
     CONFIG,
-    MUX_PRESETS,
+    MetricPack,
+    METRIC_PACKS,
+    QUICK_PRESETS,
     PROCESSES,
     BASELINE_PRESETS,
     state,
+    getActivePlan,
     getActiveMux,
+    buildUprofMetrics,
     buildUprofMetricSpec,
     computeMicroArchMetrics,
     parseReportCoreCsv,
     deserializeBaselineJson,
     makeWin32Profile,
     evaluateDiagnostics,
+    runPackTests: Z.runPackTests,
     runGroupADiagnosticTests,
     runDeepDiveTests: Z.runDeepDiveTests,
     runProfilerTests: Z.runProfilerTests,
@@ -566,6 +604,12 @@
     EtwProfilerSession: Z.EtwProfilerSession,
     generateSample,
     resetHistoryAndSeed,
+    openPackPickerModal,
+    toggleDraftPack,
+    selectDraftPreset,
+    applyDraftPacks,
+    saveDraftPacksAsDefault,
+    fastCyclePreset,
     cycleMux,
     switchTab,
     attachProcess,
