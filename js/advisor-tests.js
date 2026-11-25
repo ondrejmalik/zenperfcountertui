@@ -460,6 +460,74 @@
     );
     check('all_4_deep_dive_rules_schema', allSchemaValid, `validated=${allNew.filter(Boolean).length}/4`);
 
+    // 11. Rule 14 masking gate, SMT Op-Cache contention, and dispatched MOP/inst ratio.
+    const uarchBaseOv = (extra = {}) => {
+      const { avg: extraAvg = {}, uarchRaw: extraUarchRaw = {}, ...rest } = extra;
+      return mkOv({
+        muxId: 'uarch',
+        avg: {
+          avgC0Pct: 65.0, instPerSec: 8e9, ipc: 1.85, actualCpi: 0.54,
+          l3Miss: 0.8, latNs: 42.0,
+          ...extraAvg
+        },
+        avgCoreC0: [75, 4, 60, 4, 5, 2, 5, 2, 5, 2, 5, 2],
+        uarchRaw: {
+          inst: 10_000_000,
+          dc_cross_ccx: 1_000,
+          locks_serial: 500,
+          dec_uops: 4_500_000,
+          oc_uops: 7_500_000,
+          stlf_interlock: 2_000,
+          misal_access: 10_000,
+          ...extraUarchRaw
+        },
+        ...rest
+      });
+    };
+
+    const dOcFire = evaluateDiagnostics(uarchBaseOv());
+    const fOcFire = dOcFire.findings.find(f => f.id === 'opcache_thrashing');
+    check(
+      'uarch_opcache_thrashing_unmasked',
+      Boolean(fOcFire) && dOcFire.primaryVerdict === 'FrontendCodeBound' &&
+      !dOcFire.findings.some(f => f.id === 'opcache_thrashing_masked'),
+      `fired=${Boolean(fOcFire)}, verdict=${dOcFire.primaryVerdict}`
+    );
+
+    const dOcMask = evaluateDiagnostics(uarchBaseOv({
+      avg: { ipc: 0.95, actualCpi: 1.05, l3Miss: 4.5, latNs: 82.0 }
+    }));
+    const fOcMask = dOcMask.findings.find(f => f.id === 'opcache_thrashing_masked');
+    check(
+      'uarch_opcache_thrashing_dram_masked',
+      Boolean(fOcMask) && fOcMask.severity === 'INFO' &&
+      !dOcMask.findings.some(f => f.id === 'opcache_thrashing') &&
+      dOcMask.primaryVerdict !== 'FrontendCodeBound',
+      `maskedFired=${Boolean(fOcMask)}, verdict=${dOcMask.primaryVerdict}`
+    );
+
+    const dOcSmt = evaluateDiagnostics(uarchBaseOv({
+      avgCoreC0: [82, 35, 5, 2, 5, 2, 5, 2, 5, 2, 5, 2],
+      uarchRaw: { dec_uops: 3_200_000, oc_uops: 8_800_000 }
+    }));
+    const fOcSmt = dOcSmt.findings.find(f => f.id === 'smt_opcache_eviction');
+    check(
+      'uarch_smt_opcache_eviction',
+      Boolean(fOcSmt) && fOcSmt.severity === 'MD' && fOcSmt.scope === '[OS / TUI]',
+      `fired=${Boolean(fOcSmt)}`
+    );
+
+    const dUopExp = evaluateDiagnostics(uarchBaseOv({
+      avg: { ipc: 1.40, actualCpi: 0.71 },
+      uarchRaw: { dec_uops: 2_000_000, oc_uops: 16_500_000 }
+    }));
+    const fUopExp = dUopExp.findings.find(f => f.id === 'uop_expansion_or_speculation');
+    check(
+      'uarch_uop_expansion_or_speculation',
+      Boolean(fUopExp) && fUopExp.keyMetric.includes('1.85'),
+      `fired=${Boolean(fUopExp)}, metric=${fUopExp?.keyMetric}`
+    );
+
     const passed = results.filter(r => r.pass).length;
     return { passed, total: results.length, results };
   }

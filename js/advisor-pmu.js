@@ -171,7 +171,7 @@
           category: 'L3CapacityOrCrossCcx',
           severity: avgL3HitPct < 75.0 ? 'HI' : 'MD',
           scope: '[OS / TUI]',
-          confidence: 'MED',
+          confidence: 'HIGH',
           impact: 0.12,
           title: `Cross-CCX thread spread (${totalActiveThreads} active threads <= 6, L3 Hit ${avgL3HitPct.toFixed(1)}%)`,
           keyMetric: `CCX0 ${ccx0Active.length}T + CCX1 ${ccx1Active.length}T | L3 ${avgL3HitPct.toFixed(1)}%`,
@@ -440,11 +440,12 @@
     };
   }
 
-  function evaluateMicroArchRules(ctx) {
+  function evaluateMicroArchRules(ctx, pmuRes = {}) {
     const {
       plan, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits,
-      avgActualCpi, avgL3LatNs, uarchRawOverride, pushFinding, pushHealthy
+      hasL3, avgIpc, avgActualCpi, avgL3Miss, avgL3LatNs, uarchRawOverride, pushFinding, pushHealthy
     } = ctx;
+    const { smtContendedHot = false, hotCoreProof = '' } = pmuRes;
 
     let uarchMetrics = null;
     let crossCcxBouncing = false;
@@ -493,7 +494,7 @@
               category: 'MicroArchContention',
               severity: isHi ? 'HI' : 'MD',
               scope: '[OS / Code]',
-              confidence: 'HIGH',
+              confidence: 'MED',
               impact: crossCcxCpi + (isHi ? 0.12 : 0.04),
               title: `Cross-CCX cache-line bouncing across Infinity Fabric (${crossCcxMpki.toFixed(2)} MPKI)`,
               keyMetric: `Cross-CCX ${crossCcxMpki.toFixed(2)} MPKI | L3 ${avgL3LatNs.toFixed(1)} ns`,
@@ -539,29 +540,101 @@
         // Rule 14: OpCacheDecode pack (0x4301AA vs 0x4302AA)
         if (hasOpCacheDecode && legacyPct !== null && ocHitPct !== null) {
           if (totalDisUops > 0 && legacyPct >= 30.0) {
-            opcacheThrash = true;
-            pushFinding({
-              id: 'opcache_thrashing',
-              category: 'FrontendCodeBound',
-              severity: 'MD',
-              scope: '[Code / Build]',
-              confidence: 'HIGH',
-              impact: (legacyPct / 100.0) * 0.22,
-              title: `Op-Cache thrashing: ${legacyPct.toFixed(1)}% ops on 4-wide legacy decoder`,
-              keyMetric: `Legacy ${legacyPct.toFixed(1)}% | Op-Cache ${ocHitPct.toFixed(1)}%`,
-              estGain: {
-                kind: 'qualitative',
-                label: 'FE dispatch width',
-                detail: 'Qualitative: restores Zen 2 8-wide 4K-entry Op-Cache dispatch via PGO + llvm-bolt layout'
-              },
-              why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% of dispatched ops falling back to the 4-wide legacy x86 decoder (Op-Cache hit ${ocHitPct.toFixed(1)}% <= 70%), proving hot instruction streams overflow Zen 2's 4K-entry 8-wide Op-Cache.`,
-              action: `Strongest hardware proof that PGO + llvm-bolt hot/cold code layout or loop alignment will unlock front-end throughput (even if L1i miss MPKI looks moderate). No Windows or OS tweak fixes this on closed-source binaries.`,
-              cascade: `Increases front-end dispatch width (4-wide -> 8-wide Op-Cache) and lowers L1i/L2i fetch stalls.`,
-              quickJumpTab: 1
-            });
+            const dramMasked = hasL3 && avgL3Miss >= 3.0 && avgL3LatNs >= 65.0 && avgIpc < 1.25;
+            if (dramMasked) {
+              pushFinding({
+                id: 'opcache_thrashing_masked',
+                category: 'FrontendCodeBound',
+                severity: 'INFO',
+                scope: '[Code / Build]',
+                confidence: 'HIGH',
+                impact: 0.03,
+                title: `Legacy 4-wide decode (${legacyPct.toFixed(1)}%) currently masked by DRAM stalls`,
+                keyMetric: `Legacy ${legacyPct.toFixed(1)}% | L3m ${avgL3Miss.toFixed(2)} @ ${avgL3LatNs.toFixed(0)}ns`,
+                estGain: {
+                  kind: 'qualitative',
+                  label: '~0% until DRAM fixed',
+                  detail: 'Qualitative: back-end DRAM stalls mask the 4-wide legacy decoder ceiling; fix memory locality first'
+                },
+                why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% legacy decode fallback, while unified L3 misses (${avgL3Miss.toFixed(2)} MPKI @ ${avgL3LatNs.toFixed(1)} ns, IPC ${avgIpc.toFixed(2)}) indicate substantial memory stalls.`,
+                action: `Hold off on PGO / llvm-bolt code layout for now; address memory locality first, then re-check the Op-Cache decode share.`,
+                cascade: `Avoids spending time on front-end tuning while measured memory stalls dominate.`,
+                quickJumpTab: 2
+              });
+            } else {
+              opcacheThrash = true;
+              const isSevere = legacyPct >= 45.0;
+              pushFinding({
+                id: 'opcache_thrashing',
+                category: 'FrontendCodeBound',
+                severity: isSevere ? 'HI' : 'MD',
+                scope: '[Code / Build]',
+                confidence: 'HIGH',
+                impact: (legacyPct / 100.0) * 0.22 + (isSevere ? 0.05 : 0.0),
+                title: `Op-Cache thrashing: ${legacyPct.toFixed(1)}% ops on 4-wide legacy decoder`,
+                keyMetric: `Legacy ${legacyPct.toFixed(1)}% | Op-Cache ${ocHitPct.toFixed(1)}%`,
+                estGain: {
+                  kind: 'qualitative',
+                  label: 'FE dispatch width',
+                  detail: 'Qualitative: restores Zen 2 8-wide 4K-entry Op-Cache dispatch via PGO + llvm-bolt layout'
+                },
+                why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% of dispatched ops falling back to the 4-wide legacy x86 decoder (Op-Cache hit ${ocHitPct.toFixed(1)}% <= 70%), consistent with Op-Cache capacity or placement pressure.`,
+                action: `Consider PGO + llvm-bolt hot/cold code layout, or test loop/function alignment to improve hot-code placement. No Windows or OS tweak fixes code layout in a closed-source binary.`,
+                cascade: `Can improve front-end dispatch throughput when it is a meaningful bottleneck.`,
+                quickJumpTab: 1
+              });
+            }
           } else if (totalDisUops > 0) {
             pushHealthy('Op-Cache hit', `${ocHitPct.toFixed(1)}% (legacy ${legacyPct.toFixed(1)}%)`);
           }
+        }
+
+        // Rule 14b: SMT sibling Op-Cache / front-end contention.
+        if (hasOpCacheDecode && totalDisUops > 0 && smtContendedHot && legacyPct >= 25.0) {
+          pushFinding({
+            id: 'smt_opcache_eviction',
+            category: 'SmtContentionBound',
+            severity: 'MD',
+            scope: '[OS / TUI]',
+            confidence: 'HIGH',
+            impact: 0.13,
+            title: `SMT sibling activity with legacy decode fallback (${legacyPct.toFixed(1)}%)`,
+            keyMetric: `Legacy ${legacyPct.toFixed(1)}% | ${hotCoreProof}`,
+            estGain: {
+              kind: 'qualitative',
+              label: '4K Op-Cache + 8-wide FE',
+              detail: 'Qualitative: gives the hot thread less sibling competition for shared front-end resources'
+            },
+            why: `Hot physical core ${hotCoreProof} has both SMT siblings active while legacy 4-wide decode fallback is ${legacyPct.toFixed(1)}%. This correlation is consistent with sibling contention for shared front-end resources.`,
+            action: `Test pinning latency-sensitive or high-IPC threads to separate physical cores, avoiding SMT sibling pairs, and compare the decode share and workload performance.`,
+            cascade: `May reduce sibling interference in the shared front-end without recompiling.`,
+            quickJumpTab: 1,
+            openCcx: true
+          });
+        }
+
+        // Rule 14c: dispatched MOP/instruction inflation (microcode or speculative work).
+        const disUopsPerInst = cumUarchRaw.inst > 0 ? totalDisUops / cumUarchRaw.inst : 0;
+        if (hasOpCacheDecode && totalDisUops > 0 && disUopsPerInst >= 1.65 && avgIpc < 2.2) {
+          pushFinding({
+            id: 'uop_expansion_or_speculation',
+            category: 'FrontendCodeBound',
+            severity: disUopsPerInst >= 2.0 ? 'MD' : 'LO',
+            scope: '[Code / Build]',
+            confidence: 'MED',
+            impact: Math.min(0.18, (disUopsPerInst - 1.2) * 0.12),
+            title: `High dispatched MOPs/inst ratio (${disUopsPerInst.toFixed(2)} MOPs/inst)`,
+            keyMetric: `${disUopsPerInst.toFixed(2)} dis-MOPs/inst | IPC ${avgIpc.toFixed(2)}`,
+            estGain: {
+              kind: 'qualitative',
+              label: 'MSROM / bad spec',
+              detail: 'Qualitative: investigate multi-MOP instructions or speculative dispatch waste'
+            },
+            why: `Dispatched MOPs (0x4301AA + 0x4302AA) per retired instruction (IRPerf) average ${disUopsPerInst.toFixed(2)}. These counters include speculative dispatches, so the ratio alone cannot distinguish complex instructions from misprediction waste.`,
+            action: `Use a compatible Full (3-Mux) measurement to separate branch mispredicts from retired MOP expansion. If branch activity is low, inspect hot paths for division/modulo, small rep movsb operations, or serializing instructions.`,
+            cascade: `Identifies a possible source of front-end work for follow-up measurement.`,
+            quickJumpTab: 1
+          });
         }
 
         // Rules 15 & 16: StlfSplits pack (0x430224 + 0x430047)
