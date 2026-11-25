@@ -1026,7 +1026,7 @@
       <div class="split-2 overview-graphs">
         <div class="graph-region">
           <div class="graph-header">
-            <span class="graph-title">IPC</span>
+            <span class="graph-title" id="g-ipc-title">IPC</span>
             <span class="graph-stats" id="g-ipc-stats"></span>
           </div>
           <div class="braille-wrap">
@@ -1056,11 +1056,11 @@
           <span class="cpi-legend" id="cpi-legend"></span>
         </div>
         <div class="cpi-track-row">
-          <span class="cpi-track-label">Actual</span>
+          <span class="cpi-track-label" id="cpi-label-1">Actual</span>
           <div class="cpi-bar-wrap" id="cpi-track-actual"></div>
         </div>
         <div class="cpi-track-row">
-          <span class="cpi-track-label">Modeled</span>
+          <span class="cpi-track-label" id="cpi-label-2">Modeled</span>
           <div class="cpi-bar-wrap" id="cpi-track-modeled"></div>
         </div>
       </div>
@@ -1078,7 +1078,7 @@
             <col style="width: 11%;">
             <col style="width: 28%;">
           </colgroup>
-          <thead>
+          <thead id="overview-stall-thead">
             <tr>
               <th class="left">STALL SOURCE</th>
               <th>LIVE MPKI</th>
@@ -1552,15 +1552,204 @@
   };
 
   const MUX_PRESETS = [
-    { id: 'full', label: 'Full (3-Mux)', corePmcs: 18, l3Pmcs: 4 },
-    { id: 'tlb', label: 'TLB-Only (0-Mux)', corePmcs: 5, l3Pmcs: 0 },
-    { id: 'ipc-mem', label: 'IPC+Cache/DRAM (0-Mux)', corePmcs: 6, l3Pmcs: 4 }
+    { id: 'full', label: 'Full (3-Mux)', cliArg: 'full', corePmcs: 18, l3Pmcs: 4 },
+    { id: 'tlb', label: 'TLB-Only (0-Mux)', cliArg: 'tlb', corePmcs: 5, l3Pmcs: 0 },
+    { id: 'ipc-mem', label: 'IPC+Cache/DRAM (0-Mux)', cliArg: 'ipc-mem', corePmcs: 6, l3Pmcs: 4 },
+    { id: 'uarch', label: 'Micro-Arch (0-Mux)', cliArg: 'uarch', corePmcs: 6, l3Pmcs: 4 }
   ];
+
+  // Exact verified AMD Zen 2 (Family 17h Model 71h) AMDuProfPcm event definitions per preset
+  const PMU_FIXED_MSRS = [
+    'core/aperf=(aperf)',
+    'core/mperf=(mperf)',
+    'core/inst=(irperf)'
+  ];
+
+  const PMU_L3_EVENTS = [
+    'l3/l3_access=(0xFF0F00000040FF04)',
+    'l3/l3_miss=(0xFF0F000000400104)',
+    'l3/l3_lat=(0xFF0F000000400090)',
+    'l3/l3_mtype=(0xFF0F000000401F9A)'
+  ];
+
+  const PMU_CORE_EVENTS_BY_PRESET = {
+    full: [
+      'core/cycles=(0x430076)',
+      'core/branches=(0x4300C2)',
+      'core/branch_miss=(0x4300C3)',
+      'core/l1_itlb_hit=(0x430794)',
+      'core/l1_itlb_l2h=(0x430084)',
+      'core/l2_itlb_m=(0x430785)',
+      'core/l1_dtlb_l2h=(0x430F45)',
+      'core/l2_dtlb_m=(0x43F045)',
+      'core/l1_ic_miss=(0x431060)',
+      'core/l2_ic_miss=(0x430164)',
+      'core/l1_dc_miss=(0x43C860)',
+      'core/l2_dc_miss=(0x430864)',
+      'core/dc_dem_l3=(0x430243)',
+      'core/dc_dem_dram=(0x430843)',
+      'core/dc_hwpf_l3=(0x43025A)',
+      'core/dc_hwpf_dram=(0x43085A)',
+      'core/l2_pf_l3=(0x431F71)',
+      'core/l2_pf_dram=(0x431F72)'
+    ],
+    tlb: [
+      'core/l1_itlb_hit=(0x430794)',
+      'core/l1_itlb_l2h=(0x430084)',
+      'core/l2_itlb_m=(0x430785)',
+      'core/l1_dtlb_l2h=(0x430F45)',
+      'core/l2_dtlb_m=(0x43F045)'
+    ],
+    'ipc-mem': [
+      'core/cycles=(0x430076)',
+      'core/branch_miss=(0x4300C3)',
+      'core/l2_ic_miss=(0x430164)',
+      'core/dc_dem_l3=(0x430243)',
+      'core/dc_dem_dram=(0x430843)',
+      'core/l2_dc_miss=(0x430864)'
+    ],
+    uarch: [
+      'core/dc_cross_ccx=(0x430443)',
+      'core/locks_serial=(0x430325)',
+      'core/dec_uops=(0x4301AA)',
+      'core/oc_uops=(0x4302AA)',
+      'core/stlf_interlock=(0x430224)',
+      'core/misal_access=(0x430047)'
+    ]
+  };
+
+  function buildUprofMetricSpec(presetId, exactRetiring = false) {
+    const coreEvents = [...(PMU_CORE_EVENTS_BY_PRESET[presetId] || PMU_CORE_EVENTS_BY_PRESET.full)];
+    if (presetId === 'full' && exactRetiring) {
+      coreEvents.push('core/ret_uops=(0x4300C1)');
+    }
+    const fixedMsrs = [...PMU_FIXED_MSRS];
+    const l3Events = presetId === 'tlb' ? [] : [...PMU_L3_EVENTS];
+    const allEvents = [...coreEvents, ...fixedMsrs, ...l3Events];
+    return {
+      presetId,
+      coreEvents,
+      fixedMsrs,
+      l3Events,
+      muxGroups: Math.ceil(coreEvents.length / 6),
+      metricString: allEvents.join(',')
+    };
+  }
+
+  function computeMicroArchMetrics(raw, presetId = 'uarch') {
+    if (presetId !== 'uarch' || !raw) return null;
+    const inst = Math.max(1.0, Number(raw.inst) || 0);
+    const dcCrossCcx = Math.max(0.0, Number(raw.dc_cross_ccx) || 0);
+    const locksSerial = Math.max(0.0, Number(raw.locks_serial) || 0);
+    const decUops = Math.max(0.0, Number(raw.dec_uops) || 0);
+    const ocUops = Math.max(0.0, Number(raw.oc_uops) || 0);
+    const stlfInterlock = Math.max(0.0, Number(raw.stlf_interlock) || 0);
+    const misalAccess = Math.max(0.0, Number(raw.misal_access) || 0);
+
+    const dcCrossCcxMpki = (dcCrossCcx / inst) * 1000.0;
+    const locksSerialMpki = (locksSerial / inst) * 1000.0;
+    const opcacheHitPct = (ocUops / Math.max(1.0, ocUops + decUops)) * 100.0;
+    const legacyDecodePct = 100.0 - opcacheHitPct;
+    const stlfInterlockMpki = (stlfInterlock / inst) * 1000.0;
+    const misalAccessMpki = (misalAccess / inst) * 1000.0;
+
+    return {
+      dcCrossCcxMpki,
+      locksSerialMpki,
+      opcacheHitPct,
+      legacyDecodePct,
+      stlfInterlockMpki,
+      misalAccessMpki
+    };
+  }
+
+  function parseReportCoreCsv(csvText, presetId = 'uarch', baseMhz = CONFIG.baseMhz) {
+    const lines = String(csvText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return null;
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const totals = {
+      inst: 0, cycles: 0, aperf: 0, mperf: 0,
+      dc_cross_ccx: 0, locks_serial: 0, dec_uops: 0,
+      oc_uops: 0, stlf_interlock: 0, misal_access: 0
+    };
+    const perCore = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim());
+      if (cols.length < headers.length) continue;
+      const row = {};
+      headers.forEach((h, idx) => {
+        const num = Number(cols[idx]);
+        row[h] = isFinite(num) ? num : 0;
+      });
+      for (const k of Object.keys(totals)) {
+        if (k in row) totals[k] += row[k];
+      }
+      const coreInst = row.inst || row.irperf || 0;
+      const coreAperf = row.aperf || 0;
+      const coreCyc = (presetId === 'uarch' || !(row.cycles > 0)) ? coreAperf : row.cycles;
+      perCore.push({
+        coreId: row.core ?? row.cpu ?? (i - 1),
+        inst: coreInst,
+        aperf: coreAperf,
+        mperf: row.mperf || 0,
+        ipc: coreCyc > 0 ? coreInst / coreCyc : 0
+      });
+    }
+    const useAperfCycles = presetId === 'uarch' || totals.cycles <= 0;
+    const effCycles = useAperfCycles ? totals.aperf : totals.cycles;
+    const ipc = effCycles > 0 ? totals.inst / effCycles : 0;
+    const actualCpi = totals.inst > 0 ? effCycles / totals.inst : 0;
+    const effGhz = totals.mperf > 0 ? (totals.aperf / totals.mperf) * (baseMhz / 1000.0) : 0;
+    return {
+      presetId,
+      usedAperfFallback: useAperfCycles,
+      totals,
+      perCore,
+      ipc,
+      actualCpi,
+      effGhz,
+      uarch: computeMicroArchMetrics(totals, presetId)
+    };
+  }
+
+  function deserializeBaselineJson(input) {
+    const raw = typeof input === 'string' ? JSON.parse(input) : { ...(input || {}) };
+    const ct = raw.cumulative_totals || {};
+    const cumulative_totals = {
+      inst: Number(ct.inst) || 0,
+      cycles: Number(ct.cycles) || 0,
+      aperf: Number(ct.aperf) || 0,
+      mperf: Number(ct.mperf) || 0,
+      dc_cross_ccx: Number(ct.dc_cross_ccx) || 0,
+      locks_serial: Number(ct.locks_serial) || 0,
+      dec_uops: Number(ct.dec_uops) || 0,
+      oc_uops: Number(ct.oc_uops) || 0,
+      stlf_interlock: Number(ct.stlf_interlock) || 0,
+      misal_access: Number(ct.misal_access) || 0
+    };
+    const hasUarchTotals = (cumulative_totals.dc_cross_ccx + cumulative_totals.locks_serial +
+      cumulative_totals.dec_uops + cumulative_totals.oc_uops +
+      cumulative_totals.stlf_interlock + cumulative_totals.misal_access) > 0;
+    const derivedUarch = hasUarchTotals && cumulative_totals.inst > 0
+      ? computeMicroArchMetrics(cumulative_totals, 'uarch')
+      : null;
+    return {
+      ...raw,
+      muxPreset: raw.muxPreset || raw.mux_preset || 'full',
+      dcCrossCcxMpki: raw.dcCrossCcxMpki ?? (derivedUarch ? derivedUarch.dcCrossCcxMpki : null),
+      locksSerialMpki: raw.locksSerialMpki ?? (derivedUarch ? derivedUarch.locksSerialMpki : null),
+      opcacheHitPct: raw.opcacheHitPct ?? (derivedUarch ? derivedUarch.opcacheHitPct : null),
+      legacyDecodePct: raw.legacyDecodePct ?? (derivedUarch ? derivedUarch.legacyDecodePct : null),
+      stlfInterlockMpki: raw.stlfInterlockMpki ?? (derivedUarch ? derivedUarch.stlfInterlockMpki : null),
+      misalAccessMpki: raw.misalAccessMpki ?? (derivedUarch ? derivedUarch.misalAccessMpki : null),
+      cumulative_totals
+    };
+  }
 
   function getActiveMux() {
     const base = MUX_PRESETS[state.muxIndex];
     if (base.id === 'full' && CONFIG.retiring.exactRetiring) {
-      return { id: 'full', label: 'Full (4-Mux)', corePmcs: 19, l3Pmcs: 4 };
+      return { id: 'full', label: 'Full (4-Mux)', cliArg: 'full', corePmcs: 19, l3Pmcs: 4 };
     }
     return base;
   }
@@ -1672,6 +1861,7 @@
         l3Acc: 10.6, l3Miss: 1.88, l3LatCyc: 212,
         br: 158.0, brMiss: 3.40, brMissPct: 2.85,
         l1ItlbMissPct: 0.28, l2Itlb: 0.09, l1Dtlb: 0.95, l2Dtlb: 0.14,
+        dcCrossCcx: 2.45, locksSerial: 0.78, opcacheHitPct: 76.5, stlfInterlock: 3.85, misalAccess: 12.4,
         pfRate: 185, cpuUsr: 46.2, cpuSys: 4.8,
         // P0 hot SMT contention (82% + 26%), P4/P5 spare (<20%) -> fires Rule 3
         coreC0: [82, 26, 61, 4, 48, 3, 52, 6, 12, 2, 8, 1]
@@ -1716,6 +1906,7 @@
         l3Acc: 11.4, l3Miss: 2.48, l3LatCyc: 224,
         br: 160.0, brMiss: 3.65, brMissPct: 3.05,
         l1ItlbMissPct: 2.15, l2Itlb: 0.84, l1Dtlb: 2.40, l2Dtlb: 0.68,
+        dcCrossCcx: 1.35, locksSerial: 0.32, opcacheHitPct: 74.0, stlfInterlock: 2.15, misalAccess: 8.2,
         pfRate: 1450, cpuUsr: 44.5, cpuSys: 9.2,
         coreC0: [76, 8, 58, 6, 42, 4, 49, 5, 34, 4, 21, 2]
       }
@@ -1766,6 +1957,7 @@
         l3Acc: 15.2, l3Miss: 4.35, l3LatCyc: 308,
         br: 152.0, brMiss: 3.90, brMissPct: 3.10,
         l1ItlbMissPct: 1.92, l2Itlb: 0.72, l1Dtlb: 2.20, l2Dtlb: 0.58,
+        dcCrossCcx: 2.10, locksSerial: 1.25, opcacheHitPct: 67.5, stlfInterlock: 4.60, misalAccess: 24.8,
         pfRate: 1120, cpuUsr: 52.0, cpuSys: 8.5,
         coreC0: [64, 12, 58, 8, 41, 6, 48, 9, 32, 4, 24, 3]
       }
@@ -1806,6 +1998,7 @@
         l3Acc: 8.8, l3Miss: 1.55, l3LatCyc: 210,
         br: 192.0, brMiss: 7.45, brMissPct: 4.65,
         l1ItlbMissPct: 1.35, l2Itlb: 0.42, l1Dtlb: 2.95, l2Dtlb: 0.86,
+        dcCrossCcx: 0.42, locksSerial: 1.18, opcacheHitPct: 61.8, stlfInterlock: 4.20, misalAccess: 22.5,
         pfRate: 4180, cpuUsr: 58.0, cpuSys: 21.5,
         // All 6 physical cores >85% saturated -> tests Rule 3 SMT suppression
         coreC0: [92, 88, 91, 86, 89, 87, 93, 89, 90, 86, 88, 86]
@@ -1856,6 +2049,7 @@
         l3Acc: 5.2, l3Miss: 0.95, l3LatCyc: 196,
         br: 112.0, brMiss: 1.45, brMissPct: 1.40,
         l1ItlbMissPct: 0.22, l2Itlb: 0.06, l1Dtlb: 0.62, l2Dtlb: 0.09,
+        dcCrossCcx: 0.18, locksSerial: 0.06, opcacheHitPct: 89.4, stlfInterlock: 0.95, misalAccess: 3.8,
         pfRate: 210, cpuUsr: 64.0, cpuSys: 3.1,
         coreC0: [88, 86, 89, 87, 90, 88, 89, 86, 87, 86, 88, 86]
       }
@@ -1895,6 +2089,7 @@
         l3Acc: 9.8, l3Miss: 2.60, l3LatCyc: 214,
         br: 165.0, brMiss: 4.40, brMissPct: 3.10,
         l1ItlbMissPct: 1.25, l2Itlb: 0.48, l1Dtlb: 1.80, l2Dtlb: 0.54,
+        dcCrossCcx: 3.15, locksSerial: 0.92, opcacheHitPct: 64.2, stlfInterlock: 2.40, misalAccess: 14.2,
         pfRate: 340, cpuUsr: 22.0, cpuSys: 4.2,
         // 4 threads active across both CCX0 & CCX1 + low L3 hit (73.5%) -> fires Rule 4 Cross-CCX
         coreC0: [42, 4, 34, 2, 6, 1, 38, 3, 29, 2, 4, 1]
@@ -1910,6 +2105,7 @@
     l3Acc: 7.4, l3Miss: 1.45, l3LatCyc: 205,
     br: 148.0, brMiss: 2.10, brMissPct: 2.15,
     l1ItlbMissPct: 0.45, l2Itlb: 0.14, l1Dtlb: 1.10, l2Dtlb: 0.22,
+    dcCrossCcx: 0.65, locksSerial: 0.22, opcacheHitPct: 81.0, stlfInterlock: 1.80, misalAccess: 6.4,
     pfRate: 420, cpuUsr: 18.0, cpuSys: 3.5,
     coreC0: [44, 6, 36, 4, 22, 1, 31, 5, 16, 1, 10, 0]
   };
@@ -1986,7 +2182,7 @@
     blockerName: 'SHS-11252026-0458',
     waitingTarget: null,
     attachedPid: 14820,
-    activeBaseline: { ...BASELINE_PRESETS['4K-Default'] },
+    activeBaseline: deserializeBaselineJson(BASELINE_PRESETS['4K-Default']),
     isAdmin: true,
     ifeoWarnedSession: false,
     pendingIfeoAction: null,
@@ -2007,7 +2203,13 @@
       latNs: [],
       l2itlb: [],
       l2dtlb: [],
-      pfRate: []
+      pfRate: [],
+      dcCrossCcx: [],
+      locksSerial: [],
+      legacyDecodePct: [],
+      opcacheHitPct: [],
+      stlfInterlock: [],
+      misalAccess: []
     },
 
     // Cumulative totals (also used for AVG columns, raw-total baseline save, and Advisor evidence gate)
@@ -2022,6 +2224,15 @@
       effGhz: 0,
       instPerSec: 0,
       cycPerSec: 0,
+      instRaw: 0,
+      aperfRaw: 0,
+      mperfRaw: 0,
+      dcCrossCcxRaw: 0,
+      locksSerialRaw: 0,
+      decUopsRaw: 0,
+      ocUopsRaw: 0,
+      stlfInterlockRaw: 0,
+      misalAccessRaw: 0,
       dram: 0,
       demDram: 0,
       hwpfDram: 0,
@@ -2155,14 +2366,23 @@
 
     const burst = Math.sin(noisePhase * 0.14) > 0.72 ? 1.12 : 1.0;
 
-    const effGhz = Math.min(4.40, Math.max(3.40, jitter(prof.effGhz, 0.014, 0.4)));
-    const ipc = Math.max(0.45, jitter(prof.ipc / Math.sqrt(burst), 0.052, 1.1));
-    const actualCpi = 1.0 / ipc;
-    const instPerSec = effGhz * 1e9 * ipc * 4.2;
-    const cycPerSec = instPerSec / ipc;
+    const muxId = MUX_PRESETS[state.muxIndex].id;
+    const simEffGhz = Math.min(4.40, Math.max(3.40, jitter(prof.effGhz, 0.014, 0.4)));
+    const simIpc = Math.max(0.45, jitter(prof.ipc / Math.sqrt(burst), 0.052, 1.1));
+    const instPerSec = simEffGhz * 1e9 * simIpc * 4.2;
+    // Fixed MSRs: aperf (actual unhalted C0 cycles), mperf (nominal base clock cycles), irperf (retired instructions)
+    const aperfPerSec = instPerSec / simIpc;
+    const mperfPerSec = aperfPerSec / Math.max(0.1, simEffGhz / (CONFIG.baseMhz / 1000.0));
+    const cycPerSec = muxId === 'uarch' ? aperfPerSec : (instPerSec / simIpc);
+    const ipc = muxId === 'uarch'
+      ? (instPerSec / Math.max(1.0, aperfPerSec))
+      : (instPerSec / Math.max(1.0, cycPerSec));
+    const actualCpi = muxId === 'uarch'
+      ? (aperfPerSec / Math.max(1.0, instPerSec))
+      : (cycPerSec / Math.max(1.0, instPerSec));
+    const effGhz = (aperfPerSec / Math.max(1.0, mperfPerSec)) * (CONFIG.baseMhz / 1000.0);
 
     // Zen 2 Pipeline Retiring % (6-wide dispatch)
-    const muxId = MUX_PRESETS[state.muxIndex].id;
     const retiringExact = CONFIG.retiring.exactRetiring && muxId === 'full';
     const hwUopsRatio = jitter(1.16, 0.022, 0.8);
     const retUopsPerSec = instPerSec * hwUopsRatio;
@@ -2170,6 +2390,30 @@
       ? (retUopsPerSec / Math.max(1.0, 6.0 * cycPerSec)) * 100.0
       : ((ipc * CONFIG.retiring.uopsPerInst) / 6.0) * 100.0;
     const retiringPct = Math.min(100.0, Math.max(0.0, rawRetPct));
+
+    // Micro-Arch / Contention (0-Mux) raw hardware counts + derived metrics
+    const dtSec = Math.max(1, state.intervalSec);
+    const instDelta = instPerSec * dtSec;
+    const aperfDelta = aperfPerSec * dtSec;
+    const mperfDelta = mperfPerSec * dtSec;
+    const disUopsDelta = instDelta * hwUopsRatio;
+    const simCrossCcx = jitter((prof.dcCrossCcx ?? 0.65) * burst, 0.075, 14.1);
+    const simLocks = jitter((prof.locksSerial ?? 0.22) * burst, 0.085, 14.7);
+    const simOcHitPct = Math.min(99.5, Math.max(25.0, jitter(prof.opcacheHitPct ?? 81.0, 0.024, 15.2)));
+    const simStlf = jitter((prof.stlfInterlock ?? 1.80) * burst, 0.07, 15.8);
+    const simMisal = jitter((prof.misalAccess ?? 6.4) * burst, 0.065, 16.4);
+
+    const uarchRawDelta = {
+      inst: instDelta,
+      dc_cross_ccx: (simCrossCcx / 1000.0) * instDelta,
+      locks_serial: (simLocks / 1000.0) * instDelta,
+      oc_uops: disUopsDelta * (simOcHitPct / 100.0),
+      dec_uops: disUopsDelta * (1.0 - simOcHitPct / 100.0),
+      stlf_interlock: (simStlf / 1000.0) * instDelta,
+      misal_access: (simMisal / 1000.0) * instDelta
+    };
+    const uarchDerived = computeMicroArchMetrics(uarchRawDelta, 'uarch');
+    const uarchActive = computeMicroArchMetrics(uarchRawDelta, muxId);
 
     // Cache & DRAM MPKIs
     const l1dc = jitter(prof.l1dc * burst, 0.055, 2.1);
@@ -2289,8 +2533,9 @@
     }
 
     const snap = {
-      effGhz, ipc, actualCpi, instPerSec, cycPerSec,
+      effGhz, ipc, actualCpi, instPerSec, cycPerSec, aperfPerSec, mperfPerSec,
       retiringPct, retiringExact, retUopsPerSec,
+      uarch: uarchActive, uarchRawDelta,
       l1dc, l2dc, l1ic, l2ic, l2dcExcl, l2icExcl,
       demL3, hwpfL3, demDram, hwpfDram, l2pfL3, l2pfDram,
       dramTotal, l3HitTotal,
@@ -2314,6 +2559,15 @@
       state.cum.effGhz += effGhz;
       state.cum.instPerSec += instPerSec;
       state.cum.cycPerSec += cycPerSec;
+      state.cum.instRaw += instDelta;
+      state.cum.aperfRaw += aperfDelta;
+      state.cum.mperfRaw += mperfDelta;
+      state.cum.dcCrossCcxRaw += uarchRawDelta.dc_cross_ccx;
+      state.cum.locksSerialRaw += uarchRawDelta.locks_serial;
+      state.cum.decUopsRaw += uarchRawDelta.dec_uops;
+      state.cum.ocUopsRaw += uarchRawDelta.oc_uops;
+      state.cum.stlfInterlockRaw += uarchRawDelta.stlf_interlock;
+      state.cum.misalAccessRaw += uarchRawDelta.misal_access;
       state.cum.dram += dramTotal;
       state.cum.demDram += demDram;
       state.cum.hwpfDram += hwpfDram;
@@ -2350,6 +2604,12 @@
       pushRing(state.history.l2itlb, l2Itlb);
       pushRing(state.history.l2dtlb, l2Dtlb);
       pushRing(state.history.pfRate, pfRate);
+      pushRing(state.history.dcCrossCcx, uarchDerived.dcCrossCcxMpki);
+      pushRing(state.history.locksSerial, uarchDerived.locksSerialMpki);
+      pushRing(state.history.legacyDecodePct, uarchDerived.legacyDecodePct);
+      pushRing(state.history.opcacheHitPct, uarchDerived.opcacheHitPct);
+      pushRing(state.history.stlfInterlock, uarchDerived.stlfInterlockMpki);
+      pushRing(state.history.misalAccess, uarchDerived.misalAccessMpki);
 
       // Timed capture accumulation
       if (state.timedCapture) {
@@ -2357,6 +2617,15 @@
         tc.samples += 1;
         tc.elapsedSec += state.intervalSec;
         tc.ipc += ipc;
+        tc.instRaw += instDelta;
+        tc.aperfRaw += aperfDelta;
+        tc.mperfRaw += mperfDelta;
+        tc.dcCrossCcxRaw += uarchRawDelta.dc_cross_ccx;
+        tc.locksSerialRaw += uarchRawDelta.locks_serial;
+        tc.decUopsRaw += uarchRawDelta.dec_uops;
+        tc.ocUopsRaw += uarchRawDelta.oc_uops;
+        tc.stlfInterlockRaw += uarchRawDelta.stlf_interlock;
+        tc.misalAccessRaw += uarchRawDelta.misal_access;
         tc.dram += dramTotal;
         tc.l3Hit += l3HitTotal;
         tc.l2dcExcl += l2dcExcl;
@@ -2408,6 +2677,7 @@
     MemoryLatencyBound: 'MEMORY LATENCY BOUND',
     MemoryBandwidthQueueing: 'MEMORY BANDWIDTH / QUEUEING',
     L3CapacityOrCrossCcx: 'L3 CAPACITY / CROSS-CCX',
+    MicroArchContention: 'MICRO-ARCH / CONTENTION BOUND',
     FrontendCodeBound: 'FRONTEND CODE BOUND',
     BranchMispredictBound: 'BRANCH MISPREDICT BOUND',
     TlbTranslationBound: 'TLB TRANSLATION BOUND',
@@ -2483,14 +2753,17 @@
     const retExact = CONFIG.retiring.exactRetiring && muxId === 'full';
     const retCtxStr = `Ret ${retExact ? '' : '~'}${Math.round(avgRetPct)}% of 6-wide Zen 2 (typical C++ ceiling ~45-60%)`;
 
-    const hasCore = muxId !== 'tlb';
+    const hasIpcClock = muxId !== 'tlb';
+    const hasCacheCore = muxId === 'full' || muxId === 'ipc-mem';
     const hasFull = muxId === 'full';
-    const hasTlb = muxId !== 'ipc-mem';
+    const hasTlb = muxId === 'full' || muxId === 'tlb';
     const hasL3 = muxId !== 'tlb';
+    const hasUarch = muxId === 'uarch';
 
     const inactiveRules = [];
     if (!hasTlb) inactiveRules.push('PE/Heap TLB');
-    if (!hasCore) inactiveRules.push('Cache/DRAM/L3', 'Clock', 'SMT/CCX');
+    if (!hasIpcClock) inactiveRules.push('Cache/DRAM/L3', 'Clock', 'SMT/CCX');
+    else if (hasUarch) inactiveRules.push('Cache/DRAM', 'Branch%', 'L1i/L2i');
     else if (!hasFull) inactiveRules.push('Branch%', 'Demand/HWPF Split', 'L1i Capacity');
 
     if (n < minSamples) {
@@ -2547,10 +2820,10 @@
 
     const dramLatForCpi = avgL3LatCyc > 0 ? avgL3LatCyc : CONFIG.latencies.dramFallback;
     const avgTierCpi = {
-      dram:   hasCore ? (avgDram * dramLatForCpi) / 1000.0 : 0,
-      l3Hit:  hasCore ? (avgL3Hit * CONFIG.latencies.l3Hit) / 1000.0 : 0,
-      l2Dc:   hasCore ? (avgL2DcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
-      l2Ic:   hasCore ? (avgL2IcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
+      dram:   hasCacheCore ? (avgDram * dramLatForCpi) / 1000.0 : 0,
+      l3Hit:  hasCacheCore ? (avgL3Hit * CONFIG.latencies.l3Hit) / 1000.0 : 0,
+      l2Dc:   hasCacheCore ? (avgL2DcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
+      l2Ic:   hasCacheCore ? (avgL2IcExcl * CONFIG.latencies.l2Hit) / 1000.0 : 0,
       branch: hasFull ? (avgBranch * CONFIG.latencies.branchMispredict) / 1000.0 : 0,
       l2Dtlb: hasTlb  ? (avgL2Dtlb * CONFIG.latencies.l2DtlbWalk) / 1000.0 : 0,
       l2Itlb: hasTlb  ? (avgL2Itlb * CONFIG.latencies.l2ItlbWalk) / 1000.0 : 0
@@ -2564,7 +2837,7 @@
 
     // --- RULE 1: PE Code iTLB + Silent IFEO Failure (Tab 3) ---
     if (proc && hasTlb) {
-      const itlbGain = hasCore
+      const itlbGain = hasIpcClock
         ? estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Itlb, 0.85, 'flush', 'assumes -85% L2 iTLB walks from 2 MiB PE pages')
         : { kind: 'qualitative', label: 'iTLB walks', detail: 'Actual CPI unavailable in TLB-Only preset (switch to Full for Amdahl IPC range)' };
 
@@ -2620,7 +2893,7 @@
 
     // --- RULE 2: Heap dTLB + Mimalloc Spillover (Tab 3 + Tab 4) ---
     if (proc) {
-      const dtlbGain = (hasCore && hasTlb)
+      const dtlbGain = (hasIpcClock && hasTlb)
         ? estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Dtlb, 0.80, 'mlp', 'assumes -80% L2 dTLB walks from 2 MiB heap arenas')
         : { kind: 'qualitative', label: 'dTLB / faults', detail: 'Requires both cycles and dTLB PMCs for Amdahl IPC range' };
 
@@ -2679,7 +2952,7 @@
     // --- RULE 3: SMT Sibling Contention on Hot Core (Tab 1 / Global CCX Strip) ---
     let smtContendedHot = false;
     let hotCoreProof = '';
-    if (hasCore) {
+    if (hasIpcClock) {
       const physStats = CONFIG.physicalCores.map(pc => {
         const s0 = pc.siblings[0] !== undefined ? avgCoreC0[pc.siblings[0]] : 0;
         const s1 = pc.siblings[1] !== undefined ? avgCoreC0[pc.siblings[1]] : 0;
@@ -2723,7 +2996,7 @@
 
     // --- RULE 4: Cross-CCX Thread Spread ---
     let crossCcxActive = false;
-    if (hasCore && hasL3) {
+    if (hasCacheCore && hasL3) {
       const ccx0Active = CONFIG.physicalCores.filter(p => p.ccx === 0).flatMap(p => p.siblings).filter(id => avgCoreC0[id] >= 15.0);
       const ccx1Active = CONFIG.physicalCores.filter(p => p.ccx === 1).flatMap(p => p.siblings).filter(id => avgCoreC0[id] >= 15.0);
       const totalActiveThreads = ccx0Active.length + ccx1Active.length;
@@ -2758,7 +3031,7 @@
 
     // --- RULE 5: Loaded DRAM Queueing Inflation vs. Calibrated Baseline ---
     let dramQueueing = false;
-    if (hasCore && hasL3) {
+    if (hasCacheCore && hasL3) {
       const expectedUnloadedNs = CONFIG.calibrated
         ? Math.max(25.0, (CONFIG.latencies.dramFallback - CONFIG.latencies.l3Hit) / Math.max(0.5, avgGhz))
         : null;
@@ -2890,7 +3163,7 @@
 
     // --- RULE 9: L1/L2 I-Cache Capacity Pressure (true l2_ic_miss 0x430164, NOT l2icExcl) ---
     let icacheBound = false;
-    if (hasCore) {
+    if (hasCacheCore) {
       if (avgL2IcMiss >= 2.5 || (hasFull && avgL1Ic >= 15.0)) {
         icacheBound = true;
         pushFinding({
@@ -2914,7 +3187,7 @@
     }
 
     // --- RULE 10: Clock / Boost Throttling ---
-    if (hasCore) {
+    if (hasIpcClock) {
       const baseGhz = CONFIG.baseMhz / 1000.0;
       if (avgGhz < baseGhz * 0.98 && avgC0 >= 25.0) {
         const clkGainPct = Math.max(0.0, ((baseGhz / Math.max(0.1, avgGhz)) - 1.0) * 100.0);
@@ -2983,7 +3256,7 @@
               detail: 'Qualitative: eliminates hardware PMC time-slice multiplexing variance for sub-3% A/B tuning'
             },
             why: `IPC delta vs "${base.name}" is only ${deltaIpcPct.toFixed(1)}% (<3%), close to Zen 2 multi-group hardware PMC multiplexing variance.`,
-            action: `Press 'm' to switch to a 0-Mux preset (IPC+Cache/DRAM or TLB-Only) and re-capture a baseline for lab-grade A/B confirmation.`,
+            action: `Press 'm' to switch to a 0-Mux preset (IPC+Cache/DRAM, TLB-Only, or Micro-Arch) and re-capture a baseline for lab-grade A/B confirmation.`,
             cascade: `Removes PMC time-slice sampling jitter for sub-3% tuning validation.`,
             quickJumpTab: 1
           });
@@ -2992,6 +3265,174 @@
         }
       } else {
         pushHealthy('Baseline hygiene', `${mux.label} match`);
+      }
+    }
+
+    // --- MICRO-ARCH / CONTENTION RULES (Evaluated ONLY when Micro-Arch 0-Mux is active) ---
+    let uarchMetrics = null;
+    let crossCcxBouncing = false;
+    let lockContention = false;
+    let opcacheThrash = false;
+    let stlfBound = false;
+    let splitsBound = false;
+
+    if (hasUarch) {
+      const cumUarchRaw = {
+        inst: state.cum.instRaw,
+        dc_cross_ccx: state.cum.dcCrossCcxRaw,
+        locks_serial: state.cum.locksSerialRaw,
+        dec_uops: state.cum.decUopsRaw,
+        oc_uops: state.cum.ocUopsRaw,
+        stlf_interlock: state.cum.stlfInterlockRaw,
+        misal_access: state.cum.misalAccessRaw
+      };
+      uarchMetrics = computeMicroArchMetrics(cumUarchRaw, muxId);
+
+      if (uarchMetrics) {
+        const crossCcxMpki = uarchMetrics.dcCrossCcxMpki;
+        const locksMpki = uarchMetrics.locksSerialMpki;
+        const ocHitPct = uarchMetrics.opcacheHitPct;
+        const legacyPct = uarchMetrics.legacyDecodePct;
+        const stlfMpki = uarchMetrics.stlfInterlockMpki;
+        const misalMpki = uarchMetrics.misalAccessMpki;
+        const totalDisUops = state.cum.ocUopsRaw + state.cum.decUopsRaw;
+
+        const crossCcxCpi = (crossCcxMpki / 1000.0) * 90.0; // ~80-100 cyc IF probe latency
+        const stlfCpi = (stlfMpki / 1000.0) * 12.5;         // ~10-15 cyc STLF load replay penalty
+        const uarchModeledRef = Math.max(avgActualCpi, crossCcxCpi + stlfCpi);
+
+        // Rule 12: Cross-CCX Cache Bouncing (0x430443)
+        if (crossCcxMpki >= 0.8) {
+          crossCcxBouncing = true;
+          const isHi = crossCcxMpki >= 2.0;
+          const crossCcxGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
+            ? estimateAmdahlGain(avgActualCpi, uarchModeledRef, crossCcxCpi, 0.70, 'mlp', 'assumes -70% cross-CCX fills (~90 cyc IF probe) via single-CCX pinning / 64B padding')
+            : { kind: 'qualitative', label: 'L3 lat + IPC', detail: 'Qualitative: cuts Infinity Fabric cross-CCX coherence probes and improves IPC on both CCXs' };
+          pushFinding({
+            id: 'cross_ccx_cache_bouncing',
+            category: 'MicroArchContention',
+            severity: isHi ? 'HI' : 'MD',
+            scope: '[OS / Code]',
+            confidence: 'HIGH',
+            impact: crossCcxCpi + (isHi ? 0.12 : 0.04),
+            title: `Cross-CCX cache-line bouncing across Infinity Fabric (${crossCcxMpki.toFixed(2)} MPKI)`,
+            keyMetric: `Cross-CCX ${crossCcxMpki.toFixed(2)} MPKI | L3 ${avgL3LatNs.toFixed(1)} ns`,
+            estGain: crossCcxGain,
+            why: `Direct hardware proof (ls_dmnd_fills_from_sys.ext_cache_local 0x430443): ${crossCcxMpki.toFixed(2)} MPKI demand D-Cache fills are serviced from the other CCX's cache over Infinity Fabric (~80-100 cyc probe latency), far stronger than inferring from L3 hit rate.`,
+            action: `Pin communicating threads to a single CCX (affinity mask 0x003F for CCX0 or 0x0FC0 for CCX1). In owned code, pad hot shared structs/atomics to 64 bytes (#[repr(align(64))] / alignas(64)) to eliminate false sharing.`,
+            cascade: `Cuts Infinity Fabric coherence probes, lowers measured L3 miss latency (${avgL3LatNs.toFixed(1)} ns), and raises IPC on both CCXs.`,
+            quickJumpTab: 1,
+            openCcx: true
+          });
+        } else {
+          pushHealthy('Cross-CCX fills', `${crossCcxMpki.toFixed(2)} MPKI`);
+        }
+
+        // Rule 13: Serialized Lock Contention (0x430325)
+        if ((locksMpki >= 0.5 && crossCcxMpki >= 0.5) || locksMpki >= 1.0) {
+          lockContention = true;
+          const isHi = locksMpki >= 0.5 && crossCcxMpki >= 0.5;
+          pushFinding({
+            id: 'serialized_lock_contention',
+            category: 'MicroArchContention',
+            severity: isHi ? 'HI' : 'MD',
+            scope: '[Code / Build]',
+            confidence: 'HIGH',
+            impact: (locksMpki * 60.0) / 1000.0 + (isHi ? 0.14 : 0.05),
+            title: `Serialized LOCK / spinlock contention (${locksMpki.toFixed(2)} MPKI)`,
+            keyMetric: `Locks ${locksMpki.toFixed(2)} | CCX ${crossCcxMpki.toFixed(2)} MPKI`,
+            estGain: {
+              kind: 'qualitative',
+              label: 'IPC / scaling',
+              detail: 'Qualitative: removes pipeline-serializing non-speculative LOCK stalls and cross-CCX lock bounces'
+            },
+            why: `ls_locks.bus_lock|non_spec_lock (0x430325) averages ${locksMpki.toFixed(2)} MPKI${isHi ? ` alongside ${crossCcxMpki.toFixed(2)} MPKI cross-CCX fills` : ''}, proving user-mode atomics or spinlocks are failing fast cacheable speculation and serializing the core (invisible to Windows context-switch counters).`,
+            action: `Use thread-local sharding (TLS counters), batch atomic updates, or add exponential backoff on spinloops. On closed binaries, pinning contended threads to one CCX (0x003F / 0x0FC0) still reduces per-lock coherence cost.`,
+            cascade: `Drops dc_cross_ccx coherence traffic and frees Load/Store Queue slots for surrounding instructions.`,
+            quickJumpTab: 1,
+            openCcx: isHi
+          });
+        } else {
+          pushHealthy('Serialized locks', `${locksMpki.toFixed(2)} MPKI`);
+        }
+
+        // Rule 14: Op-Cache Thrashing / Legacy 4-Wide Decode Fallback (0x4301AA vs 0x4302AA)
+        if (totalDisUops > 0 && legacyPct >= 30.0) {
+          opcacheThrash = true;
+          pushFinding({
+            id: 'opcache_thrashing',
+            category: 'FrontendCodeBound',
+            severity: 'MD',
+            scope: '[Code / Build]',
+            confidence: 'HIGH',
+            impact: (legacyPct / 100.0) * 0.22,
+            title: `Op-Cache thrashing: ${legacyPct.toFixed(1)}% ops on 4-wide legacy decoder`,
+            keyMetric: `Legacy ${legacyPct.toFixed(1)}% | Op-Cache ${ocHitPct.toFixed(1)}%`,
+            estGain: {
+              kind: 'qualitative',
+              label: 'FE dispatch width',
+              detail: 'Qualitative: restores Zen 2 8-wide 4K-entry Op-Cache dispatch via PGO + llvm-bolt layout'
+            },
+            why: `de_dis_uops_from_decoder (0x4301AA vs 0x4302AA) shows ${legacyPct.toFixed(1)}% of dispatched ops falling back to the 4-wide legacy x86 decoder (Op-Cache hit ${ocHitPct.toFixed(1)}% <= 70%), proving hot instruction streams overflow Zen 2's 4K-entry 8-wide Op-Cache.`,
+            action: `Strongest hardware proof that PGO + llvm-bolt hot/cold code layout or loop alignment will unlock front-end throughput (even if L1i miss MPKI looks moderate). No Windows or OS tweak fixes this on closed-source binaries.`,
+            cascade: `Increases front-end dispatch width (4-wide -> 8-wide Op-Cache) and lowers L1i/L2i fetch stalls.`,
+            quickJumpTab: 1
+          });
+        } else if (totalDisUops > 0) {
+          pushHealthy('Op-Cache hit', `${ocHitPct.toFixed(1)}% (legacy ${legacyPct.toFixed(1)}%)`);
+        }
+
+        // Rule 15: Store-to-Load Forwarding Interlocks (0x430224)
+        if (stlfMpki >= 3.0) {
+          stlfBound = true;
+          const stlfGain = (avgActualCpi > 0.05 && avgActualCpi < 10.0 && isFinite(avgActualCpi))
+            ? estimateAmdahlGain(avgActualCpi, uarchModeledRef, stlfCpi, 0.60, 'mlp', 'assumes -60% STLF load replays (~12.5 cyc) via matched store/load widths')
+            : { kind: 'qualitative', label: 'LSQ / replays', detail: 'Qualitative: eliminates ~10-15 cyc store-to-load forwarding replay stalls' };
+          pushFinding({
+            id: 'stlf_interlocks',
+            category: 'MicroArchContention',
+            severity: 'MD',
+            scope: '[Code / Build]',
+            confidence: 'HIGH',
+            impact: stlfCpi + 0.03,
+            title: `Store-to-load forwarding (STLF) interlock stalls (${stlfMpki.toFixed(2)} MPKI)`,
+            keyMetric: `STLF ${stlfMpki.toFixed(2)} MPKI`,
+            estGain: stlfGain,
+            why: `Hardware-exact proof (ls_bad_status2.stli_other 0x430224): ${stlfMpki.toFixed(2)} MPKI loads stalled because an older overlapping store could not forward (e.g., narrow scalar writes followed immediately by a wider struct or AVX2 load).`,
+            action: `Match store and load widths and alignment on hot data structures, and assemble SIMD vectors in registers (shuffles/blends) before storing to memory.`,
+            cascade: `Eliminates ~10-15 cyc load replays and relieves Load/Store Queue pressure.`,
+            quickJumpTab: 1
+          });
+        } else {
+          pushHealthy('STLF interlocks', `${stlfMpki.toFixed(2)} MPKI`);
+        }
+
+        // Rule 16: 64-Byte Cache-Line Splits / Misaligned Accesses (0x430047)
+        if (misalMpki >= 10.0) {
+          splitsBound = true;
+          const isMd = misalMpki >= 20.0;
+          pushFinding({
+            id: 'cache_line_splits',
+            category: 'MicroArchContention',
+            severity: isMd ? 'MD' : 'LO',
+            scope: '[Code / Build]',
+            confidence: 'HIGH',
+            impact: (misalMpki / 1000.0) * 3.0 + (isMd ? 0.02 : 0.0),
+            title: `64-byte cache-line split / misaligned accesses (${misalMpki.toFixed(1)} MPKI)`,
+            keyMetric: `Splits ${misalMpki.toFixed(1)} MPKI`,
+            estGain: {
+              kind: 'qualitative',
+              label: 'L1d ports / LSQ',
+              detail: 'Qualitative: halves split cache lookups and relieves L1d port + LSQ contention'
+            },
+            why: `ls_misal_accesses (0x430047) averages ${misalMpki.toFixed(2)} MPKI loads/stores straddling 64-byte cache-line boundaries, doubling L1d tag lookups and consuming extra Load/Store Queue slots.`,
+            action: `Enforce 32B/64B alignment on hot structs and SIMD buffers (#[repr(align(64))] / alignas(64) / aligned allocators).`,
+            cascade: `Reduces L1d port contention and L1d miss amplification.`,
+            quickJumpTab: 1
+          });
+        } else {
+          pushHealthy('Cache-line splits', `${misalMpki.toFixed(1)} MPKI`);
+        }
       }
     }
 
@@ -3007,12 +3448,22 @@
     const winStall = stallRankList[0];
     const winSharePct = Math.round((winStall.cpi / sumModeledCpi) * 100);
 
-    const feMissCpi = hasCore ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
+    const feMissCpi = hasCacheCore ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
     const tlbCpi = avgTierCpi.l2Itlb + avgTierCpi.l2Dtlb;
 
     let primaryVerdict = 'CoreExecutionBound';
-    if (!hasCore && hasTlb) {
+    if (!hasIpcClock && hasTlb) {
       primaryVerdict = (avgL2Itlb >= 0.35 || avgL2Dtlb >= 0.50) ? 'TlbTranslationBound' : 'CoreExecutionBound';
+    } else if (hasUarch) {
+      if (crossCcxBouncing || lockContention || stlfBound || splitsBound) {
+        primaryVerdict = 'MicroArchContention';
+      } else if (opcacheThrash) {
+        primaryVerdict = 'FrontendCodeBound';
+      } else if (smtContendedHot) {
+        primaryVerdict = 'SmtContentionBound';
+      } else {
+        primaryVerdict = 'CoreExecutionBound';
+      }
     } else if (dramQueueing) {
       primaryVerdict = 'MemoryBandwidthQueueing';
     } else if (avgTierCpi.dram >= Math.max(avgTierCpi.l3Hit, avgTierCpi.branch, feMissCpi, tlbCpi) && (avgDram >= 1.5 || demandDramChase)) {
@@ -3083,7 +3534,7 @@
           impact: tlbCpi + 0.05,
           title: `Dominant stall: Hardware L2 TLB page walks`,
           keyMetric: `iTLB ${avgL2Itlb.toFixed(2)} | dTLB ${avgL2Dtlb.toFixed(2)} MPKI`,
-          estGain: hasCore
+          estGain: hasIpcClock
             ? estimateAmdahlGain(avgActualCpi, sumModeledCpi, tlbCpi, 0.80, 'mlp', 'assumes -80% L2 TLB walks via 2 MiB large pages')
             : { kind: 'qualitative', label: 'TLB walks', detail: 'Actual CPI unavailable in TLB-Only preset' },
           why: `L2 iTLB (${avgL2Itlb.toFixed(2)} MPKI) and L2 dTLB (${avgL2Dtlb.toFixed(2)} MPKI) hardware page-table walks dominate translation overhead in the current window.`,
@@ -3103,9 +3554,12 @@
 
     let winningStallLine = '';
     let proofLine = '';
-    if (!hasCore) {
+    if (!hasIpcClock) {
       winningStallLine = `TLB-Only 0-Mux: L2 iTLB ${avgL2Itlb.toFixed(2)} / dTLB ${avgL2Dtlb.toFixed(2)} MPKI`;
       proofLine = `L2 iTLB ${avgL2Itlb.toFixed(2)} MPKI (L1m ${avgL1ItlbPct.toFixed(2)}%) │ L2 dTLB ${avgL2Dtlb.toFixed(2)} MPKI │ Inst ${fmtRate(avgInst)}`;
+    } else if (hasUarch && uarchMetrics) {
+      winningStallLine = `Micro-Arch 0-Mux: Cross-CCX ${uarchMetrics.dcCrossCcxMpki.toFixed(2)} │ Locks ${uarchMetrics.locksSerialMpki.toFixed(2)} │ Op-Cache ${uarchMetrics.opcacheHitPct.toFixed(1)}%`;
+      proofLine = `IPC (aperf) ${avgIpc.toFixed(2)} (CPI ${avgActualCpi.toFixed(2)}) │ Cross-CCX ${uarchMetrics.dcCrossCcxMpki.toFixed(2)} │ Locks ${uarchMetrics.locksSerialMpki.toFixed(2)} │ Op-Cache ${uarchMetrics.opcacheHitPct.toFixed(1)}% │ STLF ${uarchMetrics.stlfInterlockMpki.toFixed(2)} │ Splits ${uarchMetrics.misalAccessMpki.toFixed(1)} MPKI │ L3 ${avgL3HitPct.toFixed(1)}% @ ${avgL3LatNs.toFixed(1)} ns`;
     } else {
       winningStallLine = `${winStall.name} is #1 stall: ${winStall.cpi.toFixed(2)} CPI / ${winSharePct}% of modeled stalls`;
       if (primaryVerdict === 'MemoryLatencyBound' || primaryVerdict === 'MemoryBandwidthQueueing') {
@@ -3353,6 +3807,7 @@
     const snap = state.lastSnap;
     const muxId = MUX_PRESETS[state.muxIndex].id;
     const hasCore = muxId !== 'tlb';
+    const hasDram = muxId === 'full' || muxId === 'ipc-mem';
 
     document.getElementById('ccx-tbody').innerHTML = snap.ccx.map(c => `
       <tr>
@@ -3362,7 +3817,7 @@
         <td>${hasCore ? c.ghz.toFixed(2) : '--'}</td>
         <td>${hasCore ? c.l3HitPct.toFixed(1) + '%' : '--'}</td>
         <td>${hasCore ? c.latNs.toFixed(0) + ' ns' : '--'}</td>
-        <td>${hasCore ? c.dramMpki.toFixed(2) : '--'}</td>
+        <td class="${hasDram ? '' : 'c-muted'}">${hasDram ? c.dramMpki.toFixed(2) : '--'}</td>
         <td class="c-dim">${c.avgC0.toFixed(0)}%</td>
       </tr>
     `).join('');
@@ -3413,14 +3868,54 @@
     const legendEl = document.getElementById('cpi-legend');
     const actualEl = document.getElementById('cpi-track-actual');
     const modeledEl = document.getElementById('cpi-track-modeled');
+    const lbl1 = document.getElementById('cpi-label-1');
+    const lbl2 = document.getElementById('cpi-label-2');
 
     if (muxId === 'tlb') {
-      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ Actual CPI requires cycles PMC (press 'm' for Full or IPC+Cache/DRAM)</span>`;
+      if (lbl1) lbl1.textContent = 'Actual';
+      if (lbl2) lbl2.textContent = 'Modeled';
+      sumEl.innerHTML = `<span class="c-bright">Exclusive CPI Stack</span> <span class="c-dim">│ Actual CPI requires cycles PMC or aperf (press 'm' for Full, IPC+Cache/DRAM, or Micro-Arch)</span>`;
       legendEl.innerHTML = '';
       actualEl.innerHTML = `<span class="c-muted">N/A in TLB-Only (0-Mux) preset</span>`;
       modeledEl.innerHTML = '';
       return;
     }
+
+    if (muxId === 'uarch' && snap.uarch) {
+      const ua = snap.uarch;
+      if (lbl1) lbl1.textContent = 'Actual';
+      if (lbl2) lbl2.textContent = 'Decode';
+      sumEl.innerHTML =
+        `<span class="c-bright">Micro-Arch Front-End &amp; L3 (0-Mux)</span>` +
+        `<span class="c-dim"> │ </span>Actual CPI (aperf) <span class="c-bright">${snap.actualCpi.toFixed(2)}</span>` +
+        `<span class="c-dim"> │ </span>Op-Cache <span class="${ua.legacyDecodePct >= 30.0 ? 'c-yellow c-bright' : 'c-green'}">${ua.opcacheHitPct.toFixed(1)}%</span>` +
+        `<span class="c-dim"> │ </span>L3 Hit <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span> @ <span class="${severityClass(snap.l3LatCyc, 220, 270)}">${snap.l3LatNs.toFixed(1)} ns (${snap.l3LatCyc.toFixed(0)} cyc)</span>`;
+
+      legendEl.innerHTML =
+        `<span><span class="c-muted">Decode:</span> <span style="color:var(--green)">█</span> Op-Cache (8-wide) <span style="color:${ua.legacyDecodePct >= 30.0 ? 'var(--red)' : 'var(--orange)'}">█</span> Legacy (4-wide)</span>`;
+
+      const wrapW = Math.max(220, actualEl.getBoundingClientRect().width - 8);
+      const actScale = Math.max(snap.actualCpi, 1.5) * 1.15;
+      const actualPx = Math.max(36, Math.min(wrapW, Math.round((snap.actualCpi / actScale) * wrapW)));
+      const actTxt = actualPx >= 96 ? `Actual ${snap.actualCpi.toFixed(2)} (aperf)` : `CPI ${snap.actualCpi.toFixed(2)}`;
+      actualEl.innerHTML =
+        `<span class="cpi-actual-fill" style="width:${actualPx}px;" title="Actual CPI derived from fixed MSR aperf / irperf: ${snap.actualCpi.toFixed(3)}">${actTxt}</span>` +
+        `<span class="cpi-marker" title="Actual CPI boundary (${snap.actualCpi.toFixed(3)})"></span>` +
+        `<span class="c-dim" style="margin-left: 8px; font-size: 11.5px;">0-Mux: 6 Core PMCs + 3 Fixed MSRs + 4 L3 PMCs</span>`;
+
+      const ocPx = Math.max(12, Math.round((ua.opcacheHitPct / 100.0) * wrapW));
+      const decPx = Math.max(4, wrapW - ocPx);
+      const decHex = ua.legacyDecodePct >= 30.0 ? '#e06464' : '#d98d59';
+      const ocLbl = ocPx >= 95 ? `Op-Cache ${ua.opcacheHitPct.toFixed(1)}%` : (ocPx >= 36 ? `${ua.opcacheHitPct.toFixed(0)}%` : '');
+      const decLbl = decPx >= 86 ? `Legacy ${ua.legacyDecodePct.toFixed(1)}%` : (decPx >= 32 ? `${ua.legacyDecodePct.toFixed(0)}%` : '');
+      modeledEl.innerHTML =
+        `<span class="cpi-seg" style="width:${ocPx}px; background:#5dc27f;" title="Op-Cache dispatched ops (0x4302AA): ${ua.opcacheHitPct.toFixed(1)}%">${ocLbl}</span>` +
+        `<span class="cpi-seg" style="width:${decPx}px; background:${decHex};" title="Legacy 4-wide x86 decoder ops (0x4301AA): ${ua.legacyDecodePct.toFixed(1)}%">${decLbl}</span>`;
+      return;
+    }
+
+    if (lbl1) lbl1.textContent = 'Actual';
+    if (lbl2) lbl2.textContent = 'Modeled';
 
     const active = snap.activeTiers.filter(t => t.cpi > 0.0005);
     const modeledCpi = snap.modeledCpi;
@@ -3487,9 +3982,13 @@
     const muxId = MUX_PRESETS[state.muxIndex].id;
     const base = state.activeBaseline;
     const hasIpc = muxId !== 'tlb';
+    const isUarch = muxId === 'uarch';
     const avgIpc = state.cum.samples > 0 ? state.cum.ipc / state.cum.samples : snap.ipc;
 
     // 1. Top Colored Braille Graphs
+    const ipcTitleEl = document.getElementById('g-ipc-title');
+    if (ipcTitleEl) ipcTitleEl.textContent = isUarch ? 'IPC (aperf)' : 'IPC';
+
     const ipcColor = !hasIpc ? 'var(--fg-muted)' : (snap.ipc >= 1.2 ? 'var(--green)' : (snap.ipc >= 0.85 ? 'var(--cyan)' : 'var(--yellow)'));
     const ipcHeader = hasIpc
       ? `<span class="${severityClass(snap.ipc, 1.2, 0.75, true)} c-bright">${snap.ipc.toFixed(2)}</span>` +
@@ -3500,7 +3999,7 @@
         `<span class="c-dim">avg ${avgIpc.toFixed(2)}</span>` +
         `<span class="c-muted">│</span>` +
         `<span class="c-dim">Inst</span> <span>${fmtRate(snap.instPerSec)}</span>` +
-        `<span class="c-dim">Cyc</span> <span>${fmtRate(snap.cycPerSec)}</span>`
+        `<span class="c-dim">${isUarch ? 'aperf' : 'Cyc'}</span> <span>${fmtRate(isUarch ? snap.aperfPerSec : snap.cycPerSec)}</span>`
       : `<span class="c-dim">N/A (TLB-Only 0-Mux) │ Inst ${fmtRate(snap.instPerSec)}</span>`;
     document.getElementById('g-ipc-stats').innerHTML = ipcHeader;
 
@@ -3511,71 +4010,262 @@
       { minVal: 0.4, baseline: (hasIpc && base) ? base.ipc : null, color: ipcColor }
     );
 
-    const topTier = snap.topTier;
-    const topBaseKey = {
-      dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
-      l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
-    }[topTier.key];
-    const topAvg = state.cum.samples > 0 ? state.cum[topTier.key] / state.cum.samples : topTier.mpki;
+    const theadEl = document.getElementById('overview-stall-thead');
+    const tbodyEl = document.getElementById('overview-stall-tbody');
 
-    document.getElementById('g-top-title').textContent = `Top Stall: ${topTier.name} MPKI`;
-    document.getElementById('g-top-stats').innerHTML =
-      `<span class="${topTier.colorClass} c-bright">${topTier.mpki.toFixed(2)}</span>` +
-      `${fmtDeltaPct(topTier.mpki, base ? base[topBaseKey] : null, false)}` +
-      `<span class="c-muted">│</span>` +
-      `<span class="c-dim">avg ${topAvg.toFixed(2)}</span>`;
+    if (isUarch && snap.uarch) {
+      const ua = snap.uarch;
+      const cumUa = computeMicroArchMetrics({
+        inst: state.cum.instRaw,
+        dc_cross_ccx: state.cum.dcCrossCcxRaw,
+        locks_serial: state.cum.locksSerialRaw,
+        dec_uops: state.cum.decUopsRaw,
+        oc_uops: state.cum.ocUopsRaw,
+        stlf_interlock: state.cum.stlfInterlockRaw,
+        misal_access: state.cum.misalAccessRaw
+      }, 'uarch') || ua;
 
-    renderBrailleGraph(
-      document.getElementById('g-top-canvas'),
-      document.getElementById('g-top-axis'),
-      state.history.topStall,
-      { minVal: 0, baseline: base ? base[topBaseKey] : null, color: topTier.barColor }
-    );
+      const uarchRows = [
+        {
+          key: 'dcCrossCcx',
+          name: 'Cross-CCX Fills',
+          hex: '0x430443',
+          unit: 'MPKI',
+          live: ua.dcCrossCcxMpki,
+          avg: cumUa.dcCrossCcxMpki,
+          baseVal: base ? base.dcCrossCcxMpki : null,
+          higherIsBetter: false,
+          sev: ua.dcCrossCcxMpki >= 2.0 ? 'HI' : (ua.dcCrossCcxMpki >= 0.8 ? 'MD' : 'OK'),
+          scaleMax: 3.5,
+          barColor: ua.dcCrossCcxMpki >= 2.0 ? 'var(--red)' : (ua.dcCrossCcxMpki >= 0.8 ? 'var(--yellow)' : 'var(--cyan)'),
+          graphTitle: 'Cross-CCX Fills MPKI',
+          series: state.history.dcCrossCcx
+        },
+        {
+          key: 'locksSerial',
+          name: 'Serialized Locks',
+          hex: '0x430325',
+          unit: 'MPKI',
+          live: ua.locksSerialMpki,
+          avg: cumUa.locksSerialMpki,
+          baseVal: base ? base.locksSerialMpki : null,
+          higherIsBetter: false,
+          sev: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'HI' : (ua.locksSerialMpki >= 1.0 ? 'MD' : 'OK'),
+          scaleMax: 1.8,
+          barColor: (ua.locksSerialMpki >= 0.5 && ua.dcCrossCcxMpki >= 0.5) ? 'var(--red)' : (ua.locksSerialMpki >= 1.0 ? 'var(--yellow)' : 'var(--orange)'),
+          graphTitle: 'Serialized Locks MPKI',
+          series: state.history.locksSerial
+        },
+        {
+          key: 'legacyDecodePct',
+          name: 'Legacy Decode %',
+          hex: '0x4301AA',
+          unit: '%',
+          live: ua.legacyDecodePct,
+          avg: cumUa.legacyDecodePct,
+          baseVal: base ? base.legacyDecodePct : null,
+          higherIsBetter: false,
+          sev: ua.legacyDecodePct >= 30.0 ? 'MD' : 'OK',
+          scaleMax: 50.0,
+          barColor: ua.legacyDecodePct >= 30.0 ? 'var(--yellow)' : 'var(--orange)',
+          graphTitle: 'Legacy Decode %',
+          series: state.history.legacyDecodePct
+        },
+        {
+          key: 'opcacheHitPct',
+          name: 'Op-Cache Hit %',
+          hex: '0x4302AA',
+          unit: '%',
+          live: ua.opcacheHitPct,
+          avg: cumUa.opcacheHitPct,
+          baseVal: base ? base.opcacheHitPct : null,
+          higherIsBetter: true,
+          sev: ua.opcacheHitPct <= 70.0 ? 'MD' : 'OK',
+          scaleMax: 100.0,
+          barColor: ua.opcacheHitPct <= 70.0 ? 'var(--yellow)' : 'var(--green)',
+          graphTitle: 'Op-Cache Hit %',
+          series: state.history.opcacheHitPct
+        },
+        {
+          key: 'stlfInterlock',
+          name: 'STLF Interlocks',
+          hex: '0x430224',
+          unit: 'MPKI',
+          live: ua.stlfInterlockMpki,
+          avg: cumUa.stlfInterlockMpki,
+          baseVal: base ? base.stlfInterlockMpki : null,
+          higherIsBetter: false,
+          sev: ua.stlfInterlockMpki >= 3.0 ? 'MD' : 'OK',
+          scaleMax: 6.0,
+          barColor: ua.stlfInterlockMpki >= 3.0 ? 'var(--yellow)' : 'var(--magenta)',
+          graphTitle: 'STLF Interlocks MPKI',
+          series: state.history.stlfInterlock
+        },
+        {
+          key: 'misalAccess',
+          name: 'Cache-Line Splits',
+          hex: '0x430047',
+          unit: 'MPKI',
+          live: ua.misalAccessMpki,
+          avg: cumUa.misalAccessMpki,
+          baseVal: base ? base.misalAccessMpki : null,
+          higherIsBetter: false,
+          sev: ua.misalAccessMpki >= 20.0 ? 'MD' : (ua.misalAccessMpki >= 10.0 ? 'LO' : 'OK'),
+          scaleMax: 30.0,
+          barColor: ua.misalAccessMpki >= 20.0 ? 'var(--yellow)' : (ua.misalAccessMpki >= 10.0 ? 'var(--cyan)' : 'var(--blue)'),
+          graphTitle: 'Cache-Line Splits MPKI',
+          series: state.history.misalAccess
+        }
+      ];
 
-    // 2. Two-Line Exclusive CPI Stack
-    renderCpiStack(snap);
+      // Pick top-right graph: default to Cross-CCX Fills MPKI when active or when all are OK; else highest-severity active micro-arch stall
+      const sevWeight = { HI: 3, MD: 2, LO: 1, OK: 0 };
+      const activeStallRows = uarchRows.filter(r => r.key !== 'opcacheHitPct' && sevWeight[r.sev] > 0);
+      const topGraphRow = (sevWeight[uarchRows[0].sev] >= 2 || activeStallRows.length === 0)
+        ? uarchRows[0]
+        : [...activeStallRows].sort((a, b) => (sevWeight[b.sev] - sevWeight[a.sev]) || ((b.live / b.scaleMax) - (a.live / a.scaleMax)))[0];
 
-    // 3. Unified Stall Table
-    const rowsData = snap.tableTiers.map(t => {
-      const enabled = t.avail.includes(muxId);
-      const baseKey = {
-        dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
-        l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
-      }[t.key];
-      const avgVal = state.cum.samples > 0 ? state.cum[t.key] / state.cum.samples : t.mpki;
-      return { ...t, enabled, baseVal: base ? base[baseKey] : null, avgVal };
-    });
+      const fmtVal = (v, unit) => unit === '%' ? `${v.toFixed(1)}%` : (v < 1.0 ? v.toFixed(3) : v.toFixed(2));
+      const topSevCls = topGraphRow.sev === 'HI' ? 'c-red' : (topGraphRow.sev === 'MD' ? 'c-yellow' : (topGraphRow.sev === 'LO' ? 'c-cyan' : 'c-green'));
 
-    const maxCpi = Math.max(0.05, ...rowsData.filter(r => r.enabled).map(r => r.cpi));
-    const topKey = snap.topTier.key;
+      document.getElementById('g-top-title').textContent = topGraphRow.graphTitle;
+      document.getElementById('g-top-stats').innerHTML =
+        `<span class="${topSevCls} c-bright">${fmtVal(topGraphRow.live, topGraphRow.unit)}</span>` +
+        `${fmtDeltaPct(topGraphRow.live, topGraphRow.baseVal, topGraphRow.higherIsBetter)}` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">avg ${fmtVal(topGraphRow.avg, topGraphRow.unit)}</span>`;
 
-    document.getElementById('overview-stall-tbody').innerHTML = rowsData.map(r => {
-      const isTop = r.enabled && r.key === topKey;
-      const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
-      if (!r.enabled) {
-        return `
-          <tr class="c-muted">
-            <td class="left">${prefix}${r.name}</td>
-            <td>--</td><td>--</td><td>--</td><td>--</td>
-            <td class="c-muted">not in ${getActiveMux().label}</td>
+      renderBrailleGraph(
+        document.getElementById('g-top-canvas'),
+        document.getElementById('g-top-axis'),
+        topGraphRow.series,
+        { minVal: 0, baseline: topGraphRow.baseVal, color: topGraphRow.barColor }
+      );
+
+      // 2. Micro-Arch Front-End & Execution Strip
+      renderCpiStack(snap);
+
+      // 3. Dedicated 6-row Micro-Arch & Contention Table (zero empty '--' rows)
+      if (theadEl) {
+        theadEl.innerHTML = `
+          <tr>
+            <th class="left">MICRO-ARCH &amp; CONTENTION</th>
+            <th>LIVE</th>
+            <th>AVG</th>
+            <th>vs BASE</th>
+            <th>SEVERITY</th>
+            <th>IMPACT BAR</th>
           </tr>
         `;
       }
-      const barLen = Math.max(1, Math.round((r.cpi / maxCpi) * 20));
-      const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
-      const mpkiDisp = r.mpki < 1.0 ? r.mpki.toFixed(3) : r.mpki.toFixed(2);
-      const avgDisp = r.avgVal < 1.0 ? r.avgVal.toFixed(3) : r.avgVal.toFixed(2);
-      return `
-        <tr class="${isTop ? 'top-bottleneck' : ''}">
-          <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
-          <td class="${isTop ? 'c-bright' : ''}">${mpkiDisp}</td>
-          <td class="c-dim">${avgDisp}</td>
-          <td>${fmtDeltaPct(r.mpki, r.baseVal, false)}</td>
-          <td class="${isTop ? r.colorClass + ' c-bright' : ''}">${r.cpi.toFixed(3)}</td>
-          <td style="font-size: 12px;"><span style="color:${isTop ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
-        </tr>
-      `;
-    }).join('');
+
+      const topActiveKey = activeStallRows.length > 0 ? topGraphRow.key : null;
+      const sevBadge = s => {
+        if (s === 'HI') return `<span class="sev-hi">HI</span>`;
+        if (s === 'MD') return `<span class="sev-md">MD</span>`;
+        if (s === 'LO') return `<span class="sev-lo">LO</span>`;
+        return `<span class="c-green">OK</span>`;
+      };
+
+      tbodyEl.innerHTML = uarchRows.map(r => {
+        const isTop = r.key === topActiveKey;
+        const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
+        const ratio = Math.max(0.0, Math.min(1.0, r.live / r.scaleMax));
+        const barLen = Math.max(1, Math.round(ratio * 20));
+        const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
+        const liveStr = r.unit === '%' ? `${r.live.toFixed(1)}%` : `${r.live < 1.0 ? r.live.toFixed(3) : r.live.toFixed(2)} MPKI`;
+        const avgStr = r.unit === '%' ? `${r.avg.toFixed(1)}%` : (r.avg < 1.0 ? r.avg.toFixed(3) : r.avg.toFixed(2));
+        return `
+          <tr class="${isTop ? 'top-bottleneck' : ''}" title="${r.name} (${r.hex})">
+            <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
+            <td class="${isTop ? 'c-bright' : ''}">${liveStr}</td>
+            <td class="c-dim">${avgStr}</td>
+            <td>${fmtDeltaPct(r.live, r.baseVal, r.higherIsBetter)}</td>
+            <td>${sevBadge(r.sev)}</td>
+            <td style="font-size: 12px;"><span style="color:${r.sev !== 'OK' || r.key === 'opcacheHitPct' ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      const topTier = snap.topTier;
+      const topBaseKey = {
+        dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
+        l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
+      }[topTier.key];
+      const topAvg = state.cum.samples > 0 ? state.cum[topTier.key] / state.cum.samples : topTier.mpki;
+
+      document.getElementById('g-top-title').textContent = `Top Stall: ${topTier.name} MPKI`;
+      document.getElementById('g-top-stats').innerHTML =
+        `<span class="${topTier.colorClass} c-bright">${topTier.mpki.toFixed(2)}</span>` +
+        `${fmtDeltaPct(topTier.mpki, base ? base[topBaseKey] : null, false)}` +
+        `<span class="c-muted">│</span>` +
+        `<span class="c-dim">avg ${topAvg.toFixed(2)}</span>`;
+
+      renderBrailleGraph(
+        document.getElementById('g-top-canvas'),
+        document.getElementById('g-top-axis'),
+        state.history.topStall,
+        { minVal: 0, baseline: base ? base[topBaseKey] : null, color: topTier.barColor }
+      );
+
+      // 2. Two-Line Exclusive CPI Stack
+      renderCpiStack(snap);
+
+      // 3. Unified Stall Table
+      if (theadEl) {
+        theadEl.innerHTML = `
+          <tr>
+            <th class="left">STALL SOURCE</th>
+            <th>LIVE MPKI</th>
+            <th>AVG</th>
+            <th>vs BASE</th>
+            <th>EST CPI</th>
+            <th>IMPACT BAR</th>
+          </tr>
+        `;
+      }
+
+      const rowsData = snap.tableTiers.map(t => {
+        const enabled = t.avail.includes(muxId);
+        const baseKey = {
+          dram: 'dramMpki', l3Hit: 'l3HitMpki', l2dcExcl: 'l2dcExclMpki',
+          l2icExcl: 'l2icExclMpki', branch: 'branchMpki', l2dtlb: 'l2dtlbMpki', l2itlb: 'l2itlbMpki'
+        }[t.key];
+        const avgVal = state.cum.samples > 0 ? state.cum[t.key] / state.cum.samples : t.mpki;
+        return { ...t, enabled, baseVal: base ? base[baseKey] : null, avgVal };
+      });
+
+      const maxCpi = Math.max(0.05, ...rowsData.filter(r => r.enabled).map(r => r.cpi));
+      const topKey = snap.topTier.key;
+
+      tbodyEl.innerHTML = rowsData.map(r => {
+        const isTop = r.enabled && r.key === topKey;
+        const prefix = isTop ? `<span class="c-red c-bright">&gt;&gt; </span>` : `<span class="c-muted">   </span>`;
+        if (!r.enabled) {
+          return `
+            <tr class="c-muted">
+              <td class="left">${prefix}${r.name}</td>
+              <td>--</td><td>--</td><td>--</td><td>--</td>
+              <td class="c-muted">not in ${getActiveMux().label}</td>
+            </tr>
+          `;
+        }
+        const barLen = Math.max(1, Math.round((r.cpi / maxCpi) * 20));
+        const barStr = '█'.repeat(barLen) + '·'.repeat(20 - barLen);
+        const mpkiDisp = r.mpki < 1.0 ? r.mpki.toFixed(3) : r.mpki.toFixed(2);
+        const avgDisp = r.avgVal < 1.0 ? r.avgVal.toFixed(3) : r.avgVal.toFixed(2);
+        return `
+          <tr class="${isTop ? 'top-bottleneck' : ''}">
+            <td class="left ${isTop ? 'c-bright' : ''}">${prefix}${r.name}</td>
+            <td class="${isTop ? 'c-bright' : ''}">${mpkiDisp}</td>
+            <td class="c-dim">${avgDisp}</td>
+            <td>${fmtDeltaPct(r.mpki, r.baseVal, false)}</td>
+            <td class="${isTop ? r.colorClass + ' c-bright' : ''}">${r.cpi.toFixed(3)}</td>
+            <td style="font-size: 12px;"><span style="color:${isTop ? r.barColor : 'var(--fg-dim)'}">${barStr.slice(0, barLen)}</span><span class="c-muted">${barStr.slice(barLen)}</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
 
     // 4. Bottom 1-line OS Summary
     const proc = getAttachedProcess();
@@ -3606,6 +4296,7 @@
     const base = state.activeBaseline;
     const hasFull = muxId === 'full';
     const hasCache = muxId === 'full' || muxId === 'ipc-mem';
+    const hasL3 = muxId !== 'tlb';
     const instM = snap.instPerSec / 1000.0;
 
     const rows = [
@@ -3671,7 +4362,7 @@
       },
       {
         label: 'Unified CCX L3 Miss',
-        avail: hasCache,
+        avail: hasL3,
         rate: fmtRate(snap.l3Miss * instM),
         dem: '--',
         hwpf: '--',
@@ -3706,13 +4397,13 @@
     }).join('');
 
     const l3El = document.getElementById('cache-l3-summary');
-    if (hasCache) {
+    if (hasL3) {
       const latCls = severityClass(snap.l3LatCyc, 220, 270);
       l3El.innerHTML =
         `<span>Unified L3 Hit Rate: <span class="c-bright">${snap.l3HitPct.toFixed(1)}%</span>` +
         `<span class="sep">│</span>L3 Access: ${fmtRate(snap.l3Acc * instM)}` +
         `<span class="sep">│</span>Measured L3 Miss Latency: <span class="${latCls} c-bright">${snap.l3LatCyc.toFixed(0)} cyc (${snap.l3LatNs.toFixed(1)} ns)</span></span>` +
-        `<span class="c-dim">CCX0 + CCX1 Aggregate</span>`;
+        `<span class="c-dim">${muxId === 'uarch' ? 'CCX L3 PMU active in Micro-Arch (0-Mux)' : 'CCX0 + CCX1 Aggregate'}</span>`;
     } else {
       l3El.innerHTML = `<span class="c-dim">Cache &amp; CCX L3 counters inactive in TLB-Only (0-Mux) preset. Press 'm' to switch.</span>`;
     }
@@ -3724,9 +4415,9 @@
       ? `<span class="${severityClass(snap.dramTotal, 1.5, 3.0)} c-bright">${snap.dramTotal.toFixed(2)}</span>` +
         `${fmtDeltaPct(snap.dramTotal, base ? base.dramMpki : null, false)}` +
         `<span class="c-dim">avg ${avgDram.toFixed(2)}</span>`
-      : `<span class="c-dim">N/A</span>`;
+      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
 
-    document.getElementById('g-lat-stats').innerHTML = hasCache
+    document.getElementById('g-lat-stats').innerHTML = hasL3
       ? `<span class="${severityClass(snap.l3LatNs, 55, 70)} c-bright">${snap.l3LatNs.toFixed(1)} ns</span>` +
         `${fmtDeltaPct(snap.l3LatNs, base ? base.l3LatNs : null, false)}` +
         `<span class="c-dim">avg ${avgLat.toFixed(1)} ns</span>`
@@ -3741,8 +4432,8 @@
     renderBrailleGraph(
       document.getElementById('g-lat-canvas'),
       document.getElementById('g-lat-axis'),
-      hasCache ? state.history.latNs : state.history.latNs.map(() => 0),
-      { minVal: 25, baseline: (hasCache && base) ? base.l3LatNs : null, color: hasCache ? 'var(--yellow)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(0) }
+      hasL3 ? state.history.latNs : state.history.latNs.map(() => 0),
+      { minVal: 25, baseline: (hasL3 && base) ? base.l3LatNs : null, color: hasL3 ? 'var(--yellow)' : 'var(--fg-muted)', fmtAxis: v => v.toFixed(0) }
     );
   }
 
@@ -3760,13 +4451,13 @@
       ? `<span class="${severityClass(snap.l2Itlb, 0.35, 0.80)} c-bright">${snap.l2Itlb.toFixed(3)}</span>` +
         `${fmtDeltaPct(snap.l2Itlb, base ? base.l2itlbMpki : null, false)}` +
         `<span class="c-dim">L1m ${snap.l1ItlbMissPct.toFixed(2)}% │ avg ${avgItlb.toFixed(3)}</span>`
-      : `<span class="c-dim">N/A (IPC+Cache/DRAM 0-Mux)</span>`;
+      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
 
     document.getElementById('g-dtlb-stats').innerHTML = hasTlb
       ? `<span class="${severityClass(snap.l2Dtlb, 0.50, 1.00)} c-bright">${snap.l2Dtlb.toFixed(3)}</span>` +
         `${fmtDeltaPct(snap.l2Dtlb, base ? base.l2dtlbMpki : null, false)}` +
         `<span class="c-dim">L1m ${snap.l1DtlbMissPct.toFixed(2)}% │ avg ${avgDtlb.toFixed(3)}</span>`
-      : `<span class="c-dim">N/A (IPC+Cache/DRAM 0-Mux)</span>`;
+      : `<span class="c-dim">N/A (${getActiveMux().label})</span>`;
 
     renderBrailleGraph(
       document.getElementById('g-itlb-canvas'),
@@ -4262,7 +4953,10 @@
       const muxWarn = (b.muxPreset || 'full') !== mux.id
         ? ` <span class="c-red c-bright">[MUX DIFF: ${b.muxPreset} vs ${mux.id}]</span>`
         : ` <span class="c-green">[Mux Match]</span>`;
-      info.innerHTML = `Active Baseline: <span class="c-bright">${b.name}</span>${muxWarn} (IPC ${b.ipc.toFixed(2)} │ DRAM ${b.dramMpki.toFixed(2)} │ iTLB ${b.l2itlbMpki.toFixed(2)} │ ${b.samples || 30} samples / ${b.elapsedSec || 30}s)`;
+      const summaryStats = b.muxPreset === 'uarch' && b.dcCrossCcxMpki !== null
+        ? `IPC ${b.ipc.toFixed(2)} │ Cross-CCX ${b.dcCrossCcxMpki.toFixed(2)} │ Op-Cache ${(b.opcacheHitPct ?? 0).toFixed(1)}%`
+        : `IPC ${b.ipc.toFixed(2)} │ DRAM ${(b.dramMpki ?? 0).toFixed(2)} │ iTLB ${(b.l2itlbMpki ?? 0).toFixed(2)}`;
+      info.innerHTML = `Active Baseline: <span class="c-bright">${b.name}</span>${muxWarn} (${summaryStats} │ ${b.samples || 30} samples / ${b.elapsedSec || 30}s)`;
     } else {
       info.innerHTML = `Active Baseline: <span class="c-dim">none</span> (pin cumulative session or load a fixture to show vs BASE deltas)`;
     }
@@ -4297,15 +4991,16 @@
         <table class="kv-table" style="margin-bottom: 10px; font-size: 12px;">
           <tr><td class="k c-bright">1 / 2 / 3 / 4 / 5</td><td class="v">Switch tabs (Overview, Cache, TLB &amp; Pages, Memory, Advisor)</td></tr>
           <tr><td class="k c-bright">p / d</td><td class="v">Open native Win32 Process Picker ('/' filter, 's' sort, 'Enter' attach) / Detach to System-Wide</td></tr>
-          <tr><td class="k c-bright">m</td><td class="v">Cycle PMU Mux preset: Full (3-Mux) -&gt; TLB-Only (0-Mux) -&gt; IPC+Cache/DRAM (0-Mux)</td></tr>
+          <tr><td class="k c-bright">m</td><td class="v">Cycle PMU Mux preset: Full (3-Mux) -&gt; TLB-Only (0-Mux) -&gt; IPC+Cache/DRAM (0-Mux) -&gt; Micro-Arch (0-Mux)</td></tr>
           <tr><td class="k c-bright">c</td><td class="v">Toggle global CCX0 vs CCX1 + physical-core SMT sibling IPC/C0% strip (above all tabs)</td></tr>
           <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', 15s Timed 'T', Exact Ret 'e', Calibrate 'C', Admin 'a', Reset 'r')</td></tr>
           <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate PE modules (Tab 3), Advisor findings (Tab 5), or Process Picker</td></tr>
           <tr><td class="k c-bright">Space / Enter / U</td><td class="v">Pause (global) │ Toggle DLL IFEO (Tab 3) │ Toggle Master UseLargePages ('U', Tab 3) │ Jump (Tab 5)</td></tr>
           <tr><td class="k c-bright">? / q</td><td class="v">Open this reference modal / Exit cleanly</td></tr>
         </table>
-        <div class="section-label"><span>Two-Line Exclusive CPI Stack, Retiring % &amp; Amdahl Est. Gain</span></div>
+        <div class="section-label"><span>Two-Line Exclusive CPI Stack, Micro-Arch (0-Mux) &amp; Amdahl Est. Gain</span></div>
         <pre class="code-block">IPC                  = inst / cycles   (throughput shown as Inst/s &amp; Cyc/s)
+IPC (Micro-Arch)     = irperf / aperf  (0 Core PMC slots used; Actual CPI = aperf / irperf)
 Actual CPI           = cycles / inst
 Effective GHz        = (aperf / mperf) * (base_mhz / 1000.0)
 Retiring % (Default) = clamp(((IPC * uops_per_inst) / 6.0) * 100, 0..100)  [Ret ~XX%, 0 extra PMCs]
@@ -4313,6 +5008,17 @@ Retiring % (Exact)   = clamp((ExRetUops / (6.0 * cycles)) * 100, 0..100)   [Ret 
   Zen 2 dispatches up to 6 macro-ops/cycle. Real-world C++/game code typically caps at ~45-60%
   (~2.5-3.5 IPC) due to data dependencies and 2-load/1-store port limits. Enabling exact_retiring
   adds a 19th Core PMC (moving Full from 3-Mux to 4-Mux). Toggle live via 'b' -&gt; 'e'.
+
+Micro-Arch / Contention (0-Mux, --preset uarch):
+  Uses all 6 programmable Core PMCs continuously (0% mux error) + 3 Fixed MSRs (aperf/mperf/irperf)
+  + 4 CCX L3 PMCs (separate L3 domain). Switch here when diagnosing cross-CCX false sharing /
+  coherence bouncing, serialized LOCK/spinlock stalls invisible to OS context switches, Op-Cache
+  vs 4-wide legacy x86 decode thrashing (PGO/BOLT proof), STLF load replays, or 64B line splits.
+  dc_cross_ccx_mpki    = (dc_cross_ccx / inst) * 1000.0        [HI &gt;= 2.0, MD &gt;= 0.8]
+  locks_serial_mpki    = (locks_serial / inst) * 1000.0        [HI &gt;= 0.5 &amp; CCX &gt;= 0.5; MD &gt;= 1.0]
+  opcache_hit_pct      = (oc_uops / max(1, oc_uops + dec_uops)) * 100.0  [MD legacy &gt;= 30%]
+  stlf_interlock_mpki  = (stlf_interlock / inst) * 1000.0      [MD &gt;= 3.0]
+  misal_access_mpki    = (misal_access / inst) * 1000.0        [MD &gt;= 20.0, LO &gt;= 10.0]
 
 Active Duty (C0%)    = clamp((mperf_delta / (base_mhz * 1e6 * duration_sec)) * 100, 0..100)
 SMT Contention (⇄)   = highlighted yellow when both physical-core siblings &gt;= 15% active
@@ -4324,10 +5030,10 @@ Exclusive CPI Tiers  = (Exclusive_MPKI / 1000.0) * Latency_Cycles   [NEVER norma
 
 Advisor Est. Gain (Amdahl's Law with OoO/MLP Overlap Bounds):
   vis_ratio   = clamp(actual_cpi / max(0.001, modeled_cpi), 0.25, 1.0)
-  delta_raw   = tier_cpi * reduction_frac  (-85% iTLB, -80% dTLB, -15% DRAM lat, -50% Dem DRAM, -35% Br/L2I)
+  delta_raw   = tier_cpi * reduction_frac  (-85% iTLB, -80% dTLB, -15% DRAM lat, -50% Dem DRAM, -35% Br/L2I, -70% Cross-CCX)
   delta_low   = Flush: delta_raw * min(0.90, vis_ratio) | MLP: delta_raw * min(0.75, vis_ratio * 0.80)
   new_cpi     = max(0.25, actual_cpi - delta)    [clamped at Zen 2 practical 4.0 IPC floor]
-  Non-CPI rules (SMT, Cross-CCX, Page Faults, Hygiene) report Qualitative labels, never fake %.
+  Non-CPI rules (SMT, Cross-CCX spread, Locks, Op-Cache, Splits, Page Faults, Hygiene) report Qualitative labels, never fake %.
 
 Active Zen 2 Latencies (${CONFIG.calibrated ? 'Calibrated via --calibrate' : 'Default config.toml'}):
   L1 = ${CONFIG.latencies.l1Hit.toFixed(1)} cyc | L2 = ${CONFIG.latencies.l2Hit.toFixed(1)} cyc | L3 = ${CONFIG.latencies.l3Hit.toFixed(1)} cyc | Branch = ${CONFIG.latencies.branchMispredict.toFixed(1)} cyc
@@ -4356,13 +5062,19 @@ Active Zen 2 Latencies (${CONFIG.calibrated ? 'Calibrated via --calibrate' : 'De
             <tr><td class="left c-bright">dc_dem_l3 / dc_dem_dram</td><td class="left">Core PMC</td><td class="left c-cyan">0x430243 / 0x430843</td><td class="left c-dim">D-Cache demand fill from L3 vs DRAM</td></tr>
             <tr><td class="left c-bright">dc_hwpf_l3 / dc_hwpf_dram</td><td class="left">Core PMC</td><td class="left c-cyan">0x43025A / 0x43085A</td><td class="left c-dim">L1 D-Cache HW prefetcher fill from L3 vs DRAM</td></tr>
             <tr><td class="left c-bright">l2_pf_l3 / l2_pf_dram</td><td class="left">Core PMC</td><td class="left c-cyan">0x431F71 / 0x431F72</td><td class="left c-dim">L2 HW prefetcher fill from L3 vs DRAM</td></tr>
-            <tr><td class="left c-bright">aperf / mperf / inst</td><td class="left">Fixed MSR</td><td class="left c-green">aperf / mperf / irperf</td><td class="left c-dim">Effective GHz, C0 active duty %, retired instructions</td></tr>
-            <tr><td class="left c-bright">l3_access / l3_miss</td><td class="left">CCX L3 PMC</td><td class="left c-yellow">0xFF0F00000040FF04 / 0104</td><td class="left c-dim">Unified CCX L3 requests &amp; misses</td></tr>
-            <tr><td class="left c-bright">l3_lat / l3_mtype</td><td class="left">CCX L3 PMC</td><td class="left c-yellow">0xFF0F000000400090 / 1F9A</td><td class="left c-dim">XiSampledLatency (x16 cyc) &amp; latency sample count</td></tr>
+            <tr><td class="left c-bright">dc_cross_ccx</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x430443</td><td class="left c-dim">ls_dmnd_fills_from_sys.ext_cache_local (umask 0x04: fills from other CCX cache over IF)</td></tr>
+            <tr><td class="left c-bright">locks_serial</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x430325</td><td class="left c-dim">ls_locks.bus_lock | non_spec_lock (umask 0x03: serialized LOCK ops, excludes cheap spec locks)</td></tr>
+            <tr><td class="left c-bright">dec_uops</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x4301AA</td><td class="left c-dim">de_dis_uops_from_decoder.decoder_dispatched (umask 0x01: 4-wide legacy x86 decoder ops)</td></tr>
+            <tr><td class="left c-bright">oc_uops</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x4302AA</td><td class="left c-dim">de_dis_uops_from_decoder.opcache_dispatched (umask 0x02: 8-wide 4K-entry Op-Cache ops)</td></tr>
+            <tr><td class="left c-bright">stlf_interlock</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x430224</td><td class="left c-dim">ls_bad_status2.stli_other (umask 0x02: store-to-load forwarding interlock stalls)</td></tr>
+            <tr><td class="left c-bright">misal_access</td><td class="left">Core PMC (uarch)</td><td class="left c-cyan">0x430047</td><td class="left c-dim">ls_misal_accesses (umask 0x00: 64-byte cache-line split / misaligned loads &amp; stores)</td></tr>
+            <tr><td class="left c-bright">aperf / mperf / inst</td><td class="left">Fixed MSR</td><td class="left c-green">aperf / mperf / irperf</td><td class="left c-dim">Effective GHz, C0 duty %, retired inst; powers live IPC (irperf/aperf) in Micro-Arch 0-Mux</td></tr>
+            <tr><td class="left c-bright">l3_access / l3_miss</td><td class="left">CCX L3 PMC</td><td class="left c-yellow">0xFF0F00000040FF04 / 0104</td><td class="left c-dim">Unified CCX L3 requests &amp; misses (stays active in Micro-Arch 0-Mux; zero Core PMC cost)</td></tr>
+            <tr><td class="left c-bright">l3_lat / l3_mtype</td><td class="left">CCX L3 PMC</td><td class="left c-yellow">0xFF0F000000400090 / 1F9A</td><td class="left c-dim">XiSampledLatency (x16 cyc) &amp; latency sample count (stays active in Micro-Arch 0-Mux)</td></tr>
           </tbody>
         </table>
         <div class="c-dim" style="font-size: 12px;">
-          Windows ETW Blocker Recovery: queries <code>logman query -ets</code> for <code>SHS-*</code> sessions and stops via <code>logman stop &lt;SHS-*&gt; -ets</code> when <code>--unlock-pmc</code> is set or 'u' is pressed. AMD Top-Down (<code>pipeline</code>) is intentionally excluded (unsupported on Zen 2).
+          Micro-Arch (0-Mux) fits strictly in 6 Core PMCs + 3 Fixed MSRs + 4 CCX L3 PMCs (100% continuous counting, zero mux error; Full remains cleanly at 18 Core PMCs / 3-Mux). Windows ETW Blocker Recovery: queries <code>logman query -ets</code> for <code>SHS-*</code> sessions and stops via <code>logman stop &lt;SHS-*&gt; -ets</code> when <code>--unlock-pmc</code> is set or 'u' is pressed. AMD Top-Down (<code>pipeline</code>) is intentionally excluded (unsupported on Zen 2).
         </div>
       `;
     } else {
@@ -4375,9 +5087,9 @@ Active Zen 2 Latencies (${CONFIG.calibrated ? 'Calibrated via --calibrate' : 'De
   win32/{handle,process,topology,ifeo}.rs  # RAII HANDLEs, Toolhelp32, RelationProcessorCore, HKLM IFEO
   allocator/{mod,tier0_mimalloc,generic_mimalloc}.rs  # PE byte-pattern RVA resolver + bitmap reader
   metrics/{cpi_stack,history}.rs   # Two-line Exclusive CPI Stack, Retiring %, rolling buffers
-  diagnostics/mod.rs      # Deterministic DiagnosticEngine (11 rules, evidence gate, Amdahl gain)
+  diagnostics/mod.rs      # Deterministic DiagnosticEngine (16 rules: 11 core/OS + 5 Micro-Arch 0-Mux)
   calibrate/mod.rs        # --calibrate ~1s pointer-chase + 50/50 branch probe
-  baseline/mod.rs         # Raw cumulative totals JSON persistence + % diffing
+  baseline/mod.rs         # Raw cumulative totals JSON persistence + #[serde(default)] uarch fields
   ui/{chrome,overview,cache,tlb,memory,advisor,modals}.rs</pre>
         <div class="section-label"><span>config.toml &amp; Baseline JSON Schema (Raw Cumulative Totals)</span></div>
         <pre class="code-block">[latencies]
@@ -4401,7 +5113,10 @@ min_inst_per_sec = 1500000000
 
 # baselines/&lt;timestamp&gt;_&lt;slug&gt;.json:
 # { "name", "timestamp_utc", "target", "affinity_mask", "mux_preset", "ifeo_enabled",
-#   "elapsed_sec", "sample_count", "note", "cumulative_totals": { "inst", "cycles", ... } }</pre>
+#   "elapsed_sec", "sample_count", "note",
+#   "cumulative_totals": { "inst", "cycles", "aperf", "mperf",
+#     "dc_cross_ccx", "locks_serial", "dec_uops", "oc_uops", "stlf_interlock", "misal_access" } }
+#   (all 6 micro-arch fields use #[serde(default)] for backwards compatibility with older JSONs)</pre>
       `;
     }
   }
@@ -4497,7 +5212,17 @@ min_inst_per_sec = 1500000000
     const proc = getAttachedProcess();
     const mux = getActiveMux();
     const slug = proc ? `${proc.name.replace('.exe', '')}_${mux.id}` : `sys_${mux.id}`;
-    state.activeBaseline = {
+    const uarchRaw = {
+      inst: state.cum.instRaw,
+      dc_cross_ccx: state.cum.dcCrossCcxRaw,
+      locks_serial: state.cum.locksSerialRaw,
+      dec_uops: state.cum.decUopsRaw,
+      oc_uops: state.cum.ocUopsRaw,
+      stlf_interlock: state.cum.stlfInterlockRaw,
+      misal_access: state.cum.misalAccessRaw
+    };
+    const uarchMetrics = computeMicroArchMetrics(uarchRaw, mux.id);
+    state.activeBaseline = deserializeBaselineJson({
       name: `${slug}_${n}s.json`,
       muxPreset: mux.id,
       target: proc ? proc.name : 'SYSTEM-WIDE',
@@ -4520,8 +5245,26 @@ min_inst_per_sec = 1500000000
       l1dcMpki: state.cum.l1dc / n,
       l2dcMpki: state.cum.l2dcMiss / n,
       l2pfL3Mpki: state.cum.l2pfL3 / n,
-      l2pfDramMpki: state.cum.l2pfDram / n
-    };
+      l2pfDramMpki: state.cum.l2pfDram / n,
+      dcCrossCcxMpki: uarchMetrics ? uarchMetrics.dcCrossCcxMpki : null,
+      locksSerialMpki: uarchMetrics ? uarchMetrics.locksSerialMpki : null,
+      opcacheHitPct: uarchMetrics ? uarchMetrics.opcacheHitPct : null,
+      legacyDecodePct: uarchMetrics ? uarchMetrics.legacyDecodePct : null,
+      stlfInterlockMpki: uarchMetrics ? uarchMetrics.stlfInterlockMpki : null,
+      misalAccessMpki: uarchMetrics ? uarchMetrics.misalAccessMpki : null,
+      cumulative_totals: {
+        inst: state.cum.instRaw,
+        cycles: mux.id === 'uarch' ? 0 : state.cum.aperfRaw,
+        aperf: state.cum.aperfRaw,
+        mperf: state.cum.mperfRaw,
+        dc_cross_ccx: mux.id === 'uarch' ? state.cum.dcCrossCcxRaw : 0,
+        locks_serial: mux.id === 'uarch' ? state.cum.locksSerialRaw : 0,
+        dec_uops: mux.id === 'uarch' ? state.cum.decUopsRaw : 0,
+        oc_uops: mux.id === 'uarch' ? state.cum.ocUopsRaw : 0,
+        stlf_interlock: mux.id === 'uarch' ? state.cum.stlfInterlockRaw : 0,
+        misal_access: mux.id === 'uarch' ? state.cum.misalAccessRaw : 0
+      }
+    });
     state.lastDiag = evaluateDiagnostics();
     showToast(`Pinned baseline: ${state.activeBaseline.name} (${n} samples)`);
     renderAll();
@@ -4538,7 +5281,10 @@ min_inst_per_sec = 1500000000
       remainingSec: seconds,
       totalSec: seconds,
       samples: 0, elapsedSec: 0,
-      ipc: 0, dram: 0, l3Hit: 0, l2dcExcl: 0, l2icExcl: 0,
+      ipc: 0, instRaw: 0, aperfRaw: 0, mperfRaw: 0,
+      dcCrossCcxRaw: 0, locksSerialRaw: 0, decUopsRaw: 0,
+      ocUopsRaw: 0, stlfInterlockRaw: 0, misalAccessRaw: 0,
+      dram: 0, l3Hit: 0, l2dcExcl: 0, l2icExcl: 0,
       branch: 0, l2dtlb: 0, l2itlb: 0, l3Miss: 0, latNs: 0,
       l1ic: 0, l2ic: 0, l1dc: 0, l2dc: 0, l2pfL3: 0, l2pfDram: 0
     };
@@ -4555,7 +5301,17 @@ min_inst_per_sec = 1500000000
     const proc = getAttachedProcess();
     const mux = getActiveMux();
     const avgIpc = tc.ipc / n;
-    state.activeBaseline = {
+    const uarchRaw = {
+      inst: tc.instRaw,
+      dc_cross_ccx: tc.dcCrossCcxRaw,
+      locks_serial: tc.locksSerialRaw,
+      dec_uops: tc.decUopsRaw,
+      oc_uops: tc.ocUopsRaw,
+      stlf_interlock: tc.stlfInterlockRaw,
+      misal_access: tc.misalAccessRaw
+    };
+    const uarchMetrics = computeMicroArchMetrics(uarchRaw, mux.id);
+    state.activeBaseline = deserializeBaselineJson({
       name: `${proc ? proc.name.replace('.exe', '') : 'sys'}_cap${tc.totalSec}s.json`,
       muxPreset: mux.id,
       target: proc ? proc.name : 'SYSTEM-WIDE',
@@ -4578,8 +5334,26 @@ min_inst_per_sec = 1500000000
       l1dcMpki: tc.l1dc / n,
       l2dcMpki: tc.l2dc / n,
       l2pfL3Mpki: tc.l2pfL3 / n,
-      l2pfDramMpki: tc.l2pfDram / n
-    };
+      l2pfDramMpki: tc.l2pfDram / n,
+      dcCrossCcxMpki: uarchMetrics ? uarchMetrics.dcCrossCcxMpki : null,
+      locksSerialMpki: uarchMetrics ? uarchMetrics.locksSerialMpki : null,
+      opcacheHitPct: uarchMetrics ? uarchMetrics.opcacheHitPct : null,
+      legacyDecodePct: uarchMetrics ? uarchMetrics.legacyDecodePct : null,
+      stlfInterlockMpki: uarchMetrics ? uarchMetrics.stlfInterlockMpki : null,
+      misalAccessMpki: uarchMetrics ? uarchMetrics.misalAccessMpki : null,
+      cumulative_totals: {
+        inst: tc.instRaw,
+        cycles: mux.id === 'uarch' ? 0 : tc.aperfRaw,
+        aperf: tc.aperfRaw,
+        mperf: tc.mperfRaw,
+        dc_cross_ccx: mux.id === 'uarch' ? tc.dcCrossCcxRaw : 0,
+        locks_serial: mux.id === 'uarch' ? tc.locksSerialRaw : 0,
+        dec_uops: mux.id === 'uarch' ? tc.decUopsRaw : 0,
+        oc_uops: mux.id === 'uarch' ? tc.ocUopsRaw : 0,
+        stlf_interlock: mux.id === 'uarch' ? tc.stlfInterlockRaw : 0,
+        misal_access: mux.id === 'uarch' ? tc.misalAccessRaw : 0
+      }
+    });
     state.timedCapture = null;
     showToast(`Timed capture complete -> pinned ${state.activeBaseline.name}`);
   }
@@ -4976,6 +5750,30 @@ min_inst_per_sec = 1500000000
   }
 
   window.addEventListener('resize', () => renderAll());
+
+  // Expose read-only & test hooks for automated verification
+  window.__zen2top = {
+    CONFIG,
+    MUX_PRESETS,
+    PROCESSES,
+    BASELINE_PRESETS,
+    state,
+    getActiveMux,
+    buildUprofMetricSpec,
+    computeMicroArchMetrics,
+    parseReportCoreCsv,
+    deserializeBaselineJson,
+    evaluateDiagnostics,
+    generateSample,
+    resetHistoryAndSeed,
+    cycleMux,
+    switchTab,
+    attachProcess,
+    captureBaseline,
+    renderAll,
+    openModal,
+    closeModal
+  };
 
   // Boot (seed 160 samples so Braille graphs span full width and Advisor >= 10 evidence gate is ready)
   resetHistoryAndSeed(160);
