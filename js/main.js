@@ -8,7 +8,7 @@
     parseReportCoreCsv, deserializeBaselineJson, makeWin32Profile, getAttachedProcess, showToast,
     generateSample, resetHistoryAndSeed, evaluateDiagnostics, runGroupADiagnosticTests,
     renderTab3Tlb, renderTab4Memory, renderTab5Advisor, renderTab6Threads, renderTab7Profiler, renderHelpModal, renderAll,
-    getFilteredProcesses, switchTab, jumpToFindingTab, attachProcess, detachProcess,
+    getFilteredProcesses, switchTab, toggleKernelStrip, jumpToFindingTab, attachProcess, detachProcess,
     startWaitingMode, openPackPickerModal, toggleDraftPack, selectDraftPreset, applyDraftPacks,
     saveDraftPacksAsDefault, fastCyclePreset, toggleExactRetiringPack, toggleNoPmuMode,
     cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline,
@@ -389,6 +389,7 @@
     if (e.key === 'M' && state.activeTab !== 7) { fastCyclePreset(); return; }
     if (e.key === 'b') { openModal('baseline'); return; }
     if (e.key === 'c') { state.ccxOpen = !state.ccxOpen; renderAll(); return; }
+    if (e.key === 'K') { toggleKernelStrip(); return; }
     if (e.key === '?') { openModal('help'); return; }
     if (e.key === 'q') {
       cancelHardwareBurst(true);
@@ -612,6 +613,7 @@
     fastCyclePreset,
     cycleMux,
     switchTab,
+    toggleKernelStrip,
     attachProcess,
     captureBaseline,
     startHardwareBurst,

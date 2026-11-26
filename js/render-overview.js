@@ -4,7 +4,7 @@
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
     CONFIG, MetricPack, state, computeMicroArchMetrics, getActivePlan,
-    formatMuxShort, getMuxAccuracyClass, getAttachedProcess,
+    formatMuxShort, getMuxAccuracyClass, getAttachedProcess, buildKernelStripViewModel,
     fmtDeltaPct, fmtMiB, fmtRate, formatRetiringTag, severityClass, renderBrailleGraph
   } = Z;
 
@@ -75,22 +75,22 @@
       ? `Affinity 12T │ ${CONFIG.cpuModel}`
       : `All 12T │ ${CONFIG.cpuModel}`;
 
-    // Context-sensitive bottom hint
+    // Context-sensitive bottom hint (keeps .keybar <= 7 items while surfacing Shift+K Kernel strip)
     const hintEl = document.getElementById('bottom-hint');
     if (state.activeTab === 3) {
-      hintEl.textContent = 'j/k Select │ Space/Enter Toggle DLL │ U Master IFEO │ s Sort';
+      hintEl.textContent = 'j/k Select │ Space/Enter Toggle DLL │ U Master IFEO │ K Kernel │ s Sort';
     } else if (state.activeTab === 4 && proc) {
-      hintEl.textContent = 'v Toggle VA/JIT Map │ Space Pause │ d Detach';
+      hintEl.textContent = 'v Toggle VA/JIT Map │ K Kernel │ Space Pause │ d Detach';
     } else if (state.activeTab === 5) {
-      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ m Packs';
+      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ K Kernel │ m Packs';
     } else if (state.activeTab === 6 && proc) {
-      hintEl.textContent = 'j/k Select Thread │ s Sort │ a Affinity │ R Revert Edits';
+      hintEl.textContent = 'j/k Select Thread │ s Sort │ a Affinity │ R Revert │ K Kernel';
     } else if (state.activeTab === 7 && proc) {
-      hintEl.textContent = 'o On/Off-CPU │ f HW Burst │ v Flat/Tree │ t Scope │ e Pause ETW │ r Clear │ / Filter';
+      hintEl.textContent = 'o On/Off-CPU │ f Burst │ v Flat/Tree │ t Scope │ e ETW │ K Kernel │ / Filter';
     } else if ((state.activeTab === 4 || state.activeTab === 6 || state.activeTab === 7) && !proc) {
-      hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ w Wait Mode';
+      hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ K Kernel │ w Wait Mode';
     } else {
-      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ c CCX+SMT';
+      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ c CCX │ K Kernel';
     }
 
     // Status Banner
@@ -191,6 +191,75 @@
     };
 
     document.getElementById('core-spark-line').innerHTML = makeCcxCoreRow(0) + makeCcxCoreRow(1);
+  }
+
+  // GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with Shift+K, opens above everything on EVERY tab)
+  function renderKernelStrip() {
+    const strip = document.getElementById('kernel-strip');
+    if (!strip) return;
+    strip.classList.toggle('visible', Boolean(state.kernelStripOpen));
+    if (!state.kernelStripOpen) return;
+
+    const proc = getAttachedProcess();
+    const snap = state.lastSnap;
+    const etw = state.profiler ? state.profiler.etwSession : null;
+    const vm = buildKernelStripViewModel({ proc, etwSession: etw, snap });
+
+    const hdrEl = document.getElementById('kernel-strip-header');
+    const barEl = document.getElementById('kernel-strip-bar');
+    const tableEl = document.getElementById('kernel-strip-table');
+    const tbodyEl = document.getElementById('kernel-strip-tbody');
+    if (!hdrEl || !barEl || !tbodyEl) return;
+
+    const etwBadge = vm.etwPaused
+      ? `<span class="c-yellow">ETW PAUSED</span>`
+      : (vm.etwRunning ? `<span class="c-green">ETW LIVE (1 kHz)</span>` : `<span class="c-dim">ETW IDLE</span>`);
+    const sysCls = vm.activeSysCpuPct >= 15.0 ? 'c-yellow c-bright' : 'c-bright';
+
+    hdrEl.innerHTML =
+      `<span><span class="c-cyan c-bright">Kernel sys%</span>` +
+      `<span class="sep">│</span><span class="${vm.isSystemWide ? 'c-cyan' : 'c-bright'}">${vm.scopeLabel}</span>` +
+      `<span class="sep">│</span>Total sys: <span class="${sysCls}">${vm.activeSysCpuPct.toFixed(1)}% CPU</span> ` +
+      `<span class="c-dim">(usr ${vm.activeUsrCpuPct.toFixed(1)}%)</span></span>` +
+      `<span class="c-dim">${vm.totalSamples.toLocaleString()} kernel samples │ ${etwBadge}</span>`;
+
+    if (vm.empty) {
+      barEl.innerHTML = `<span class="c-muted" style="padding: 0 6px; font-size: 11px;">No kernel samples</span>`;
+      if (tableEl) tableEl.style.display = '';
+      tbodyEl.innerHTML = `<tr><td colspan="5" class="left kernel-empty">${vm.emptyReason}</td></tr>`;
+      return;
+    }
+
+    barEl.innerHTML = vm.rows.map(r => {
+      const pctStr = r.pctOfSys.toFixed(2);
+      const lbl = r.pctOfSys >= 14.0
+        ? `${r.shortLabel} ${r.pctOfSys.toFixed(0)}%`
+        : (r.pctOfSys >= 7.0 ? `${r.pctOfSys.toFixed(0)}%` : '');
+      const drvText = r.topFrame ? r.topFrame.name : (r.topDriver ? r.topDriver.name : 'ntoskrnl.exe');
+      const tip = `${r.label}: ${r.pctOfCpu.toFixed(2)}% CPU (${r.pctOfSys.toFixed(1)}% of sys, ${r.samples} samples) - ${drvText} [${r.attribution}]`;
+      if (r.hatched) {
+        return `<span class="kernel-seg-hatched" style="width:${pctStr}%; --seg-color:${r.color};" title="${tip}">${lbl}</span>`;
+      }
+      return `<span class="kernel-seg" style="width:${pctStr}%; background:${r.color};" title="${tip}">${lbl}</span>`;
+    }).join('');
+
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    tbodyEl.innerHTML = vm.rows.map(r => {
+      const swatch = r.hatched
+        ? `<span style="color:${r.barColor}">▒</span>`
+        : `<span style="color:${r.barColor}">█</span>`;
+      const topText = r.topFrame ? r.topFrame.name : (r.topDriver ? r.topDriver.name : 'ntoskrnl.exe');
+      const attrCls = r.hatched ? 'c-red' : (r.attribution.startsWith('System worker') ? 'c-cyan' : 'c-dim');
+      return `
+        <tr>
+          <td class="left c-bright">${swatch} ${esc(r.label)}</td>
+          <td class="${r.pctOfCpu >= 5.0 ? 'c-yellow c-bright' : ''}">${r.pctOfCpu.toFixed(1)}%</td>
+          <td class="c-bright">${r.pctOfSys.toFixed(1)}%</td>
+          <td class="left c-dim">${esc(topText)}</td>
+          <td class="left ${attrCls}">${esc(r.attribution)}</td>
+        </tr>
+      `;
+    }).join('');
   }
 
   function buildDecodeBarHtml(ua, wrapW) {
@@ -858,5 +927,5 @@
     }
   }
 
-  Object.assign(Z, { renderChrome, renderCcxStrip, renderCpiStack, renderTab1Overview });
+  Object.assign(Z, { renderChrome, renderCcxStrip, renderKernelStrip, renderCpiStack, renderTab1Overview });
 })();

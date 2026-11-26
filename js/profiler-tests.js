@@ -10,8 +10,11 @@
     CallTreeAggregator,
     OffCpuAggregator,
     KernelSysBreakdown,
+    buildKernelStripViewModel,
     DiskIoEtwAggregator,
     KERNEL_SYSTEM_MODULES,
+    getEtwTemplatesForPid,
+    getSystemWideEtwTemplates,
     parseUprofBurstReportCsv,
     PmuCoordinator,
     EtwProfilerSession,
@@ -331,20 +334,99 @@
       stack: [userFrame, { va: 0xFFFFF80040242040n }, { va: 0xFFFFF80040240040n }, { va: 0xFFFFF80050010040n }]
     });
 
-    const kSum = kSess.kernelSys.getSummary();
+    const kSum = kSess.kernelSys.getSummary({ activeSysCpuPct: 14.0, isSystemWide: false });
+    const kSumSysPctTotal = kSum.rows.reduce((a, r) => a + r.pctOfSys, 0);
+    const kSumCpuPctTotal = kSum.rows.reduce((a, r) => a + r.pctOfCpu, 0);
     check(
       'kernel_sys_stackwalk_attribution_and_dpc_isolation',
       kLoaded >= 10 && hasDiskIoFlag && !hasSysCallFlag &&
       isKernelAddress(0xFFFFF80040000000n) && !isKernelAddress(0x00007FF600001000n) &&
-      kSum.targetSysSamples === 100 && kSum.preemptingDpcSamples === 40 &&
-      Math.abs(kSum.buckets.cached_io.pct - 30.0) < 0.01 &&
-      Math.abs(kSum.buckets.network_ipc.pct - 20.0) < 0.01 &&
-      Math.abs(kSum.buckets.memory_manager.pct - 25.0) < 0.01 &&
-      Math.abs(kSum.buckets.physical_storage.pct - 10.0) < 0.01 &&
-      Math.abs(kSum.buckets.av_minifilter.pct - 15.0) < 0.01 &&
+      kSum.targetSysSamples === 100 && kSum.preemptingDpcSamples === 40 && kSum.totalKernelSamples === 140 &&
+      Math.abs(kSumSysPctTotal - 100.0) <= 0.2 &&
+      Math.abs(kSumCpuPctTotal - 14.0) <= 0.2 &&
+      Math.abs(kSum.buckets.cached_io.syscallOnlySharePct - 30.0) < 0.01 &&
+      Math.abs(kSum.buckets.network_ipc.syscallOnlySharePct - 20.0) < 0.01 &&
+      Math.abs(kSum.buckets.memory_manager.syscallOnlySharePct - 25.0) < 0.01 &&
+      Math.abs(kSum.buckets.physical_storage.syscallOnlySharePct - 10.0) < 0.01 &&
+      Math.abs(kSum.buckets.av_minifilter.syscallOnlySharePct - 15.0) < 0.01 &&
       kSum.topAvDriver?.name === 'WdFilter.sys' &&
       kSum.topDpcDriver?.name === 'e1d68x64.sys',
-      `sys=${kSum.targetSysSamples}, dpc=${kSum.preemptingDpcSamples} (${kSum.topDpcDriver?.name}), cached=${kSum.buckets.cached_io.pct}%, net=${kSum.buckets.network_ipc.pct}%, mm=${kSum.buckets.memory_manager.pct}%, av=${kSum.topAvDriver?.name}`
+      `sys=${kSum.targetSysSamples}, dpc=${kSum.preemptingDpcSamples} (${kSum.topDpcDriver?.name}), sumSys=${kSumSysPctTotal.toFixed(1)}%, sumCpu=${kSumCpuPctTotal.toFixed(1)}%`
+    );
+
+    // 8b. Exact reproduction of old 100% + 37% bug -> must now produce 63.0% and 37.0% summing to 100.0% and activeSysCpuPct
+    const reproSess = new EtwProfilerSession();
+    reproSess.attach(7777, kRes);
+    reproSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 2, weight: 63,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80047048040n }, { va: 0xFFFFF80048110040n }]
+    });
+    reproSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 0, weight: 37,
+      stack: [userFrame, { va: 0xFFFFF80040240040n }, { va: 0xFFFFF8004E014040n }]
+    });
+    const reproVm = buildKernelStripViewModel({
+      proc: { pid: 7777, name: 'cs2.exe' },
+      etwSession: reproSess,
+      activeSysCpuPct: 12.5,
+      activeUsrCpuPct: 48.0
+    });
+    const rGpuRow = reproVm.rows.find(r => r.id === 'gpu_driver');
+    const rDpcRow = reproVm.rows.find(r => r.id === 'preempting_dpc_isr');
+    const reproSysSum = reproVm.rows.reduce((a, r) => a + r.pctOfSys, 0);
+    const reproCpuSum = reproVm.rows.reduce((a, r) => a + r.pctOfCpu, 0);
+    const hasMixedVendor = KERNEL_SYSTEM_MODULES.some(m => m.name.toLowerCase() === 'nvlddmkm.sys') ||
+      getEtwTemplatesForPid(27408).onCpu.some(t => t.stack.some(f => String(f.module || '').toLowerCase() === 'nvlddmkm.sys'));
+    check(
+      'kernel_strip_unified_denominator_63_37_and_vendor_consistency',
+      !reproVm.empty && reproVm.rows.length === 2 &&
+      Math.abs(rGpuRow.pctOfSys - 63.0) < 0.05 && Math.abs(rDpcRow.pctOfSys - 37.0) < 0.05 &&
+      Math.abs(reproSysSum - 100.0) <= 0.2 && Math.abs(reproCpuSum - 12.5) <= 0.2 &&
+      rGpuRow.hatched === false && rDpcRow.hatched === true &&
+      rDpcRow.attribution === 'Preempt / HW (C00)' &&
+      rGpuRow.topDriver?.name === 'amdkmdag.sys' && rDpcRow.topDriver?.name === 'USBXHCI.sys' &&
+      !hasMixedVendor,
+      `gpu=${rGpuRow?.pctOfSys?.toFixed(1)}% (${rGpuRow?.pctOfCpu?.toFixed(2)}%cpu), dpc=${rDpcRow?.pctOfSys?.toFixed(1)}% (${rDpcRow?.pctOfCpu?.toFixed(2)}%cpu), sumSys=${reproSysSum.toFixed(1)}%, sumCpu=${reproCpuSum.toFixed(2)}%, mixedVendor=${hasMixedVendor}`
+    );
+
+    // 8c. Zero-sample / paused ETW / detached System-Wide scope with PID 4 worker attribution (zero NaN/Infinity)
+    const emptySess = new EtwProfilerSession();
+    emptySess.attach(7777, kRes);
+    emptySess.togglePause();
+    const emptyVm = buildKernelStripViewModel({
+      proc: { pid: 7777, name: 'deadlock.exe' },
+      etwSession: emptySess,
+      activeSysCpuPct: 8.5,
+      activeUsrCpuPct: 40.0
+    });
+    const sysSess = new EtwProfilerSession();
+    sysSess.attachSystemWide(kRes);
+    for (const item of getSystemWideEtwTemplates()) {
+      sysSess.ingestSampledProfile({
+        pid: item.pid,
+        tid: item.tid,
+        cpu: item.cpu,
+        isSystemWorker: item.isSystemWorker,
+        weight: item.weight * 5,
+        stack: item.stack
+      });
+    }
+    const sysVm = buildKernelStripViewModel({
+      proc: null,
+      etwSession: sysSess,
+      activeSysCpuPct: 6.4,
+      activeUsrCpuPct: 18.2
+    });
+    const sysSumPct = sysVm.rows.reduce((a, r) => a + r.pctOfSys, 0);
+    const sysSumCpu = sysVm.rows.reduce((a, r) => a + r.pctOfCpu, 0);
+    const allFinite = sysVm.rows.every(r => Number.isFinite(r.pctOfSys) && Number.isFinite(r.pctOfCpu));
+    const hasPid4Worker = sysVm.rows.some(r => r.attribution === 'System worker (PID 4)');
+    check(
+      'kernel_strip_empty_paused_and_system_wide_scope',
+      emptyVm.empty && emptyVm.totalSamples === 0 && emptyVm.rows.length === 0 && emptyVm.emptyReason.includes('paused') &&
+      sysVm.isSystemWide && !sysVm.empty && allFinite && hasPid4Worker &&
+      Math.abs(sysSumPct - 100.0) <= 0.2 && Math.abs(sysSumCpu - 6.4) <= 0.2,
+      `emptyPaused=${emptyVm.empty}, sysWideRows=${sysVm.rows.length}, sumSys=${sysSumPct.toFixed(1)}%, sumCpu=${sysSumCpu.toFixed(2)}%, pid4Worker=${hasPid4Worker}`
     );
 
     // 9. DiskIo ETW logical-vs-physical split + Rule 10a vs Rule 10b separation
@@ -459,6 +541,44 @@
     }));
     const fDpcDrv = dDpcDrv.findings.find(f => f.id === 'dpc_irq_collision');
 
+    // 10b. Advisor syscall isolation guard: noisy DPC/ISR driver (300 samples) must NOT pollute syscall-only rules
+    const noisyDpcSess = new EtwProfilerSession();
+    noisyDpcSess.attach(7777, kRes);
+    // Only 50 non-DPC syscall samples (all in amdkmdag.sys) + 300 preempting USBXHCI.sys DPC samples = 350 total
+    // Even though totalKernelSamples = 350 >= 100, non-DPC targetSysSamples = 50 < 100 -> GPU submission rule MUST NOT fire!
+    noisyDpcSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 2, weight: 50,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80047048040n }, { va: 0xFFFFF80048110040n }]
+    });
+    noisyDpcSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 0, weight: 300,
+      stack: [userFrame, { va: 0xFFFFF80040240040n }, { va: 0xFFFFF8004E014040n }]
+    });
+    const dNoisyDpcGuard = evaluateDiagnostics(mkKernelOv({
+      avgGpu3dPct: 50.0,
+      kernelSys: noisyDpcSess.kernelSys.getSummary({ activeSysCpuPct: 14.0, isSystemWide: false })
+    }));
+    // And when targetSysSamples = 120 (30 GPU KMD = 25% of syscalls + 90 scheduler = 75%) + 300 DPC samples:
+    // GPU syscallOnlySharePct = 25% (<40%) -> still MUST NOT fire GPU submission rule!
+    const noisyDpcLowShareSess = new EtwProfilerSession();
+    noisyDpcLowShareSess.attach(7777, kRes);
+    noisyDpcLowShareSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 2, weight: 30,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80047048040n }, { va: 0xFFFFF80048110040n }]
+    });
+    noisyDpcLowShareSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 2, weight: 90,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80040380040n }, { va: 0xFFFFF80040382040n }]
+    });
+    noisyDpcLowShareSess.ingestSampledProfile({
+      pid: 7777, tid: 101, cpu: 0, weight: 300,
+      stack: [userFrame, { va: 0xFFFFF80040240040n }, { va: 0xFFFFF8004E014040n }]
+    });
+    const dNoisyDpcLowShare = evaluateDiagnostics(mkKernelOv({
+      avgGpu3dPct: 50.0,
+      kernelSys: noisyDpcLowShareSess.kernelSys.getSummary({ activeSysCpuPct: 14.0, isSystemWide: false })
+    }));
+
     check(
       'kernel_sys_rules_av_gpu_mm_and_dpc_driver',
       Boolean(fAv) && fAv.title.includes('WdFilter.sys') &&
@@ -466,8 +586,10 @@
       Boolean(fGpuSub) && fGpuSub.title.includes('amdkmdag.sys') &&
       !dGpuSubBound.findings.some(f => f.id === 'gpu_kernel_submission_overhead') &&
       Boolean(fMmThrash) && fMmThrash.mmConfirmed === true && fMmThrash.title.includes('Mi*/Mm*') &&
-      Boolean(fDpcDrv) && fDpcDrv.title.includes('e1d68x64.sys') && fDpcDrv.why.includes('KiRetireDpcList'),
-      `av=${fAv?.title?.includes('WdFilter.sys')}, gpuSub=${Boolean(fGpuSub)}, gpuBoundSup=${!dGpuSubBound.findings.some(f => f.id === 'gpu_kernel_submission_overhead')}, mmConf=${Boolean(fMmThrash?.mmConfirmed)}, dpcDrv=${fDpcDrv?.title?.includes('e1d68x64.sys')}`
+      Boolean(fDpcDrv) && fDpcDrv.title.includes('e1d68x64.sys') && fDpcDrv.why.includes('KiRetireDpcList') &&
+      !dNoisyDpcGuard.findings.some(f => f.id === 'gpu_kernel_submission_overhead') &&
+      !dNoisyDpcLowShare.findings.some(f => f.id === 'gpu_kernel_submission_overhead'),
+      `av=${fAv?.title?.includes('WdFilter.sys')}, gpuSub=${Boolean(fGpuSub)}, gpuBoundSup=${!dGpuSubBound.findings.some(f => f.id === 'gpu_kernel_submission_overhead')}, mmConf=${Boolean(fMmThrash?.mmConfirmed)}, dpcDrv=${fDpcDrv?.title?.includes('e1d68x64.sys')}, noisyDpcIsolated=${!dNoisyDpcGuard.findings.some(f => f.id === 'gpu_kernel_submission_overhead')}`
     );
 
     const passed = results.filter(r => r.pass).length;

@@ -4,7 +4,7 @@
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
     CONFIG, MetricPack, METRIC_PACKS, state, getActivePlan, formatMuxShort, getAttachedProcess,
-    renderChrome, renderCcxStrip, renderTab1Overview, renderTab2Cache, renderTab3Tlb,
+    renderChrome, renderCcxStrip, renderKernelStrip, renderTab1Overview, renderTab2Cache, renderTab3Tlb,
     renderTab4Memory, renderTab5Advisor, renderTab6Threads, renderTab7Profiler,
     renderPackPickerModal, renderAffinityModal, renderBurstModal, renderPickerTable
   } = Z;
@@ -107,6 +107,7 @@
           <tr><td class="k c-bright">p / d</td><td class="v">Open native Win32 Process Picker ('/' filter, 's' sort, 'Enter' attach) / Detach to System-Wide</td></tr>
           <tr><td class="k c-bright">m / M</td><td class="v">Open Modular Metric Pack Picker modal ('m': 1-6 Quick Presets, Space toggle, s save default, Enter apply) │ Fast-cycle presets ('M' on Tabs 1-6)</td></tr>
           <tr><td class="k c-bright">c</td><td class="v">Toggle global CCX0 vs CCX1 + physical-core SMT sibling IPC/C0% strip (above all tabs)</td></tr>
+          <tr><td class="k c-bright">K (Shift+K)</td><td class="v">Toggle global Kernel sys% breakdown strip (Attached or System-Wide; lowercase 'k' scrolls tables)</td></tr>
           <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', Timed 'T', Exact Ret pack 'e', No-PMU 'n', Calibrate 'C', Admin 'a', Zero-PMC 'g/o/l/x/v', Reset 'r')</td></tr>
           <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate Metric Packs ('m'), PE modules (Tab 3), Advisor findings (Tab 5), Threads (Tab 6), Profiler (Tab 7), or Picker</td></tr>
           <tr><td class="k c-bright">o / f / v / t / e / r / M</td><td class="v">Tab 7 Profiler: On/Off-CPU ('o'), HW Burst ('f', also Tab 5), Flat/Tree ('v'), Thread Scope ('t'), Pause ETW ('e'), Clear ('r'), Sidecar Map ('M')</td></tr>
@@ -228,6 +229,7 @@ min_inst_per_sec = 1500000000
   function renderAll() {
     renderChrome();
     renderCcxStrip();
+    if (typeof renderKernelStrip === 'function') renderKernelStrip();
 
     document.querySelectorAll('.tab-view').forEach(v => v.classList.remove('active'));
     document.getElementById(`tab-${state.activeTab}`).classList.add('active');

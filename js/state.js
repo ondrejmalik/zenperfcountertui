@@ -19,6 +19,7 @@
       guardrailNote: ''
     },
     ccxOpen: false,
+    kernelStripOpen: false,
     paused: false,
     intervalSec: 1,
     sampleCount: 0,

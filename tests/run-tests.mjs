@@ -91,10 +91,11 @@ for (const r of report.results) {
   console.log(`${r.pass ? '[PASS]' : '[FAIL]'} ${r.name}: ${r.detail}`);
 }
 
-// Verify HTML prototype contains Tab 7 + Burst modal + Pack Picker modal + script tags
+// Verify HTML prototype contains Tab 7 + Burst modal + Pack Picker modal + Kernel strip + script tags
 const html = fs.readFileSync(path.join(rootDir, 'zen2top_interactive_tui_prototype.html'), 'utf8');
 const requiredIds = [
   'tab-7', 'prof-control-strip', 'prof-tbody', 'prof-context-strip', 'modal-burst',
+  'kernel-strip', 'kernel-strip-header', 'kernel-strip-bar', 'kernel-strip-table', 'kernel-strip-tbody',
   'js/symbols.js', 'js/profiler-engine.js', 'js/render-profiler.js',
   'modal-packs', 'pack-budget-meter', 'pack-presets-strip', 'pack-guardrail-note',
   'pack-picker-tbody', 'overview-uarch-wrap', 'overview-uarch-tbody',
@@ -106,10 +107,124 @@ if (missingIds.length > 0) {
   console.error('[FAIL] HTML missing required elements/scripts:', missingIds);
   process.exit(1);
 }
-console.log('[PASS] HTML structure & script wiring verified (' + requiredIds.length + ' checks)');
+// Verify #kernel-strip sits directly below #ccx-strip and above .main-pane, and .keybar stays <= 7 items
+const ccxIdx = html.indexOf('id="ccx-strip"');
+const krnlIdx = html.indexOf('id="kernel-strip"');
+const mainPaneIdx = html.indexOf('class="main-pane"');
+if (!(ccxIdx > 0 && krnlIdx > ccxIdx && mainPaneIdx > krnlIdx)) {
+  console.error('[FAIL] #kernel-strip must be placed directly below #ccx-strip and above .main-pane');
+  process.exit(1);
+}
+const keybarMatch = html.match(/<div class="keybar">([\s\S]*?)<\/div>/);
+const keybarButtons = keybarMatch ? (keybarMatch[1].match(/class="key-btn"/g) || []).length : 0;
+if (keybarButtons > 7) {
+  console.error('[FAIL] .keybar exceeded 7-item limit:', keybarButtons);
+  process.exit(1);
+}
+console.log('[PASS] HTML structure, #kernel-strip placement, keybar (' + keybarButtons + '/7), & script wiring verified (' + requiredIds.length + ' checks)');
+
+// Verify Tab 7 #prof-context-strip stays strictly 3 symbol lines (no misplaced Kernel sys% footer)
+const profJs = fs.readFileSync(path.join(rootDir, 'js/render-profiler.js'), 'utf8');
+if (profJs.includes('Kernel sys%')) {
+  console.error('[FAIL] Tab 7 render-profiler.js must not render Kernel sys% in symbol footer');
+  process.exit(1);
+}
+console.log('[PASS] Tab 7 symbol context strip clean (3 lines only, no misplaced Kernel sys% row)');
+
+// Verify Shift+K toggles #kernel-strip across all tabs (1-7) while lowercase 'k' scrolls tables without toggling
+{
+  const keyListeners = [];
+  const makeStubEl = () => ({
+    classList: {
+      _set: new Set(),
+      toggle(c, force) { if (force) this._set.add(c); else this._set.delete(c); },
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      contains(c) { return this._set.has(c); }
+    },
+    style: {},
+    dataset: {},
+    innerHTML: '',
+    textContent: '',
+    value: '',
+    addEventListener() {},
+    querySelectorAll() { return []; },
+    querySelector() { return null; },
+    getBoundingClientRect() { return { width: 600, height: 120 }; },
+    focus() {},
+    blur() {},
+    select() {}
+  });
+  const elMap = new Map();
+  const getEl = (id) => {
+    if (!elMap.has(id)) elMap.set(id, makeStubEl());
+    return elMap.get(id);
+  };
+  const domSandbox = {
+    window: {},
+    console,
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
+    addEventListener(ev, fn) { if (ev === 'keydown') keyListeners.push(fn); },
+    document: {
+      activeElement: null,
+      getElementById: getEl,
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      createElement: () => makeStubEl()
+    },
+    Math, Date, BigInt, Number, String, Array, Object, Map, Set, Uint8Array, JSON, Error, isFinite, parseInt, parseFloat
+  };
+  domSandbox.window = domSandbox;
+  domSandbox.globalThis = domSandbox;
+  const domCtx = vm.createContext(domSandbox);
+  const allDomScripts = [...scripts, ...uiScripts];
+  for (const rel of allDomScripts) {
+    vm.runInContext(fs.readFileSync(path.join(rootDir, rel), 'utf8'), domCtx, { filename: rel });
+  }
+  const keydown = keyListeners[0];
+  const st = domSandbox.Zen2Top.state;
+  const fireKey = (key) => keydown({ key, preventDefault() {} });
+
+  if (typeof keydown !== 'function' || st.kernelStripOpen !== false) {
+    console.error('[FAIL] Shift+K test harness failed to initialize keydown handler');
+    process.exit(1);
+  }
+  for (let tab = 1; tab <= 7; tab++) {
+    st.activeTab = tab;
+    st.kernelStripOpen = false;
+    fireKey('K');
+    if (st.kernelStripOpen !== true || !getEl('kernel-strip').classList.contains('visible')) {
+      console.error(`[FAIL] Shift+K failed to open #kernel-strip on Tab ${tab}`);
+      process.exit(1);
+    }
+    fireKey('K');
+    if (st.kernelStripOpen !== false || getEl('kernel-strip').classList.contains('visible')) {
+      console.error(`[FAIL] Shift+K failed to close #kernel-strip on Tab ${tab}`);
+      process.exit(1);
+    }
+  }
+  // Verify lowercase 'k' scrolls tables on Tabs 3, 5, 6, 7 WITHOUT toggling #kernel-strip
+  st.kernelStripOpen = false;
+  st.activeTab = 3; st.modSelectedIdx = 2; fireKey('k');
+  const t3Ok = st.modSelectedIdx === 1 && st.kernelStripOpen === false;
+  st.activeTab = 5; st.advisorSelectedIdx = 1;
+  if (st.lastDiag && st.lastDiag.findings.length >= 2) fireKey('k');
+  const t5Ok = st.kernelStripOpen === false;
+  st.activeTab = 6; st.threadSelectedIdx = 2; fireKey('k');
+  const t6Ok = st.threadSelectedIdx === 1 && st.kernelStripOpen === false;
+  st.activeTab = 7; st.profiler.selectedIdx = 2; fireKey('k');
+  const t7Ok = st.profiler.selectedIdx === 1 && st.kernelStripOpen === false;
+  if (!(t3Ok && t5Ok && t6Ok && t7Ok)) {
+    console.error('[FAIL] Lowercase k scroll / no-toggle invariant failed:', { t3Ok, t5Ok, t6Ok, t7Ok });
+    process.exit(1);
+  }
+  console.log('[PASS] Shift+K toggles #kernel-strip on all tabs (1-7) while lowercase k scrolls tables without toggling');
+}
 
 // Verify all static DOM IDs referenced in render-profiler.js and render-pack-picker.js exist in the HTML
-const profJs = fs.readFileSync(path.join(rootDir, 'js/render-profiler.js'), 'utf8');
 const packPickerJs = fs.readFileSync(path.join(rootDir, 'js/render-pack-picker.js'), 'utf8');
 const dynamicIds = new Set(['btn-prof-source', 'btn-prof-scope', 'btn-prof-onoff', 'btn-prof-burst', 'btn-prof-view', 'btn-prof-pause', 'btn-prof-clear', 'btn-prof-sidecar']);
 const staticIds = [...profJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g), ...packPickerJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)]

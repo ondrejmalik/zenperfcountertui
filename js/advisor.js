@@ -556,8 +556,15 @@
   }
 
   function buildLiveProfilerContext(proc) {
-    if (!proc || !state.profiler) return null;
+    if (!state.profiler) return null;
     const etw = state.profiler.etwSession;
+    const activeSysCpuPct = state.lastSnap ? (Number(state.lastSnap.cpuSys) || 0) : 0;
+    if (!proc) {
+      const sysKernel = (etw && etw.systemKernelSys && etw.systemKernelSys.global.totalKernelSamples > 0)
+        ? etw.systemKernelSys.getSummary({ activeSysCpuPct, isSystemWide: true })
+        : null;
+      return sysKernel ? { pid: null, onCpuTop: null, offCpuTop: null, kernelSys: sysKernel, bursts: {} } : null;
+    }
     const bursts = (state.profiler.lastBurstByPid && state.profiler.lastBurstByPid[proc.pid]) || null;
     const onCpuRows = (etw && etw.targetPid === proc.pid && etw.onCpu.totalSamples > 0)
       ? etw.onCpu.getFlatHotspots()
@@ -566,7 +573,7 @@
       ? etw.offCpu.getWaitRows()
       : [];
     const kernelSys = (etw && etw.targetPid === proc.pid && etw.kernelSys && etw.kernelSys.global.totalKernelSamples > 0)
-      ? etw.kernelSys.getSummary()
+      ? etw.kernelSys.getSummary({ activeSysCpuPct, isSystemWide: false })
       : null;
     if (onCpuRows.length === 0 && offCpuRows.length === 0 && !kernelSys && !bursts) return null;
     return {

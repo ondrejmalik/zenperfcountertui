@@ -74,6 +74,31 @@
     </div>
   </div>
 
+  <!-- GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with 'K' / Shift+K, opens above everything on EVERY tab) -->
+  <div class="kernel-strip" id="kernel-strip">
+    <div class="kernel-strip-header" id="kernel-strip-header"></div>
+    <div class="kernel-strip-bar" id="kernel-strip-bar"></div>
+    <table class="kernel-table" id="kernel-strip-table">
+      <colgroup>
+        <col style="width: 24%;">
+        <col style="width: 10%;">
+        <col style="width: 10%;">
+        <col style="width: 34%;">
+        <col style="width: 22%;">
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="left">SUBSYSTEM</th>
+          <th>% CPU</th>
+          <th>% SYS</th>
+          <th class="left">TOP DRIVER / FRAME</th>
+          <th class="left">ATTRIBUTION</th>
+        </tr>
+      </thead>
+      <tbody id="kernel-strip-tbody"></tbody>
+    </table>
+  </div>
+
   <!-- MAIN CONTENT AREA -->
   <div class="main-pane">
 
@@ -585,7 +610,7 @@
       <button class="key-btn" data-action="help"><span class="k">?</span> Help</button>
       <button class="key-btn" data-action="quit"><span class="k">q</span> Quit</button>
     </div>
-    <div id="bottom-hint" class="c-muted">Space Pause │ j/k Scroll │ d Detach</div>
+    <div id="bottom-hint" class="c-muted">Space Pause │ j/k Scroll │ K Kernel │ d Detach</div>
   </div>
 
   <div class="toast" id="toast"></div>

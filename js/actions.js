@@ -10,7 +10,7 @@
     getCcxMask, getPrimaryPhysicalCoresMask, formatAffinityHex,
     applyThreadAffinityEdit, revertAllThreadAffinities,
     EtwProfilerSession, getBurstProfile, locateUprofCli, parseUprofBurstReportCsv,
-    PROCESS_THREADS, buildResolverForProcess, getEtwTemplatesForPid,
+    PROCESS_THREADS, buildResolverForProcess, getEtwTemplatesForPid, getSystemWideEtwTemplates,
     generateBurstCsvForProcess, getSidecarForPid
   } = Z;
 
@@ -19,6 +19,11 @@
   // =========================================================================
   function switchTab(t) {
     state.activeTab = t;
+    renderAll();
+  }
+
+  function toggleKernelStrip() {
+    state.kernelStripOpen = !state.kernelStripOpen;
     renderAll();
   }
 
@@ -61,15 +66,10 @@
 
   function detachProcess() {
     cancelHardwareBurst(true);
-    if (state.profiler.etwSession) {
-      state.profiler.etwSession.stop();
-      state.profiler.etwSession.attach(null, null);
-    }
-    state.profiler.resolver = null;
     state.waitingTarget = null;
     state.attachedPid = null;
     resetHistoryAndSeed(160);
-    showToast('Detached to System-Wide PMU mode (ETW stopped)');
+    showToast('Detached to System-Wide PMU mode (System-Wide Kernel ETW active)');
     renderAll();
   }
 
@@ -637,9 +637,15 @@
       });
     }
     if (!proc) {
-      state.profiler.etwSession.stop();
-      state.profiler.etwSession.attach(null, null);
-      state.profiler.resolver = null;
+      const sysResolver = buildResolverForProcess(null, false);
+      state.profiler.resolver = sysResolver;
+      state.profiler.etwSession.attachSystemWide(sysResolver);
+      if (!CONFIG.profiler.autoStartEtw) {
+        state.profiler.etwSession.paused = true;
+      }
+      if (seedTicks > 0) {
+        feedEtwTick(seedTicks);
+      }
       return;
     }
     const resolver = buildResolverForProcess(proc, state.profiler.sidecarLoaded);
@@ -657,9 +663,28 @@
   function feedEtwTick(ticks = 1) {
     const proc = getAttachedProcess();
     const etw = state.profiler.etwSession;
-    if (!proc || !etw || !etw.running || etw.paused) return;
-    const tpl = getEtwTemplatesForPid(proc.pid, proc);
+    if (!etw || !etw.running || etw.paused) return;
     const rateMult = Math.max(1, CONFIG.profiler.sampleRateKhz || 1);
+
+    if (!proc) {
+      const sysItems = typeof getSystemWideEtwTemplates === 'function' ? getSystemWideEtwTemplates() : [];
+      for (let t = 0; t < ticks; t++) {
+        for (const item of sysItems) {
+          const jitterW = Math.max(1, Math.round(item.weight * rateMult * (0.85 + Math.random() * 0.30)));
+          etw.ingestSampledProfile({
+            pid: item.pid,
+            tid: item.tid,
+            cpu: item.cpu ?? null,
+            isSystemWorker: Boolean(item.isSystemWorker || item.pid === 4),
+            weight: jitterW,
+            stack: item.stack
+          });
+        }
+      }
+      return;
+    }
+
+    const tpl = getEtwTemplatesForPid(proc.pid, proc);
 
     for (let t = 0; t < ticks; t++) {
       for (const item of tpl.onCpu) {
@@ -667,6 +692,7 @@
         etw.ingestSampledProfile({
           pid: proc.pid,
           tid: item.tid,
+          cpu: item.cpu ?? null,
           weight: jitterW,
           stack: item.stack
         });
@@ -913,7 +939,7 @@
   }
 
   Object.assign(Z, {
-    switchTab, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode,
+    switchTab, toggleKernelStrip, jumpToFindingTab, attachProcess, detachProcess, startWaitingMode,
     openPackPickerModal, toggleDraftPack, selectDraftPreset, applyDraftPacks,
     saveDraftPacksAsDefault, fastCyclePreset, toggleExactRetiringPack, toggleNoPmuMode,
     cycleMux, cycleInterval, togglePause, unlockPmc, captureBaseline, startTimedCapture,

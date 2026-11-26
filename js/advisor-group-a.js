@@ -346,13 +346,15 @@
     }
 
     // Kernel SampledProfile sys% evidence gate (avgSys >= 8% and >= 100 non-DPC target kernel samples)
+    // Uses internal syscallOnlySharePct (excluding preempting DPC/ISR) so noisy DPC drivers never pollute syscall rules.
     const hasKernelSys = Boolean(proc && kernelSys && avgSys >= 8.0 && (kernelSys.targetSysSamples || 0) >= 100);
     const kBuckets = (kernelSys && kernelSys.buckets) ? kernelSys.buckets : {};
-    const physStoragePct = hasKernelSys ? (kBuckets.physical_storage?.pct || 0) : 0;
-    const cachedIoPct = hasKernelSys ? (kBuckets.cached_io?.pct || 0) : 0;
-    const netIpcPct = hasKernelSys ? (kBuckets.network_ipc?.pct || 0) : 0;
-    const avFilterPct = hasKernelSys ? (kBuckets.av_minifilter?.pct || 0) : 0;
-    const gpuKmdPct = hasKernelSys ? (kBuckets.gpu_driver?.pct || 0) : 0;
+    const syscallPctOf = (b) => Number(b?.syscallOnlySharePct ?? b?.pct ?? 0) || 0;
+    const physStoragePct = hasKernelSys ? syscallPctOf(kBuckets.physical_storage) : 0;
+    const cachedIoPct = hasKernelSys ? syscallPctOf(kBuckets.cached_io) : 0;
+    const netIpcPct = hasKernelSys ? syscallPctOf(kBuckets.network_ipc) : 0;
+    const avFilterPct = hasKernelSys ? syscallPctOf(kBuckets.av_minifilter) : 0;
+    const gpuKmdPct = hasKernelSys ? syscallPctOf(kBuckets.gpu_driver) : 0;
 
     // --- GROUP A RULE 10a: Physical Disk / Asset-Streaming Stall (DiskIo ETW + stornvme.sys / WrPageIn / Hard Faults) ---
     const hasFrametimeSpikes = Boolean(spikeCorrelation && spikeCorrelation.totalSpikes > 0);

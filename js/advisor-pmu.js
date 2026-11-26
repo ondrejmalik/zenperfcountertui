@@ -319,8 +319,9 @@
 
     // --- RULE 7: Kernel / Page-Fault Churn & Memory Manager Commit Thrash (Upgraded via Mi*/Mm* kernel samples) ---
     if (proc) {
-      const mmPct = (kernelSys && (kernelSys.targetSysSamples || 0) >= 100 && avgSys >= 8.0)
-        ? (kernelSys.buckets?.memory_manager?.pct || 0)
+      const mmBucket = kernelSys && kernelSys.buckets ? kernelSys.buckets.memory_manager : null;
+      const mmPct = (kernelSys && (kernelSys.targetSysSamples || 0) >= 100 && avgSys >= 8.0 && mmBucket)
+        ? (Number(mmBucket.syscallOnlySharePct ?? mmBucket.pct ?? 0) || 0)
         : 0;
       const mmConfirmed = mmPct >= 40.0 && avgPfRate >= 2000;
       if (mmConfirmed || (avgPfRate >= 2000 && sysSharePct >= 20.0)) {

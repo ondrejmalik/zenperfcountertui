@@ -122,11 +122,12 @@
     { name: 'storport.sys',  base: 0xFFFFF80045800000n, sizeBytes: 0x000E2000, pdbLoaded: false, exports: [{ rva: 0x014000, rvaEnd: 0x014600, name: 'RaidStartIoPacket' }] },
     { name: 'afd.sys',       base: 0xFFFFF80046000000n, sizeBytes: 0x000A8000, pdbLoaded: false, exports: [{ rva: 0x01A000, rvaEnd: 0x01A600, name: 'AfdFastIoDeviceControl' }] },
     { name: 'tcpip.sys',     base: 0xFFFFF80046200000n, sizeBytes: 0x00340000, pdbLoaded: false, exports: [{ rva: 0x022000, rvaEnd: 0x022600, name: 'TcpReceive' }] },
+    { name: 'ndis.sys',      base: 0xFFFFF80046400000n, sizeBytes: 0x00180000, pdbLoaded: false, exports: [{ rva: 0x01C000, rvaEnd: 0x01C600, name: 'NdisMIndicateReceiveNetBufferLists' }] },
     { name: 'npfs.sys',      base: 0xFFFFF80046600000n, sizeBytes: 0x00024000, pdbLoaded: false, exports: [{ rva: 0x004000, rvaEnd: 0x004500, name: 'NpFsdRead' }] },
     { name: 'dxgkrnl.sys',   base: 0xFFFFF80047000000n, sizeBytes: 0x00460000, pdbLoaded: false, exports: [{ rva: 0x048000, rvaEnd: 0x048600, name: 'DxgkSubmitCommand' }] },
     { name: 'dxgmms2.sys',   base: 0xFFFFF80047600000n, sizeBytes: 0x00160000, pdbLoaded: false, exports: [{ rva: 0x018000, rvaEnd: 0x018500, name: 'VidSchiSubmitCommand' }] },
     { name: 'amdkmdag.sys',  base: 0xFFFFF80048000000n, sizeBytes: 0x03800000, pdbLoaded: false, exports: [{ rva: 0x110000, rvaEnd: 0x110600, name: 'AmdSubmitPacket' }] },
-    { name: 'nvlddmkm.sys',  base: 0xFFFFF8004C000000n, sizeBytes: 0x03400000, pdbLoaded: false, exports: [{ rva: 0x092000, rvaEnd: 0x092600, name: 'nvDpcForIsr' }] },
+    { name: 'USBXHCI.sys',   base: 0xFFFFF8004E000000n, sizeBytes: 0x000A4000, pdbLoaded: false, exports: [{ rva: 0x014000, rvaEnd: 0x014600, name: 'Interrupter_WdfEvtInterruptDpc' }] },
     { name: 'e1d68x64.sys',  base: 0xFFFFF80050000000n, sizeBytes: 0x00090000, pdbLoaded: false, exports: [{ rva: 0x010000, rvaEnd: 0x010500, name: 'E1dMessageInterruptDpc' }] }
   ];
 
@@ -557,17 +558,34 @@
           { module: 'client.dll', rva: 0x2A8180 },
           { module: 'tier0.dll', rva: 0x024440 }
         ]},
-        { tid: t1.tid, weight: 5, stack: [
+        { tid: t1.tid, cpu: 2, weight: 6, stack: [
           { module: 'rendersystemvulkan.dll', rva: 0x112080 },
           { module: 'ntoskrnl.exe', rva: 0x00412040 },
           { module: 'dxgkrnl.sys', rva: 0x048040 },
           { module: 'amdkmdag.sys', rva: 0x110040 }
         ]},
-        ...(pid === 27408 ? [{ tid: t0.tid, weight: 3, stack: [
+        { tid: t0.tid, cpu: 0, weight: 3, stack: [
+          { module: 'engine2.dll', rva: 0x064040 },
+          { module: 'ntoskrnl.exe', rva: 0x00412040 },
+          { module: 'ntoskrnl.exe', rva: 0x00310040 },
+          { module: 'ntfs.sys', rva: 0x018040 },
+          { module: 'ntoskrnl.exe', rva: 0x00312040 }
+        ]},
+        { tid: t2.tid, cpu: 4, weight: 2, stack: [
+          { module: 'client.dll', rva: 0x31F440 },
+          { module: 'ntoskrnl.exe', rva: 0x00412040 },
+          { module: 'ntoskrnl.exe', rva: 0x00380040 },
+          { module: 'ntoskrnl.exe', rva: 0x00382040 }
+        ]},
+        ...(pid === 27408 ? [{ tid: t0.tid, cpu: 0, weight: 4, stack: [
           { module: 'engine2.dll', rva: 0x064040 },
           { module: 'ntoskrnl.exe', rva: 0x00240040 },
-          { module: 'nvlddmkm.sys', rva: 0x092040 }
-        ]}] : [])
+          { module: 'USBXHCI.sys', rva: 0x014040 }
+        ]}] : [{ tid: t0.tid, cpu: 0, weight: 1, stack: [
+          { module: 'engine2.dll', rva: 0x064040 },
+          { module: 'ntoskrnl.exe', rva: 0x00240040 },
+          { module: 'ndis.sys', rva: 0x01C040 }
+        ]}])
       ],
       offCpu: [
         { tid: t0.tid, threadName: t0.name, wakerTid: t1.tid, wakerName: t1.name, durUs: 3820, stack: [
@@ -670,6 +688,46 @@
     ].join('\n');
   }
 
+  // System-Wide kernel SampledProfile templates (used when detached / System-Wide mode)
+  function getSystemWideEtwTemplates() {
+    return [
+      { pid: 4, tid: 88, cpu: 2, isSystemWorker: true, weight: 7, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00412040 },
+        { module: 'ntfs.sys', rva: 0x018040 },
+        { module: 'ntoskrnl.exe', rva: 0x00312040 }
+      ]},
+      { pid: 4, tid: 112, cpu: 4, isSystemWorker: true, weight: 6, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00414040 },
+        { module: 'ntoskrnl.exe', rva: 0x00350040 },
+        { module: 'ntoskrnl.exe', rva: 0x00352040 }
+      ]},
+      { pid: 14820, tid: 14832, cpu: 1, weight: 5, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00412040 },
+        { module: 'dxgkrnl.sys', rva: 0x048040 },
+        { module: 'amdkmdag.sys', rva: 0x110040 }
+      ]},
+      { pid: 4, tid: 140, cpu: 6, isSystemWorker: true, weight: 4, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00412040 },
+        { module: 'storport.sys', rva: 0x014040 },
+        { module: 'stornvme.sys', rva: 0x008040 }
+      ]},
+      { pid: 4, tid: 164, cpu: 8, isSystemWorker: true, weight: 3, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00412040 },
+        { module: 'fltmgr.sys', rva: 0x006040 },
+        { module: 'WdFilter.sys', rva: 0x012040 }
+      ]},
+      { pid: 4, tid: 204, cpu: 0, isSystemWorker: true, weight: 4, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00240040 },
+        { module: 'USBXHCI.sys', rva: 0x014040 }
+      ]},
+      { pid: 1188, tid: 1204, cpu: 3, weight: 3, stack: [
+        { module: 'ntoskrnl.exe', rva: 0x00412040 },
+        { module: 'ntoskrnl.exe', rva: 0x00380040 },
+        { module: 'ntoskrnl.exe', rva: 0x00382040 }
+      ]}
+    ];
+  }
+
   Object.assign(Z, {
     PROCESS_THREADS,
     SIDECAR_MAPS,
@@ -678,6 +736,7 @@
     getSidecarForPid,
     buildResolverForProcess,
     getEtwTemplatesForPid,
+    getSystemWideEtwTemplates,
     generateBurstCsvForProcess
   });
 })();
