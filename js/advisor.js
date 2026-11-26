@@ -261,6 +261,21 @@
     const avgWriteIops = (ov && ov.avgWriteIops !== undefined)
       ? ov.avgWriteIops
       : (state.cum.writeIopsSum / n);
+    const avgPhysReadMbS = (ov && ('avgPhysReadMbS' in ov))
+      ? ov.avgPhysReadMbS
+      : (ov ? null : (state.cum.diskEtwSamples > 0 ? state.cum.physReadMbSSum / state.cum.diskEtwSamples : null));
+    const avgPhysWriteMbS = (ov && ('avgPhysWriteMbS' in ov))
+      ? ov.avgPhysWriteMbS
+      : (ov ? null : (state.cum.diskEtwSamples > 0 ? state.cum.physWriteMbSSum / state.cum.diskEtwSamples : null));
+    const avgPhysReadIops = (ov && ('avgPhysReadIops' in ov))
+      ? ov.avgPhysReadIops
+      : (ov ? null : (state.cum.diskEtwSamples > 0 ? state.cum.physReadIopsSum / state.cum.diskEtwSamples : null));
+    const avgPhysWriteIops = (ov && ('avgPhysWriteIops' in ov))
+      ? ov.avgPhysWriteIops
+      : (ov ? null : (state.cum.diskEtwSamples > 0 ? state.cum.physWriteIopsSum / state.cum.diskEtwSamples : null));
+    const avgDiskLatMs = (ov && ('avgDiskLatMs' in ov))
+      ? ov.avgDiskLatMs
+      : (ov ? null : (state.cum.diskEtwSamples > 0 ? state.cum.diskLatMsSum / state.cum.diskEtwSamples : null));
 
     const dramLatForCpi = avgL3LatCyc > 0 ? avgL3LatCyc : CONFIG.latencies.dramFallback;
     const avgTierCpi = {
@@ -279,10 +294,13 @@
     const pushFinding = f => findings.push(f);
     const pushHealthy = (label, metric) => healthyChecks.push({ label, metric });
 
-    // Build Tab 7 profiler context upfront so Zero-PMC Off-CPU wait-chain rules and post-sort attribution share it
+    // Build Tab 7 profiler context upfront so Zero-PMC Off-CPU wait-chain and kernel sys% rules share it
     const profCtx = (ov && ('profiler' in ov))
       ? ov.profiler
       : buildLiveProfilerContext(proc);
+    const kernelSys = (ov && ('kernelSys' in ov))
+      ? ov.kernelSys
+      : (profCtx ? (profCtx.kernelSys || null) : null);
 
     // 10-sample rolling windows for per-thread serial/affinity and Present frame-pacing persistence rules
     const threadRollingWindow = (ov && ('threadRollingWindow' in ov))
@@ -301,7 +319,7 @@
         : (Array.isArray(state.presentRollingWindow) ? state.presentRollingWindow : []));
 
     const ctx = {
-      proc, base, plan, minSamples, profCtx, threadRollingWindow, presentRollingWindow,
+      proc, base, plan, minSamples, profCtx, kernelSys, threadRollingWindow, presentRollingWindow,
       hasPmu, hasL3: hasPmu, hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
       hasBranches, hasItlb, hasDtlb, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits, hasExactRetiring,
       uarchRawOverride: ov ? (ov.uarchRaw || null) : null,
@@ -316,6 +334,7 @@
       priorityClass, ecoQos, seLockMemoryPrivilege, bgList,
       presentStats, spikeCorrelation, vaMap,
       avgReadMbS, avgWriteMbS, avgReadIops, avgWriteIops,
+      avgPhysReadMbS, avgPhysWriteMbS, avgPhysReadIops, avgPhysWriteIops, avgDiskLatMs,
       avgTierCpi, sumModeledCpi, pushFinding, pushHealthy
     };
 
@@ -546,11 +565,15 @@
     const offCpuRows = (etw && etw.targetPid === proc.pid && etw.offCpu.totalWakes > 0)
       ? etw.offCpu.getWaitRows()
       : [];
-    if (onCpuRows.length === 0 && offCpuRows.length === 0 && !bursts) return null;
+    const kernelSys = (etw && etw.targetPid === proc.pid && etw.kernelSys && etw.kernelSys.global.totalKernelSamples > 0)
+      ? etw.kernelSys.getSummary()
+      : null;
+    if (onCpuRows.length === 0 && offCpuRows.length === 0 && !kernelSys && !bursts) return null;
     return {
       pid: proc.pid,
       onCpuTop: onCpuRows[0] || null,
       offCpuTop: offCpuRows[0] || null,
+      kernelSys,
       bursts: bursts || {}
     };
   }

@@ -279,7 +279,7 @@
     const seLockMemoryPrivilege = w32.seLockMemoryPrivilege || 'Present';
 
     // Deep-Dive Zero-PMC Collectors (Threads, Present ETW, VA/JIT Map, Disk I/O)
-    // 1. Process Disk & Asset-Streaming I/O (GetProcessIoCounters deltas)
+    // 1. Process Disk & Asset-Streaming I/O (GetProcessIoCounters logical + EVENT_TRACE_FLAG_DISK_IO physical split)
     const ioProf = proc && proc.ioProfile ? proc.ioProfile : null;
     const ioBurst = (ioProf && proc.presentProfile && proc.presentProfile.spikeCulprit === 'disk_read' && (noisePhase % 14 === 0)) ? 1.45 : burst;
     const diskIo = ioProf ? {
@@ -287,6 +287,14 @@
       writeMbS: Math.max(0, jitter(ioProf.writeMbS, 0.14, 25.5)),
       readIops: Math.max(0, Math.round(jitter(ioProf.readIops * ioBurst, 0.14, 25.9))),
       writeIops: Math.max(0, Math.round(jitter(ioProf.writeIops, 0.14, 26.3)))
+    } : null;
+    const physFrac = ioProf ? (ioProf.physDiskFrac ?? (ioProf.readMbS >= 50 ? 0.85 : 0.25)) : 0;
+    const physDiskIo = diskIo ? {
+      physReadMbS: Math.max(0, diskIo.readMbS * physFrac),
+      physWriteMbS: Math.max(0, diskIo.writeMbS * Math.min(1.0, physFrac + 0.15)),
+      physReadIops: Math.max(0, Math.round(diskIo.readIops * physFrac)),
+      physWriteIops: Math.max(0, Math.round(diskIo.writeIops * Math.min(1.0, physFrac + 0.15))),
+      avgDiskLatMs: physFrac > 0.5 ? jitter(0.85, 0.18, 26.8) : jitter(0.22, 0.15, 26.8)
     } : null;
 
     // 2. Per-Thread live CPU%, CtxSw/s, and SMT contention awareness
@@ -397,7 +405,7 @@
       noisyNeighbors, ctxSwPerSec, syncWaitPct, topWaitReason,
       priorityClass, ecoQos, hardPageReadsPerSec, availPhysPct, commitPct,
       seLockMemoryPrivilege,
-      diskIo, threadSnapshots, vaMap, presentStats, spikeCorrelation
+      diskIo, physDiskIo, threadSnapshots, vaMap, presentStats, spikeCorrelation
     };
 
     if (commitToHistory) {
@@ -470,6 +478,34 @@
         state.cum.writeMbSSum += diskIo.writeMbS;
         state.cum.readIopsSum += diskIo.readIops;
         state.cum.writeIopsSum += diskIo.writeIops;
+      }
+      if (physDiskIo) {
+        state.cum.physReadMbSSum += physDiskIo.physReadMbS;
+        state.cum.physWriteMbSSum += physDiskIo.physWriteMbS;
+        state.cum.physReadIopsSum += physDiskIo.physReadIops;
+        state.cum.physWriteIopsSum += physDiskIo.physWriteIops;
+        state.cum.diskLatMsSum += physDiskIo.avgDiskLatMs;
+        state.cum.diskEtwSamples += 1;
+        if (proc && state.profiler && state.profiler.etwSession && state.profiler.etwSession.running && !state.profiler.etwSession.paused) {
+          if (physDiskIo.physReadIops > 0) {
+            state.profiler.etwSession.ingestDiskIo({
+              pid: proc.pid,
+              op: 'read',
+              bytes: physDiskIo.physReadMbS * 1024 * 1024 * dtSec,
+              ops: Math.max(1, Math.round(physDiskIo.physReadIops * dtSec)),
+              latencyMs: physDiskIo.avgDiskLatMs
+            });
+          }
+          if (physDiskIo.physWriteIops > 0) {
+            state.profiler.etwSession.ingestDiskIo({
+              pid: proc.pid,
+              op: 'write',
+              bytes: physDiskIo.physWriteMbS * 1024 * 1024 * dtSec,
+              ops: Math.max(1, Math.round(physDiskIo.physWriteIops * dtSec)),
+              latencyMs: physDiskIo.avgDiskLatMs
+            });
+          }
+        }
       }
       if (proc && threadSnapshots.length > 0) {
         state.threadRollingWindow.push(

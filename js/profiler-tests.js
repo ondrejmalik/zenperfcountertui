@@ -4,8 +4,14 @@
   const Z = window.Zen2Top || (window.Zen2Top = {});
   const {
     SymbolResolver,
+    KERNEL_ADDR_MIN,
+    isKernelAddress,
+    ETW_KERNEL_FLAGS,
     CallTreeAggregator,
     OffCpuAggregator,
+    KernelSysBreakdown,
+    DiskIoEtwAggregator,
+    KERNEL_SYSTEM_MODULES,
     parseUprofBurstReportCsv,
     PmuCoordinator,
     EtwProfilerSession,
@@ -281,6 +287,187 @@
       ctxYes && ctxYes.why.includes('Top Off-CPU sleep stack: WaitForSingleObject (28.4% blocked, woken 88% by RenderThread)') &&
       dramYes && dramYes.why.includes('Top IBS Op load-latency contributor: client.dll!fn_0x14A200 (41.5%, avg 234 cyc DRAM)'),
       `brEnriched=${Boolean(brYes?.profilerAttribution)}, ctxEnriched=${Boolean(ctxYes?.profilerAttribution)}, dramEnriched=${Boolean(dramYes?.profilerAttribution)}`
+    );
+
+    // 8. Kernel SampledProfile sys% stack-walk attribution, zero-PDB Tier 1 drivers, and DPC/ISR isolation
+    const kRes = new SymbolResolver(7777);
+    const kLoaded = kRes.loadKernelModules(KERNEL_SYSTEM_MODULES);
+    const kSess = new EtwProfilerSession();
+    kSess.attach(7777, kRes);
+    const hasDiskIoFlag = (kSess.enabledFlags & ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_DISK_IO) !== 0;
+    const hasSysCallFlag = (kSess.enabledFlags & 0x00000080) !== 0; // EVENT_TRACE_FLAG_SYSTEMCALL must stay OFF
+
+    const userFrame = { module: 'app.exe', rva: 0x1000, base: 0x7FF600000000n, va: 0x7FF600001000n, name: 'ReadLoop', displayName: 'ReadLoop', key: 'app!ReadLoop', isKernel: false };
+    // User-mode only sample -> must be ignored by KernelSysBreakdown
+    kSess.ingestSampledProfile({ pid: 7777, tid: 101, weight: 50, stack: [userFrame] });
+    // Cached I/O memcpy: KiSystemCall64 -> NtReadFile -> CcCopyRead -> memcpy -> must bill to cached_io
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 30,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80040310040n }, { va: 0xFFFFF80040312040n }, { va: 0xFFFFF80040260040n }]
+    });
+    // Socket buffer memcpy: KiSystemCall64 -> afd.sys -> memcpy -> must bill to network_ipc (zero PDB on afd.sys)
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 20,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF8004601A040n }, { va: 0xFFFFF80040260040n }]
+    });
+    // Demand-zero page fault memcpy: KiPageFault -> MmAccessFault -> MiZeroFault -> memcpy -> must bill to memory_manager
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 25,
+      stack: [userFrame, { va: 0xFFFFF80040414040n }, { va: 0xFFFFF80040350040n }, { va: 0xFFFFF80040352040n }, { va: 0xFFFFF80040260040n }]
+    });
+    // Hard fault into NVMe: KiPageFault -> MmAccessFault -> MiIssueHardFault -> stornvme.sys -> must bill to physical_storage
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 10,
+      stack: [userFrame, { va: 0xFFFFF80040414040n }, { va: 0xFFFFF80040350040n }, { va: 0xFFFFF80040354040n }, { va: 0xFFFFF80045608040n }]
+    });
+    // Minifilter tax: KiSystemCall64 -> NtReadFile -> fltmgr.sys -> WdFilter.sys -> ntfs.sys -> must bill to av_minifilter (WdFilter.sys)
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 15,
+      stack: [userFrame, { va: 0xFFFFF80040412040n }, { va: 0xFFFFF80040310040n }, { va: 0xFFFFF80045006040n }, { va: 0xFFFFF80045212040n }, { va: 0xFFFFF80044018040n }]
+    });
+    // Preempting NIC DPC/ISR: UserCode -> KiInterruptDispatch -> KiRetireDpcList -> e1d68x64.sys -> isolated from targetSysSamples!
+    kSess.ingestSampledProfile({
+      pid: 7777, tid: 101, weight: 40,
+      stack: [userFrame, { va: 0xFFFFF80040242040n }, { va: 0xFFFFF80040240040n }, { va: 0xFFFFF80050010040n }]
+    });
+
+    const kSum = kSess.kernelSys.getSummary();
+    check(
+      'kernel_sys_stackwalk_attribution_and_dpc_isolation',
+      kLoaded >= 10 && hasDiskIoFlag && !hasSysCallFlag &&
+      isKernelAddress(0xFFFFF80040000000n) && !isKernelAddress(0x00007FF600001000n) &&
+      kSum.targetSysSamples === 100 && kSum.preemptingDpcSamples === 40 &&
+      Math.abs(kSum.buckets.cached_io.pct - 30.0) < 0.01 &&
+      Math.abs(kSum.buckets.network_ipc.pct - 20.0) < 0.01 &&
+      Math.abs(kSum.buckets.memory_manager.pct - 25.0) < 0.01 &&
+      Math.abs(kSum.buckets.physical_storage.pct - 10.0) < 0.01 &&
+      Math.abs(kSum.buckets.av_minifilter.pct - 15.0) < 0.01 &&
+      kSum.topAvDriver?.name === 'WdFilter.sys' &&
+      kSum.topDpcDriver?.name === 'e1d68x64.sys',
+      `sys=${kSum.targetSysSamples}, dpc=${kSum.preemptingDpcSamples} (${kSum.topDpcDriver?.name}), cached=${kSum.buckets.cached_io.pct}%, net=${kSum.buckets.network_ipc.pct}%, mm=${kSum.buckets.memory_manager.pct}%, av=${kSum.topAvDriver?.name}`
+    );
+
+    // 9. DiskIo ETW logical-vs-physical split + Rule 10a vs Rule 10b separation
+    const dioAgg = new DiskIoEtwAggregator({ targetPid: 7777 });
+    dioAgg.recordEvent({ pid: 7777, op: 'read', bytes: 90 * 1024 * 1024, ops: 900, latencyMs: 0.9 });
+    dioAgg.recordEvent({ pid: 9999, op: 'read', bytes: 500 * 1024 * 1024, ops: 5000, latencyMs: 2.0 }); // wrong PID ignored
+    const dioRates = dioAgg.getRates(1.0);
+
+    const mkKernelSummary = (pcts, extras = {}) => ({
+      targetSysSamples: extras.targetSysSamples ?? 200,
+      preemptingDpcSamples: extras.preemptingDpcSamples ?? 0,
+      totalKernelSamples: (extras.targetSysSamples ?? 200) + (extras.preemptingDpcSamples ?? 0),
+      buckets: {
+        cached_io: { pct: pcts.cached_io || 0, topDriver: extras.topCachedDriver || { name: 'ntfs.sys' } },
+        av_minifilter: { pct: pcts.av_minifilter || 0, topDriver: extras.topAvDriver || null },
+        physical_storage: { pct: pcts.physical_storage || 0, topDriver: extras.topStorageDriver || null },
+        network_ipc: { pct: pcts.network_ipc || 0, topDriver: extras.topNetDriver || null },
+        gpu_driver: { pct: pcts.gpu_driver || 0, topDriver: extras.topGpuDriver || null },
+        memory_manager: { pct: pcts.memory_manager || 0, topDriver: { name: 'ntoskrnl.exe' } },
+        scheduler_sync: { pct: pcts.scheduler_sync || 0, topDriver: { name: 'ntoskrnl.exe' } },
+        preempting_dpc_isr: { pct: extras.preemptingDpcPct || 0, topDriver: extras.topDpcDriver || null },
+        other_kernel: { pct: pcts.other_kernel || 0, topDriver: null }
+      },
+      topDpcDriver: extras.topDpcDriver || null,
+      topAvDriver: extras.topAvDriver || null,
+      topGpuDriver: extras.topGpuDriver || null,
+      topStorageDriver: extras.topStorageDriver || null,
+      topCachedDriver: extras.topCachedDriver || null
+    });
+
+    const mkKernelOv = (extra = {}) => {
+      const base = mkAdvOv(null);
+      return {
+        ...base,
+        avgCtxSw: 8000,
+        avgSyncWaitPct: 12.0,
+        ...extra,
+        avg: { ...base.avg, cpuUsr: 32.0, cpuSys: 14.0, pageFaultRate: 200, ...(extra.avg || {}) }
+      };
+    };
+
+    // Pure cached I/O: 120 MB/s logical (4000 ops/s), 0 MB/s physical DiskIo ETW, 48% Cc*/ntfs.sys -> Rule 10b fires, Rule 10a suppressed!
+    const dCached = evaluateDiagnostics(mkKernelOv({
+      avgReadMbS: 120.0,
+      avgReadIops: 4000,
+      avgPhysReadMbS: 0.0,
+      avgPhysReadIops: 0,
+      kernelSys: mkKernelSummary({ cached_io: 42.0, network_ipc: 8.0 })
+    }));
+    const f10b = dCached.findings.find(f => f.id === 'cached_io_pipe_syscall_overhead');
+    const f10aOnCached = dCached.findings.find(f => f.id === 'disk_io_streaming_stall');
+
+    // Physical storage streaming: 90 MB/s physical DiskIo ETW + stornvme.sys 28% + frame spikes -> Rule 10a fires, Rule 10b suppressed!
+    const dPhys = evaluateDiagnostics(mkKernelOv({
+      avgReadMbS: 110.0,
+      avgReadIops: 1400,
+      avgPhysReadMbS: dioRates.physReadMbS,
+      avgPhysReadIops: dioRates.physReadIops,
+      avgDiskLatMs: dioRates.avgDiskLatMs,
+      spikeCorrelation: { totalSpikes: 4 },
+      kernelSys: mkKernelSummary({ physical_storage: 28.0 }, { topStorageDriver: { name: 'stornvme.sys', pct: 80 } })
+    }));
+    const f10aPhys = dPhys.findings.find(f => f.id === 'disk_io_streaming_stall');
+    const f10bOnPhys = dPhys.findings.find(f => f.id === 'cached_io_pipe_syscall_overhead');
+
+    check(
+      'disk_io_etw_logical_vs_physical_rule_10a_vs_10b',
+      Math.abs(dioRates.physReadMbS - 90.0) < 0.01 && Math.abs(dioRates.avgDiskLatMs - 0.9) < 0.01 &&
+      Boolean(f10b) && f10b.action.includes('64 KiB') && !f10aOnCached &&
+      Boolean(f10aPhys) && f10aPhys.why.includes('stornvme.sys') && !f10bOnPhys,
+      `physRate=${dioRates.physReadMbS.toFixed(0)}MB/s, 10b=${Boolean(f10b)}, 10aOnCached=${Boolean(f10aOnCached)}, 10aPhys=${Boolean(f10aPhys)}, 10bOnPhys=${Boolean(f10bOnPhys)}`
+    );
+
+    // 10. AV/Minifilter tax, GPU KMD submission overhead, Memory Manager commit thrash (Rule 7 upgrade), and Rule 2 DPC driver
+    const dAv = evaluateDiagnostics(mkKernelOv({
+      kernelSys: mkKernelSummary({ av_minifilter: 34.0 }, { topAvDriver: { name: 'WdFilter.sys', pct: 88 } })
+    }));
+    const fAv = dAv.findings.find(f => f.id === 'av_minifilter_overhead');
+    const dAvLowSamples = evaluateDiagnostics(mkKernelOv({
+      kernelSys: mkKernelSummary({ av_minifilter: 40.0 }, { targetSysSamples: 60, topAvDriver: { name: 'WdFilter.sys', pct: 88 } })
+    }));
+
+    const dGpuSub = evaluateDiagnostics(mkKernelOv({
+      avgGpu3dPct: 58.0,
+      kernelSys: mkKernelSummary({ gpu_driver: 46.0 }, { topGpuDriver: { name: 'amdkmdag.sys', pct: 62 } })
+    }));
+    const fGpuSub = dGpuSub.findings.find(f => f.id === 'gpu_kernel_submission_overhead');
+    const dGpuSubBound = evaluateDiagnostics(mkKernelOv({
+      avgGpu3dPct: 99.0,
+      avgCoreC0: [55, 5, 45, 5, 30, 4, 25, 4, 15, 2, 10, 2],
+      kernelSys: mkKernelSummary({ gpu_driver: 52.0 }, { topGpuDriver: { name: 'amdkmdag.sys', pct: 62 } })
+    }));
+
+    // Rule 7 Memory Manager commit thrash: Mi*/Mm* >= 40% + high soft faults even with sysSharePct < 20% (avgSys=10, avgUsr=60 -> 14.3%)
+    const dMmThrash = evaluateDiagnostics(mkKernelOv({
+      avg: { cpuUsr: 60.0, cpuSys: 10.0, pageFaultRate: 3200 },
+      kernelSys: mkKernelSummary({ memory_manager: 48.0 })
+    }));
+    const fMmThrash = dMmThrash.findings.find(f => f.id === 'kernel_page_fault_churn');
+
+    // Rule 2 DPC/IRQ collision names offending .sys driver isolated above KiRetireDpcList
+    const hotDpc = new Array(12).fill(0.2); hotDpc[0] = 6.5;
+    const hotIrq = new Array(12).fill(0.2); hotIrq[0] = 2.2;
+    const dDpcDrv = evaluateDiagnostics(mkKernelOv({
+      avgCoreDpc: hotDpc,
+      avgCoreIrq: hotIrq,
+      kernelSys: mkKernelSummary({ scheduler_sync: 20.0 }, {
+        preemptingDpcSamples: 45,
+        preemptingDpcPct: 18.0,
+        topDpcDriver: { name: 'e1d68x64.sys', pct: 92.0, samples: 41 }
+      })
+    }));
+    const fDpcDrv = dDpcDrv.findings.find(f => f.id === 'dpc_irq_collision');
+
+    check(
+      'kernel_sys_rules_av_gpu_mm_and_dpc_driver',
+      Boolean(fAv) && fAv.title.includes('WdFilter.sys') &&
+      !dAvLowSamples.findings.some(f => f.id === 'av_minifilter_overhead') &&
+      Boolean(fGpuSub) && fGpuSub.title.includes('amdkmdag.sys') &&
+      !dGpuSubBound.findings.some(f => f.id === 'gpu_kernel_submission_overhead') &&
+      Boolean(fMmThrash) && fMmThrash.mmConfirmed === true && fMmThrash.title.includes('Mi*/Mm*') &&
+      Boolean(fDpcDrv) && fDpcDrv.title.includes('e1d68x64.sys') && fDpcDrv.why.includes('KiRetireDpcList'),
+      `av=${fAv?.title?.includes('WdFilter.sys')}, gpuSub=${Boolean(fGpuSub)}, gpuBoundSup=${!dGpuSubBound.findings.some(f => f.id === 'gpu_kernel_submission_overhead')}, mmConf=${Boolean(fMmThrash?.mmConfirmed)}, dpcDrv=${fDpcDrv?.title?.includes('e1d68x64.sys')}`
     );
 
     const passed = results.filter(r => r.pass).length;

@@ -6,7 +6,7 @@
 
   function evaluatePmuRules(ctx, groupA) {
     const {
-      proc, base, plan,
+      proc, base, plan, kernelSys,
       hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
       hasBranches, hasItlb, hasDtlb,
       avgC0, avgIpc, avgActualCpi, avgGhz, avgDram, avgDemDram, avgHwpfDram, avgL2pfDram,
@@ -317,24 +317,36 @@
       }
     }
 
-    // --- RULE 7: Kernel / Page-Fault Churn (Win32 OS) ---
+    // --- RULE 7: Kernel / Page-Fault Churn & Memory Manager Commit Thrash (Upgraded via Mi*/Mm* kernel samples) ---
     if (proc) {
-      if (avgPfRate >= 2000 && sysSharePct >= 20.0) {
+      const mmPct = (kernelSys && (kernelSys.targetSysSamples || 0) >= 100 && avgSys >= 8.0)
+        ? (kernelSys.buckets?.memory_manager?.pct || 0)
+        : 0;
+      const mmConfirmed = mmPct >= 40.0 && avgPfRate >= 2000;
+      if (mmConfirmed || (avgPfRate >= 2000 && sysSharePct >= 20.0)) {
+        const isHi = avgPfRate >= 3500 || (mmConfirmed && mmPct >= 55.0);
         pushFinding({
           id: 'kernel_page_fault_churn',
           category: 'OsKernelChurn',
-          severity: avgPfRate >= 3500 ? 'HI' : 'MD',
+          severity: isHi ? 'HI' : 'MD',
           scope: '[OS / TUI]',
           confidence: 'HIGH',
-          impact: 0.15,
-          title: `High kernel / page-fault commit churn (${Math.round(avgPfRate).toLocaleString()}/s)`,
-          keyMetric: `${Math.round(avgPfRate).toLocaleString()}/s | sys ${sysSharePct.toFixed(0)}%`,
+          impact: mmConfirmed ? 0.28 : 0.15,
+          mmConfirmed,
+          title: mmConfirmed
+            ? `Memory Manager commit thrash (Mi*/Mm* ${mmPct.toFixed(0)}% of sys, ${Math.round(avgPfRate).toLocaleString()} faults/s)`
+            : `High kernel / page-fault commit churn (${Math.round(avgPfRate).toLocaleString()}/s)`,
+          keyMetric: mmConfirmed
+            ? `Mi*/Mm* ${mmPct.toFixed(0)}% sys | ${Math.round(avgPfRate).toLocaleString()} faults/s`
+            : `${Math.round(avgPfRate).toLocaleString()}/s | sys ${sysSharePct.toFixed(0)}%`,
           estGain: {
             kind: 'qualitative',
             label: '-sys% / stutter',
             detail: 'Qualitative: cuts ntoskrnl VirtualAlloc traps, kernel sys% time, and frame-time spikes'
           },
-          why: `${proc.name} averages ${Math.round(avgPfRate).toLocaleString()} page faults/s with kernel time at ${sysSharePct.toFixed(1)}% of CPU execution (usr ${avgUsr.toFixed(1)}% / sys ${avgSys.toFixed(1)}%).`,
+          why: mmConfirmed
+            ? `SampledProfile kernel frames confirm ${mmPct.toFixed(1)}% (>=40%) of ${proc.name}'s ${kernelSys.targetSysSamples} target kernel samples land in ntoskrnl Memory Manager (Mi*/Mm*/KiFlushProcessTb*) alongside ${Math.round(avgPfRate).toLocaleString()} soft page faults/s (cpuSys ${avgSys.toFixed(1)}%), proving VirtualAlloc commit/decommit thrashing rather than guessing from total sys%.`
+            : `${proc.name} averages ${Math.round(avgPfRate).toLocaleString()} page faults/s with kernel time at ${sysSharePct.toFixed(1)}% of CPU execution (usr ${avgUsr.toFixed(1)}% / sys ${avgSys.toFixed(1)}%).`,
           action: proc.arenas
             ? `Raise MIMALLOC_PURGE_DELAY (or MIMALLOC_PURGE_DECOMMITS=0) and pre-reserve 2 MiB huge arenas so VirtualAlloc commit/decommit cycles stop trapping into ntoskrnl.`
             : `Pool and reuse large heap buffers instead of repeatedly allocating/freeing virtual ranges (or test a pooling allocator like mimalloc).`,

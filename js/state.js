@@ -158,6 +158,12 @@
       writeMbSSum: 0,
       readIopsSum: 0,
       writeIopsSum: 0,
+      physReadMbSSum: 0,
+      physWriteMbSSum: 0,
+      physReadIopsSum: 0,
+      physWriteIopsSum: 0,
+      diskLatMsSum: 0,
+      diskEtwSamples: 0,
       fpsSum: 0,
       avgFrameMsSum: 0,
       presentSamples: 0

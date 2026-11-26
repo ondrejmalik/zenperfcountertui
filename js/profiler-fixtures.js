@@ -87,9 +87,55 @@
     return SIDECAR_MAPS.source2;
   }
 
+  // NtQuerySystemInformation(SystemModuleInformation, class 0x0B) kernel image snapshot (base + sizeBytes)
+  const KERNEL_SYSTEM_MODULES = [
+    {
+      name: 'ntoskrnl.exe',
+      base: 0xFFFFF80040000000n,
+      sizeBytes: 0x01047000,
+      rsdsGuid: 'A41C92F0-8E21-4B3A-9C12-5D8F1102A0E1',
+      rsdsAge: 1,
+      pdbLoaded: true,
+      pdbPath: 'C:\\Symbols\\ntkrnlmp.pdb\\A41C92F08E214B3A9C125D8F1102A0E11\\ntkrnlmp.pdb',
+      pdbSymbols: [
+        { rvaStart: 0x00412000, rvaEnd: 0x00412400, name: 'KiSystemCall64' },
+        { rvaStart: 0x00414000, rvaEnd: 0x00414500, name: 'KiPageFault' },
+        { rvaStart: 0x00240000, rvaEnd: 0x00240600, name: 'KiRetireDpcList' },
+        { rvaStart: 0x00242000, rvaEnd: 0x00242600, name: 'KiInterruptDispatch' },
+        { rvaStart: 0x00260000, rvaEnd: 0x00260400, name: 'memcpy' },
+        { rvaStart: 0x00310000, rvaEnd: 0x00310600, name: 'NtReadFile' },
+        { rvaStart: 0x00312000, rvaEnd: 0x00312600, name: 'CcCopyRead' },
+        { rvaStart: 0x00314000, rvaEnd: 0x00314600, name: 'CcMapData' },
+        { rvaStart: 0x00350000, rvaEnd: 0x00350600, name: 'MmAccessFault' },
+        { rvaStart: 0x00352000, rvaEnd: 0x00352600, name: 'MiZeroFault' },
+        { rvaStart: 0x00354000, rvaEnd: 0x00354600, name: 'MiIssueHardFault' },
+        { rvaStart: 0x00356000, rvaEnd: 0x00356500, name: 'KiFlushProcessTbWorker' },
+        { rvaStart: 0x00380000, rvaEnd: 0x00380600, name: 'KeWaitForSingleObject' },
+        { rvaStart: 0x00382000, rvaEnd: 0x00382600, name: 'KiSwapThread' },
+        { rvaStart: 0x00384000, rvaEnd: 0x00384600, name: 'NtWaitForAlertByThreadId' }
+      ]
+    },
+    { name: 'ntfs.sys',      base: 0xFFFFF80044000000n, sizeBytes: 0x00320000, pdbLoaded: false, exports: [{ rva: 0x018000, rvaEnd: 0x018600, name: 'NtfsFsdRead' }] },
+    { name: 'fltmgr.sys',    base: 0xFFFFF80045000000n, sizeBytes: 0x00078000, pdbLoaded: false, exports: [{ rva: 0x006000, rvaEnd: 0x006600, name: 'FltpDispatch' }] },
+    { name: 'WdFilter.sys',  base: 0xFFFFF80045200000n, sizeBytes: 0x00084000, pdbLoaded: false, exports: [{ rva: 0x012000, rvaEnd: 0x012600, name: 'MpPreCreate' }] },
+    { name: 'stornvme.sys',  base: 0xFFFFF80045600000n, sizeBytes: 0x00048000, pdbLoaded: false, exports: [{ rva: 0x008000, rvaEnd: 0x008500, name: 'NVMeStartIo' }] },
+    { name: 'storport.sys',  base: 0xFFFFF80045800000n, sizeBytes: 0x000E2000, pdbLoaded: false, exports: [{ rva: 0x014000, rvaEnd: 0x014600, name: 'RaidStartIoPacket' }] },
+    { name: 'afd.sys',       base: 0xFFFFF80046000000n, sizeBytes: 0x000A8000, pdbLoaded: false, exports: [{ rva: 0x01A000, rvaEnd: 0x01A600, name: 'AfdFastIoDeviceControl' }] },
+    { name: 'tcpip.sys',     base: 0xFFFFF80046200000n, sizeBytes: 0x00340000, pdbLoaded: false, exports: [{ rva: 0x022000, rvaEnd: 0x022600, name: 'TcpReceive' }] },
+    { name: 'npfs.sys',      base: 0xFFFFF80046600000n, sizeBytes: 0x00024000, pdbLoaded: false, exports: [{ rva: 0x004000, rvaEnd: 0x004500, name: 'NpFsdRead' }] },
+    { name: 'dxgkrnl.sys',   base: 0xFFFFF80047000000n, sizeBytes: 0x00460000, pdbLoaded: false, exports: [{ rva: 0x048000, rvaEnd: 0x048600, name: 'DxgkSubmitCommand' }] },
+    { name: 'dxgmms2.sys',   base: 0xFFFFF80047600000n, sizeBytes: 0x00160000, pdbLoaded: false, exports: [{ rva: 0x018000, rvaEnd: 0x018500, name: 'VidSchiSubmitCommand' }] },
+    { name: 'amdkmdag.sys',  base: 0xFFFFF80048000000n, sizeBytes: 0x03800000, pdbLoaded: false, exports: [{ rva: 0x110000, rvaEnd: 0x110600, name: 'AmdSubmitPacket' }] },
+    { name: 'nvlddmkm.sys',  base: 0xFFFFF8004C000000n, sizeBytes: 0x03400000, pdbLoaded: false, exports: [{ rva: 0x092000, rvaEnd: 0x092600, name: 'nvDpcForIsr' }] },
+    { name: 'e1d68x64.sys',  base: 0xFFFFF80050000000n, sizeBytes: 0x00090000, pdbLoaded: false, exports: [{ rva: 0x010000, rvaEnd: 0x010500, name: 'E1dMessageInterruptDpc' }] }
+  ];
+
   function buildResolverForProcess(proc, loadSidecar = false) {
     const pid = proc ? proc.pid : 0;
     const resolver = new SymbolResolver(pid);
+
+    // Load SystemModuleInformation (class 0x0B) kernel module snapshot for kernel-range SampledProfile frames
+    resolver.loadKernelModules(KERNEL_SYSTEM_MODULES);
 
     // Common OS DLLs (Tier 2 PE Exports + Tier 1 OS PDB for ntdll/kernelbase)
     resolver.onModuleLoad({
@@ -314,6 +360,21 @@
           { tid: t3.tid, weight: 12, stack: [
             { module: 'rustc_driver-8a91c.dll', rva: 0x110240 },
             { module: 'rustc_driver-8a91c.dll', rva: 0x602180 }
+          ]},
+          // Kernel SampledProfile frames (Memory Manager commit/zero-fault + AV minifilter)
+          { tid: t0.tid, weight: 8, stack: [
+            { module: 'rustc_driver-8a91c.dll', rva: 0x110240 },
+            { module: 'ntoskrnl.exe', rva: 0x00414040 },
+            { module: 'ntoskrnl.exe', rva: 0x00350080 },
+            { module: 'ntoskrnl.exe', rva: 0x00352080 },
+            { module: 'ntoskrnl.exe', rva: 0x00260040 }
+          ]},
+          { tid: t1.tid, weight: 4, stack: [
+            { module: 'rustc_driver-8a91c.dll', rva: 0x110240 },
+            { module: 'ntoskrnl.exe', rva: 0x00412040 },
+            { module: 'ntoskrnl.exe', rva: 0x00310080 },
+            { module: 'fltmgr.sys', rva: 0x006040 },
+            { module: 'WdFilter.sys', rva: 0x012040 }
           ]}
         ],
         offCpu: [
@@ -346,6 +407,12 @@
           { tid: t3.tid, weight: 12, stack: [
             { module: 'sqlmin.dll', rva: 0x18B440 },
             { module: 'ntdll.dll', rva: 0x0A1840 }
+          ]},
+          { tid: t0.tid, weight: 8, stack: [
+            { module: 'sqlmin.dll', rva: 0x18B440 },
+            { module: 'ntoskrnl.exe', rva: 0x00412040 },
+            { module: 'ntoskrnl.exe', rva: 0x00384040 },
+            { module: 'ntoskrnl.exe', rva: 0x00382040 }
           ]}
         ],
         offCpu: [
@@ -403,6 +470,12 @@
           { tid: t2.tid, weight: 22, stack: [
             { module: 'Cyberpunk2077.exe', rva: 0x418260 },
             { module: 'ntdll.dll', rva: 0x09C420 }
+          ]},
+          { tid: t2.tid, weight: 6, stack: [
+            { module: 'Cyberpunk2077.exe', rva: 0x418260 },
+            { module: 'ntoskrnl.exe', rva: 0x00412040 },
+            { module: 'storport.sys', rva: 0x014040 },
+            { module: 'stornvme.sys', rva: 0x008040 }
           ]}
         ],
         offCpu: [
@@ -483,7 +556,18 @@
         { tid: t3.tid, weight: 9, stack: [
           { module: 'client.dll', rva: 0x2A8180 },
           { module: 'tier0.dll', rva: 0x024440 }
-        ]}
+        ]},
+        { tid: t1.tid, weight: 5, stack: [
+          { module: 'rendersystemvulkan.dll', rva: 0x112080 },
+          { module: 'ntoskrnl.exe', rva: 0x00412040 },
+          { module: 'dxgkrnl.sys', rva: 0x048040 },
+          { module: 'amdkmdag.sys', rva: 0x110040 }
+        ]},
+        ...(pid === 27408 ? [{ tid: t0.tid, weight: 3, stack: [
+          { module: 'engine2.dll', rva: 0x064040 },
+          { module: 'ntoskrnl.exe', rva: 0x00240040 },
+          { module: 'nvlddmkm.sys', rva: 0x092040 }
+        ]}] : [])
       ],
       offCpu: [
         { tid: t0.tid, threadName: t0.name, wakerTid: t1.tid, wakerName: t1.name, durUs: 3820, stack: [
@@ -589,6 +673,7 @@
   Object.assign(Z, {
     PROCESS_THREADS,
     SIDECAR_MAPS,
+    KERNEL_SYSTEM_MODULES,
     getThreadsForProcess,
     getSidecarForPid,
     buildResolverForProcess,

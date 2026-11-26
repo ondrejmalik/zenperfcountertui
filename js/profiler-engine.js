@@ -2,14 +2,388 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { SymbolResolver, parseRva, fmtHexRva } = Z;
+  const { SymbolResolver, KERNEL_ADDR_MIN, isKernelAddress, parseRva, fmtHexRva } = Z;
 
   const ETW_KERNEL_FLAGS = Object.freeze({
     EVENT_TRACE_FLAG_PROFILE: 0x01000000,
     EVENT_TRACE_FLAG_CSWITCH: 0x00000010,
     EVENT_TRACE_FLAG_DISPATCHER: 0x00000800, // ReadyThread event type 0x32
-    EVENT_TRACE_FLAG_IMAGE_LOAD: 0x00000004
+    EVENT_TRACE_FLAG_IMAGE_LOAD: 0x00000004,
+    EVENT_TRACE_FLAG_DISK_IO: 0x00000100     // Physical storage IRPs only (never SYSTEMCALL)
   });
+
+  const KERNEL_SYS_BUCKETS = Object.freeze([
+    { id: 'cached_io',          label: 'Cached I/O & Filesystem', shortLabel: 'Cached I/O' },
+    { id: 'av_minifilter',      label: 'AV / Minifilter Tax',     shortLabel: 'AV Filter' },
+    { id: 'physical_storage',   label: 'Physical Storage Stack',  shortLabel: 'Phys Disk' },
+    { id: 'network_ipc',        label: 'Network & IPC / Pipes',   shortLabel: 'Net/Pipes' },
+    { id: 'gpu_driver',         label: 'GPU / Display Driver',    shortLabel: 'GPU KMD' },
+    { id: 'memory_manager',     label: 'Memory Manager',          shortLabel: 'Mem Mgr' },
+    { id: 'scheduler_sync',     label: 'Scheduler & Sync',        shortLabel: 'Sched/Sync' },
+    { id: 'preempting_dpc_isr', label: 'Preempting DPC / ISR',    shortLabel: 'DPC/ISR' },
+    { id: 'other_kernel',       label: 'Other Kernel',            shortLabel: 'Other Krnl' }
+  ]);
+
+  const CACHED_IO_DRIVERS = new Set(['ntfs.sys', 'fastfat.sys', 'refs.sys']);
+  const AV_FILTER_DRIVERS = new Set([
+    'fltmgr.sys', 'wdfilter.sys', 'eamonm.sys', 'klif.sys', 'mbamchameleon.sys',
+    'csagent.sys', 'sentinelmonitor.sys', 'bedaisy.sys', 'vgk.sys',
+    'easyanticheat_eos.sys', 'easyanticheat.sys', 'faceit.sys'
+  ]);
+  const PHYSICAL_STORAGE_DRIVERS = new Set([
+    'stornvme.sys', 'storport.sys', 'partmgr.sys', 'volmgr.sys', 'classpnp.sys', 'disk.sys', 'storahci.sys'
+  ]);
+  const NETWORK_IPC_DRIVERS = new Set(['afd.sys', 'tcpip.sys', 'ndis.sys', 'npfs.sys', 'msfs.sys']);
+  const GPU_KMD_DRIVERS = new Set([
+    'dxgkrnl.sys', 'dxgmms2.sys', 'amdkmdag.sys', 'nvlddmkm.sys', 'igdkmd64.sys', 'igdkmdn64.sys'
+  ]);
+
+  const DPC_ISR_FRAME_RE = /^(?:KiRetireDpcList|KiInterruptDispatch)/i;
+  const SYSCALL_ENTRY_RE = /^(?:KiSystemCall64|KiSystemService)/i;
+  const HARD_FAULT_FRAME_RE = /^MiIssueHardFault/i;
+  const CACHED_IO_FRAME_RE = /^(?:Cc[A-Z]|NtReadFile|NtWriteFile|ZwReadFile|ZwWriteFile)/;
+  const MEM_MGR_FRAME_RE = /^(?:Mi[A-Z]|Mm[A-Z]|KiFlushProcessTb)/;
+  const SCHED_SYNC_FRAME_RE = /^(?:Ke[A-Z]|KiSwapThread|Exp[A-Z]|NtWaitFor)/;
+  const AV_DRIVER_NAME_RE = /(?:filter|wdfilter|fltmgr|anticheat|bedaisy|vgk)\.sys$/i;
+
+  function isKernelFrame(frame) {
+    if (!frame) return false;
+    if (frame.isKernel === true) return true;
+    if (frame.va !== undefined && frame.va !== null && isKernelAddress(frame.va)) return true;
+    if (frame.base !== undefined && frame.base !== null && isKernelAddress(frame.base)) return true;
+    const mod = String(frame.module || '').toLowerCase();
+    return mod === 'ntoskrnl.exe' || mod === 'hal.dll' || mod.endsWith('.sys');
+  }
+
+  function frameSymbolName(frame) {
+    if (!frame) return '';
+    const raw = String(frame.displayName || frame.name || '');
+    const bang = raw.lastIndexOf('!');
+    return bang >= 0 ? raw.slice(bang + 1) : raw;
+  }
+
+  /**
+   * Classify a single kernel-mode SampledProfile stack (ordered ROOT -> ... -> LEAF).
+   * 1. Requires leaf IP in kernel space (>= 0xFFFF800000000000 on x64).
+   * 2. Isolates KiRetireDpcList / KiInterruptDispatch frames into preempting_dpc_isr and extracts offending .sys driver.
+   * 3. Walks kernel stack from syscall entry (KiSystemCall64) upward so shared helpers like ntoskrnl!memcpy are billed
+   *    to the exact invoking driver or syscall/subsystem (Tier 1 driver modules work even with zero PDBs).
+   */
+  function classifyKernelStack(stackFrames, opts = {}) {
+    if (!Array.isArray(stackFrames) || stackFrames.length === 0) return null;
+    const frames = opts.leafFirst ? [...stackFrames].reverse() : stackFrames;
+    const leaf = frames[frames.length - 1];
+    if (!isKernelFrame(leaf)) return null;
+
+    // Locate the kernel portion of the stack
+    let firstKernelIdx = -1;
+    for (let i = 0; i < frames.length; i++) {
+      if (isKernelFrame(frames[i])) {
+        firstKernelIdx = i;
+        break;
+      }
+    }
+    if (firstKernelIdx < 0) return null;
+    const kernelFrames = frames.slice(firstKernelIdx);
+
+    // Anti-misattribution rule 2: Isolate KiRetireDpcList / KiInterruptDispatch frames FIRST
+    let dpcIdx = -1;
+    for (let i = 0; i < kernelFrames.length; i++) {
+      if (DPC_ISR_FRAME_RE.test(frameSymbolName(kernelFrames[i]))) {
+        dpcIdx = i;
+        break;
+      }
+    }
+    if (dpcIdx >= 0) {
+      let offendingDriver = null;
+      for (let i = dpcIdx + 1; i < kernelFrames.length; i++) {
+        const mod = String(kernelFrames[i].module || '');
+        const low = mod.toLowerCase();
+        if (low.endsWith('.sys') && low !== 'ntoskrnl.exe' && low !== 'hal.dll') {
+          offendingDriver = mod;
+          break;
+        }
+      }
+      if (!offendingDriver) {
+        const leafMod = String(leaf.module || '');
+        offendingDriver = leafMod.toLowerCase().endsWith('.sys') ? leafMod : (leafMod || 'ntoskrnl.exe');
+      }
+      return {
+        bucket: 'preempting_dpc_isr',
+        driver: offendingDriver,
+        isPreemptingDpc: true
+      };
+    }
+
+    // Anti-misattribution rule 1: Walk from KiSystemCall64 (or kernel boundary) upward toward leaf
+    let startIdx = 0;
+    for (let i = 0; i < kernelFrames.length; i++) {
+      if (SYSCALL_ENTRY_RE.test(frameSymbolName(kernelFrames[i]))) {
+        startIdx = i + 1;
+        break;
+      }
+    }
+    const walkFrames = startIdx < kernelFrames.length ? kernelFrames.slice(startIdx) : kernelFrames;
+
+    // Tier 1: Driver Module classification (works offline with zero PDBs) + MiIssueHardFault check
+    let avDriver = null;
+    let genericFltmgr = null;
+    let physDriver = null;
+    let gpuDriver = null;
+    let gpuDxgkrnl = null;
+    let netDriver = null;
+    let fsDriver = null;
+
+    for (const f of walkFrames) {
+      const mod = String(f.module || '');
+      const low = mod.toLowerCase();
+      const sym = frameSymbolName(f);
+
+      if (AV_FILTER_DRIVERS.has(low) || (low.endsWith('.sys') && AV_DRIVER_NAME_RE.test(low))) {
+        if (low === 'fltmgr.sys') genericFltmgr = mod;
+        else if (!avDriver) avDriver = mod;
+      }
+      if (PHYSICAL_STORAGE_DRIVERS.has(low) || HARD_FAULT_FRAME_RE.test(sym)) {
+        if (!physDriver) physDriver = low.endsWith('.sys') ? mod : 'ntoskrnl.exe';
+      }
+      if (GPU_KMD_DRIVERS.has(low)) {
+        if (low === 'dxgkrnl.sys' || low === 'dxgmms2.sys') {
+          if (!gpuDxgkrnl) gpuDxgkrnl = mod;
+        } else if (!gpuDriver) {
+          gpuDriver = mod;
+        }
+      }
+      if (NETWORK_IPC_DRIVERS.has(low) && !netDriver) {
+        netDriver = mod;
+      }
+      if (CACHED_IO_DRIVERS.has(low) && !fsDriver) {
+        fsDriver = mod;
+      }
+    }
+
+    if (avDriver || genericFltmgr) {
+      return { bucket: 'av_minifilter', driver: avDriver || genericFltmgr, isPreemptingDpc: false };
+    }
+    if (physDriver) {
+      return { bucket: 'physical_storage', driver: physDriver, isPreemptingDpc: false };
+    }
+    if (gpuDriver || gpuDxgkrnl) {
+      return { bucket: 'gpu_driver', driver: gpuDriver || gpuDxgkrnl, isPreemptingDpc: false };
+    }
+    if (netDriver) {
+      return { bucket: 'network_ipc', driver: netDriver, isPreemptingDpc: false };
+    }
+    if (fsDriver) {
+      return { bucket: 'cached_io', driver: fsDriver, isPreemptingDpc: false };
+    }
+
+    // Tier 2: ntoskrnl.pdb prefixes / syscall frames (walked entry -> leaf so memcpy is attributed to caller)
+    for (const f of walkFrames) {
+      const sym = frameSymbolName(f);
+      if (CACHED_IO_FRAME_RE.test(sym)) {
+        return { bucket: 'cached_io', driver: f.module || 'ntoskrnl.exe', isPreemptingDpc: false };
+      }
+      if (MEM_MGR_FRAME_RE.test(sym)) {
+        return { bucket: 'memory_manager', driver: f.module || 'ntoskrnl.exe', isPreemptingDpc: false };
+      }
+      if (SCHED_SYNC_FRAME_RE.test(sym)) {
+        return { bucket: 'scheduler_sync', driver: f.module || 'ntoskrnl.exe', isPreemptingDpc: false };
+      }
+    }
+
+    return {
+      bucket: 'other_kernel',
+      driver: leaf.module || 'ntoskrnl.exe',
+      isPreemptingDpc: false
+    };
+  }
+
+  class KernelSysBreakdown {
+    constructor(opts = {}) {
+      this.targetPid = opts.targetPid ?? null;
+      this.reset(this.targetPid);
+    }
+
+    _makeEmptyState() {
+      const counts = {};
+      const driversByBucket = {};
+      for (const b of KERNEL_SYS_BUCKETS) {
+        counts[b.id] = 0;
+        driversByBucket[b.id] = new Map();
+      }
+      return {
+        targetSysSamples: 0,
+        preemptingDpcSamples: 0,
+        totalKernelSamples: 0,
+        counts,
+        driversByBucket
+      };
+    }
+
+    reset(targetPid = this.targetPid) {
+      this.targetPid = targetPid;
+      this.global = this._makeEmptyState();
+      this.byTid = new Map();
+    }
+
+    _applyTo(st, cls, weight) {
+      st.totalKernelSamples += weight;
+      if (cls.isPreemptingDpc) {
+        st.preemptingDpcSamples += weight;
+      } else {
+        st.targetSysSamples += weight;
+      }
+      st.counts[cls.bucket] = (st.counts[cls.bucket] || 0) + weight;
+      if (cls.driver) {
+        const dm = st.driversByBucket[cls.bucket];
+        if (dm) dm.set(cls.driver, (dm.get(cls.driver) || 0) + weight);
+      }
+    }
+
+    recordSample(stackFrames, opts = {}) {
+      const cls = classifyKernelStack(stackFrames, opts);
+      if (!cls) return null;
+      const weight = Math.max(1, Number(opts.weight) || 1);
+      this._applyTo(this.global, cls, weight);
+
+      const tid = opts.tid ?? null;
+      if (tid !== null && tid !== undefined) {
+        let tb = this.byTid.get(tid);
+        if (!tb) {
+          tb = this._makeEmptyState();
+          this.byTid.set(tid, tb);
+        }
+        this._applyTo(tb, cls, weight);
+      }
+      return cls;
+    }
+
+    _topDriver(driverMap, denom) {
+      if (!driverMap || driverMap.size === 0) return null;
+      let bestName = null;
+      let bestSamples = 0;
+      for (const [name, cnt] of driverMap.entries()) {
+        if (cnt > bestSamples) {
+          bestSamples = cnt;
+          bestName = name;
+        }
+      }
+      if (!bestName) return null;
+      return {
+        name: bestName,
+        samples: bestSamples,
+        pct: denom > 0 ? (bestSamples / denom) * 100.0 : 0.0
+      };
+    }
+
+    getSummary(opts = {}) {
+      const tid = opts.tid ?? null;
+      const st = (tid !== null && tid !== undefined) ? this.byTid.get(tid) : this.global;
+      if (!st || st.totalKernelSamples <= 0) {
+        const emptyBuckets = {};
+        for (const b of KERNEL_SYS_BUCKETS) {
+          emptyBuckets[b.id] = { id: b.id, label: b.label, shortLabel: b.shortLabel, samples: 0, pct: 0, topDriver: null };
+        }
+        return {
+          targetSysSamples: 0,
+          preemptingDpcSamples: 0,
+          totalKernelSamples: 0,
+          buckets: emptyBuckets,
+          rows: [],
+          topDpcDriver: null,
+          topAvDriver: null,
+          topGpuDriver: null,
+          topStorageDriver: null,
+          topCachedDriver: null
+        };
+      }
+
+      const targetDenom = Math.max(1, st.targetSysSamples);
+      const totalDenom = Math.max(1, st.totalKernelSamples);
+      const buckets = {};
+      const rows = [];
+
+      for (const b of KERNEL_SYS_BUCKETS) {
+        const samples = st.counts[b.id] || 0;
+        const isDpc = b.id === 'preempting_dpc_isr';
+        // Preempting DPC/ISR share is measured against total kernel samples (never polluting target syscall buckets)
+        const pct = isDpc
+          ? (samples / totalDenom) * 100.0
+          : (st.targetSysSamples > 0 ? (samples / targetDenom) * 100.0 : 0.0);
+        const topDriver = this._topDriver(st.driversByBucket[b.id], Math.max(1, samples));
+        const entry = {
+          id: b.id,
+          label: b.label,
+          shortLabel: b.shortLabel,
+          samples,
+          pct,
+          topDriver
+        };
+        buckets[b.id] = entry;
+        if (!isDpc && samples > 0) rows.push(entry);
+      }
+
+      rows.sort((a, b) => b.samples - a.samples);
+      return {
+        targetSysSamples: st.targetSysSamples,
+        preemptingDpcSamples: st.preemptingDpcSamples,
+        totalKernelSamples: st.totalKernelSamples,
+        buckets,
+        rows,
+        topDpcDriver: this._topDriver(st.driversByBucket.preempting_dpc_isr, Math.max(1, st.preemptingDpcSamples)),
+        topAvDriver: this._topDriver(st.driversByBucket.av_minifilter, Math.max(1, st.counts.av_minifilter || 0)),
+        topGpuDriver: this._topDriver(st.driversByBucket.gpu_driver, Math.max(1, st.counts.gpu_driver || 0)),
+        topStorageDriver: this._topDriver(st.driversByBucket.physical_storage, Math.max(1, st.counts.physical_storage || 0)),
+        topCachedDriver: this._topDriver(st.driversByBucket.cached_io, Math.max(1, st.counts.cached_io || 0))
+      };
+    }
+  }
+
+  class DiskIoEtwAggregator {
+    constructor(opts = {}) {
+      this.targetPid = opts.targetPid ?? null;
+      this.reset(this.targetPid);
+    }
+
+    reset(targetPid = this.targetPid) {
+      this.targetPid = targetPid;
+      this.readBytes = 0;
+      this.writeBytes = 0;
+      this.readOps = 0;
+      this.writeOps = 0;
+      this.latencyMsSum = 0;
+      this.totalOps = 0;
+    }
+
+    recordEvent(ev) {
+      if (!ev) return;
+      if (this.targetPid !== null && ev.pid !== undefined && ev.pid !== this.targetPid) return;
+      const bytes = Math.max(0, Number(ev.bytes) || 0);
+      const ops = Math.max(1, Number(ev.ops) || 1);
+      const latMs = Math.max(0, Number(ev.latencyMs) || 0);
+      if (ev.op === 'write') {
+        this.writeBytes += bytes;
+        this.writeOps += ops;
+      } else {
+        this.readBytes += bytes;
+        this.readOps += ops;
+      }
+      this.latencyMsSum += latMs * ops;
+      this.totalOps += ops;
+    }
+
+    getRates(elapsedSec = 1.0) {
+      const dt = Math.max(0.001, Number(elapsedSec) || 1.0);
+      return {
+        physReadMbS: (this.readBytes / (1024 * 1024)) / dt,
+        physWriteMbS: (this.writeBytes / (1024 * 1024)) / dt,
+        physReadIops: this.readOps / dt,
+        physWriteIops: this.writeOps / dt,
+        avgDiskLatMs: this.totalOps > 0 ? this.latencyMsSum / this.totalOps : 0.0,
+        totalOps: this.totalOps
+      };
+    }
+  }
 
   const BURST_PROFILES = Object.freeze([
     {
@@ -941,7 +1315,8 @@
         ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_PROFILE |
         ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_CSWITCH |
         ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_DISPATCHER |
-        ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_IMAGE_LOAD;
+        ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_IMAGE_LOAD |
+        ETW_KERNEL_FLAGS.EVENT_TRACE_FLAG_DISK_IO;
       this.stackWalkEnabled = ['SampledProfile', 'CSwitch', 'ReadyThread'];
       this.running = false;
       this.paused = false;
@@ -949,6 +1324,8 @@
       this.resolver = null;
       this.onCpu = new CallTreeAggregator({ maxNodes: this.maxNodes });
       this.offCpu = new OffCpuAggregator();
+      this.kernelSys = new KernelSysBreakdown();
+      this.diskIoEtw = new DiskIoEtwAggregator();
       this.controlStopCount = 0;
     }
 
@@ -957,6 +1334,8 @@
       this.resolver = resolver || new SymbolResolver(pid);
       this.onCpu.reset();
       this.offCpu.reset(pid);
+      this.kernelSys.reset(pid);
+      this.diskIoEtw.reset(pid);
       this.running = pid !== null && pid !== undefined;
     }
 
@@ -968,6 +1347,8 @@
     clear() {
       this.onCpu.reset();
       this.offCpu.reset(this.targetPid);
+      this.kernelSys.reset(this.targetPid);
+      this.diskIoEtw.reset(this.targetPid);
     }
 
     // Guaranteed ControlTraceW(EVENT_TRACE_CONTROL_STOP) cleanup
@@ -978,20 +1359,34 @@
       }
     }
 
+    _resolveFrame(f) {
+      if (!f) return f;
+      if (f.key) return f;
+      if (this.resolver) {
+        if (f.va !== undefined && f.va !== null && !f.module) {
+          return this.resolver.resolveAddress(f.va);
+        }
+        return this.resolver.resolve(f.module, f.rva);
+      }
+      return f;
+    }
+
     ingestSampledProfile(ev) {
       if (!this.running || this.paused || !ev) return;
       if (this.targetPid !== null && ev.pid !== this.targetPid) return;
-      const frames = (ev.stack || []).map(f =>
-        f.key ? f : (this.resolver ? this.resolver.resolve(f.module, f.rva) : f)
-      );
+      const frames = (ev.stack || []).map(f => this._resolveFrame(f));
       this.onCpu.recordSample(frames, { tid: ev.tid, weight: ev.weight || 1, leafFirst: Boolean(ev.leafFirst) });
+      this.kernelSys.recordSample(frames, { tid: ev.tid, weight: ev.weight || 1, leafFirst: Boolean(ev.leafFirst) });
+    }
+
+    ingestDiskIo(ev) {
+      if (!this.running || this.paused || !ev) return;
+      this.diskIoEtw.recordEvent(ev);
     }
 
     ingestOffCpuPair(outEv, readyEv, inEv) {
       if (!this.running || this.paused) return;
-      const resolveStack = (stk) => (stk || []).map(f =>
-        f.key ? f : (this.resolver ? this.resolver.resolve(f.module, f.rva) : f)
-      );
+      const resolveStack = (stk) => (stk || []).map(f => this._resolveFrame(f));
       this.offCpu.onCSwitchOut({ ...outEv, stack: resolveStack(outEv.stack) });
       if (readyEv) this.offCpu.onReadyThread(readyEv);
       this.offCpu.onCSwitchIn(inEv);
@@ -1000,6 +1395,11 @@
 
   Object.assign(Z, {
     ETW_KERNEL_FLAGS,
+    KERNEL_SYS_BUCKETS,
+    isKernelFrame,
+    classifyKernelStack,
+    KernelSysBreakdown,
+    DiskIoEtwAggregator,
     BURST_PROFILES,
     getBurstProfile,
     buildUprofReportCommand,

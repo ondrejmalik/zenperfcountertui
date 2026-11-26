@@ -344,7 +344,30 @@
       </div>
     `;
 
-    el.innerHTML = line1 + line2 + line3;
+    let line4 = '';
+    const etw = state.profiler && state.profiler.etwSession;
+    if (proc && etw && etw.targetPid === proc.pid && etw.kernelSys) {
+      const selThread = state.profiler.scopeMode === 'thread' ? getSelectedThreadForProcess(proc) : null;
+      const kSum = etw.kernelSys.getSummary({ tid: selThread ? selThread.tid : null });
+      if (kSum && kSum.totalKernelSamples > 0) {
+        const topParts = kSum.rows.slice(0, 4).map(b => {
+          const drv = (b.topDriver && b.topDriver.name && b.topDriver.name !== 'ntoskrnl.exe') ? ` (${escapeHtml(b.topDriver.name)})` : '';
+          const cls = b.pct >= 40 ? 'c-yellow c-bright' : (b.pct >= 25 ? 'c-cyan' : 'c-fg');
+          return `<span class="${cls}">${escapeHtml(b.shortLabel)} ${b.pct.toFixed(0)}%</span><span class="c-dim">${drv}</span>`;
+        });
+        if (kSum.preemptingDpcSamples > 0 && kSum.topDpcDriver) {
+          topParts.push(`<span class="c-red">DPC/ISR ${kSum.buckets.preempting_dpc_isr.pct.toFixed(0)}%</span> <span class="c-dim">(${escapeHtml(kSum.topDpcDriver.name)} isolated)</span>`);
+        }
+        line4 = `
+          <div class="prof-ctx-row">
+            <span class="c-dim">Kernel sys%</span>
+            <span>${topParts.join(' <span class="sep">│</span> ')} <span class="c-dim">(${kSum.targetSysSamples} sys samples)</span></span>
+          </div>
+        `;
+      }
+    }
+
+    el.innerHTML = line1 + line2 + line3 + line4;
     const scBtn = document.getElementById('btn-prof-sidecar');
     if (scBtn) scBtn.onclick = () => Z.toggleProfilerSidecarMap();
   }

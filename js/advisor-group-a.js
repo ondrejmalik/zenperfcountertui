@@ -8,7 +8,7 @@
 
   function evaluateGroupARules(ctx) {
     const {
-      proc, minSamples = CONFIG.advisor.minSamples, profCtx,
+      proc, minSamples = CONFIG.advisor.minSamples, profCtx, kernelSys,
       threadRollingWindow = [], presentRollingWindow = [],
       hasItlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
       avgGpu3dPct, avgCoreDpc, avgCoreIrq, avgCoreIrqRate,
@@ -16,7 +16,8 @@
       avgCtxSw, avgSyncWaitPct, topWaitReason,
       priorityClass, ecoQos, seLockMemoryPrivilege, bgList,
       presentStats, spikeCorrelation, vaMap,
-      avgReadMbS, avgReadIops,
+      avgReadMbS, avgReadIops, avgWriteIops = 0,
+      avgPhysReadMbS = null, avgPhysReadIops = null, avgDiskLatMs = null,
       pushFinding, pushHealthy
     } = ctx;
 
@@ -89,6 +90,16 @@
     if (worstDpcCol) {
       const cpuTag = 'C' + String(worstDpcCol.cpu).padStart(2, '0');
       const isHi = worstDpcCol.total >= 8.0;
+      const dpcDriver = (kernelSys && kernelSys.topDpcDriver && (kernelSys.preemptingDpcSamples || 0) >= 10)
+        ? kernelSys.topDpcDriver
+        : null;
+      const driverSuffix = dpcDriver ? ` [${dpcDriver.name}]` : '';
+      const driverWhy = dpcDriver
+        ? ` SampledProfile kernel stack isolation above KiRetireDpcList / KiInterruptDispatch pinpoints ${dpcDriver.name} (${dpcDriver.pct.toFixed(0)}% of preempting DPC/ISR samples).`
+        : '';
+      const driverAction = dpcDriver
+        ? `Shift ${dpcDriver.name}'s MSI interrupt affinity off ${cpuTag} (Interrupt Affinity Policy Tool) or update ${dpcDriver.name}; alternatively pin the target's main thread to a quiet logical CPU.`
+        : `Shift GPU, NIC, or USB MSI interrupt affinity off ${cpuTag} (Interrupt Affinity Policy Tool) or pin the target's main thread to a quiet logical CPU.`;
       pushFinding({
         id: 'dpc_irq_collision',
         category: 'OsKernelChurn',
@@ -96,15 +107,17 @@
         scope: '[OS / TUI]',
         confidence: 'HIGH',
         impact: isHi ? 0.42 : 0.16,
-        title: `DPC/IRQ collision on hot CPU ${cpuTag} (${worstDpcCol.total.toFixed(1)}% while ${worstDpcCol.c0.toFixed(0)}% C0)`,
-        keyMetric: `${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ @ ${worstDpcCol.c0.toFixed(0)}% C0`,
+        title: `DPC/IRQ collision on hot CPU ${cpuTag}${driverSuffix} (${worstDpcCol.total.toFixed(1)}% while ${worstDpcCol.c0.toFixed(0)}% C0)`,
+        keyMetric: dpcDriver
+          ? `${cpuTag}: ${worstDpcCol.total.toFixed(1)}% (${dpcDriver.name}) @ ${worstDpcCol.c0.toFixed(0)}% C0`
+          : `${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ @ ${worstDpcCol.c0.toFixed(0)}% C0`,
         estGain: {
           kind: 'qualitative',
           label: '1% lows / jitter',
           detail: 'Qualitative: eliminates ISR/DPC kernel preemption and L1/L2 cache eviction on the active thread core'
         },
-        why: `SystemProcessorPerformanceInformation reports ${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ (DPC ${worstDpcCol.dpc.toFixed(1)}% + IRQ ${worstDpcCol.irq.toFixed(1)}%, ${Math.round(worstDpcCol.irqRate).toLocaleString()} IRQ/s) while running ${worstDpcCol.c0.toFixed(0)}% C0 active load.`,
-        action: `Shift GPU, NIC, or USB MSI interrupt affinity off ${cpuTag} (Interrupt Affinity Policy Tool) or pin the target's main thread to a quiet logical CPU.`,
+        why: `SystemProcessorPerformanceInformation reports ${cpuTag}: ${worstDpcCol.total.toFixed(1)}% DPC+IRQ (DPC ${worstDpcCol.dpc.toFixed(1)}% + IRQ ${worstDpcCol.irq.toFixed(1)}%, ${Math.round(worstDpcCol.irqRate).toLocaleString()} IRQ/s) while running ${worstDpcCol.c0.toFixed(0)}% C0 active load.${driverWhy}`,
+        action: driverAction,
         cascade: `Reduces frame-time spikes and prevents L1/L2 cache eviction caused by kernel ISR/DPC preemption.`,
         quickJumpTab: 1,
         openCcx: true
@@ -332,30 +345,146 @@
       });
     }
 
-    // --- GROUP A RULE 10: Disk I/O Asset-Streaming / Shader-Cache Stall ---
+    // Kernel SampledProfile sys% evidence gate (avgSys >= 8% and >= 100 non-DPC target kernel samples)
+    const hasKernelSys = Boolean(proc && kernelSys && avgSys >= 8.0 && (kernelSys.targetSysSamples || 0) >= 100);
+    const kBuckets = (kernelSys && kernelSys.buckets) ? kernelSys.buckets : {};
+    const physStoragePct = hasKernelSys ? (kBuckets.physical_storage?.pct || 0) : 0;
+    const cachedIoPct = hasKernelSys ? (kBuckets.cached_io?.pct || 0) : 0;
+    const netIpcPct = hasKernelSys ? (kBuckets.network_ipc?.pct || 0) : 0;
+    const avFilterPct = hasKernelSys ? (kBuckets.av_minifilter?.pct || 0) : 0;
+    const gpuKmdPct = hasKernelSys ? (kBuckets.gpu_driver?.pct || 0) : 0;
+
+    // --- GROUP A RULE 10a: Physical Disk / Asset-Streaming Stall (DiskIo ETW + stornvme.sys / WrPageIn / Hard Faults) ---
     const hasFrametimeSpikes = Boolean(spikeCorrelation && spikeCorrelation.totalSpikes > 0);
-    if (proc && (avgReadMbS >= 50.0 || avgReadIops >= 1000.0) && (hasFrametimeSpikes || avgSys >= 15.0 || topWaitReason === 'WrPageIn')) {
+    const hasDiskEtw = avgPhysReadMbS !== null && avgPhysReadMbS !== undefined;
+    const totalLogicalIops = (Number(avgReadIops) || 0) + (Number(avgWriteIops) || 0);
+    const cachedOrPipeShare = cachedIoPct + netIpcPct;
+    const isPureCachedIo = Boolean(
+      hasDiskEtw &&
+      avgPhysReadMbS < 5.0 &&
+      (avgPhysReadIops || 0) < 50.0 &&
+      cachedOrPipeShare >= 30.0 &&
+      topWaitReason !== 'WrPageIn' &&
+      avgHardPageReads < 20.0
+    );
+    const hasPhysicalDiskLoad = hasDiskEtw
+      ? (avgPhysReadMbS >= 25.0 || (avgPhysReadIops || 0) >= 250.0)
+      : (avgReadMbS >= 50.0 || avgReadIops >= 1000.0);
+    const hasStorageKernelProof = (hasKernelSys && physStoragePct >= 20.0) || topWaitReason === 'WrPageIn' || avgHardPageReads >= 20.0;
+
+    if (proc && !isPureCachedIo && ((hasPhysicalDiskLoad && (hasFrametimeSpikes || avgSys >= 15.0 || topWaitReason === 'WrPageIn' || hasStorageKernelProof)) || (hasStorageKernelProof && hasFrametimeSpikes))) {
       const triggerNote = hasFrametimeSpikes
         ? `${spikeCorrelation.totalSpikes} frametime spike(s) >2x median`
-        : (topWaitReason === 'WrPageIn' ? 'WrPageIn wait dominance' : `elevated sys ${avgSys.toFixed(1)}%`);
+        : (topWaitReason === 'WrPageIn'
+          ? 'WrPageIn wait dominance'
+          : (physStoragePct >= 20.0 ? `${physStoragePct.toFixed(0)}% sys in ${kernelSys.topStorageDriver?.name || 'stornvme.sys'}` : `elevated sys ${avgSys.toFixed(1)}%`));
+      const dispMbS = hasDiskEtw ? avgPhysReadMbS : avgReadMbS;
+      const dispIops = hasDiskEtw ? (avgPhysReadIops || 0) : avgReadIops;
+      const latNote = (hasDiskEtw && avgDiskLatMs > 0) ? `, avg ${avgDiskLatMs.toFixed(2)} ms IRP` : '';
+      const storageDriverNote = physStoragePct >= 20.0
+        ? ` Kernel SampledProfile confirms ${physStoragePct.toFixed(1)}% of target sys time in physical storage (${kernelSys.topStorageDriver?.name || 'stornvme.sys'}).`
+        : '';
       pushFinding({
         id: 'disk_io_streaming_stall',
         category: 'OsKernelChurn',
-        severity: 'MD',
+        severity: (hasDiskEtw && dispMbS >= 80.0 && hasFrametimeSpikes) ? 'HI' : 'MD',
         scope: '[OS / HW]',
         confidence: 'HIGH',
         impact: 0.24,
-        title: `Asset-streaming disk I/O stall (${avgReadMbS.toFixed(0)} MB/s, ${Math.round(avgReadIops).toLocaleString()} read IOPS)`,
-        keyMetric: `Read ${avgReadMbS.toFixed(0)} MB/s | ${Math.round(avgReadIops).toLocaleString()} IOPS`,
+        title: `Physical disk / asset-streaming stall (${dispMbS.toFixed(0)} MB/s, ${Math.round(dispIops).toLocaleString()} read IOPS)`,
+        keyMetric: `${hasDiskEtw ? 'Phys ' : 'Read '}${dispMbS.toFixed(0)} MB/s | ${Math.round(dispIops).toLocaleString()} IOPS`,
         estGain: {
           kind: 'qualitative',
           label: 'Isolates I/O hitch',
-          detail: 'Qualitative: separates storage streaming / shader-cache hitches from CPU/RAM micro-arch stalls'
+          detail: 'Qualitative: separates physical storage streaming / shader-cache hitches from CPU/RAM micro-arch stalls'
         },
-        why: `GetProcessIoCounters shows ${proc.name} reading ${avgReadMbS.toFixed(1)} MB/s (${Math.round(avgReadIops).toLocaleString()} read IOPS) coinciding with ${triggerNote}.`,
-        action: `Treat these hitches as storage asset-streaming or shader-cache compilation stalls rather than CPU IPC or RAM timing bottlenecks. Move game/shader cache to NVMe SSD, pre-compile shaders, or check antivirus I/O exclusions.`,
-        cascade: `Prevents misattributing storage I/O hitches to CPU/RAM timings and eliminates streaming stutter.`,
+        why: `${hasDiskEtw ? `EVENT_TRACE_FLAG_DISK_IO reports ${proc.name} issuing ${dispMbS.toFixed(1)} MB/s physical disk reads (${Math.round(dispIops).toLocaleString()} IOPS${latNote}; logical ${avgReadMbS.toFixed(1)} MB/s)` : `GetProcessIoCounters shows ${proc.name} reading ${avgReadMbS.toFixed(1)} MB/s (${Math.round(avgReadIops).toLocaleString()} read IOPS)`} coinciding with ${triggerNote}.${storageDriverNote}`,
+        action: `Treat these hitches as physical storage asset-streaming or shader-cache compilation stalls rather than CPU IPC or RAM timing bottlenecks. Move assets/shader cache to NVMe SSD, pre-compile shaders, or use async streaming queues.`,
+        cascade: `Prevents misattributing physical storage I/O hitches to CPU/RAM timings and eliminates streaming stutter.`,
         quickJumpTab: 4
+      });
+    }
+
+    // --- GROUP A RULE 10b: Cached I/O / Pipe Syscall Overhead (Logical I/O >> Physical DiskIo + Cc*/ntfs.sys/npfs.sys/afd.sys) ---
+    if (
+      hasKernelSys &&
+      hasDiskEtw &&
+      totalLogicalIops >= 1000.0 &&
+      avgPhysReadMbS < Math.max(5.0, avgReadMbS * 0.15) &&
+      (avgPhysReadIops || 0) < Math.max(100.0, totalLogicalIops * 0.15) &&
+      cachedOrPipeShare >= 30.0
+    ) {
+      const topIoDriver = (cachedIoPct >= netIpcPct)
+        ? (kernelSys.topCachedDriver?.name || 'ntfs.sys / Cc*')
+        : (kBuckets.network_ipc?.topDriver?.name || 'npfs.sys / afd.sys');
+      pushFinding({
+        id: 'cached_io_pipe_syscall_overhead',
+        category: 'OsKernelChurn',
+        severity: (avgSys >= 15.0 && cachedOrPipeShare >= 45.0) ? 'HI' : 'MD',
+        scope: '[Code / OS]',
+        confidence: 'HIGH',
+        impact: avgSys >= 15.0 ? 0.34 : 0.22,
+        title: `Cached RAM I/O / pipe syscall overhead (${cachedOrPipeShare.toFixed(0)}% sys in ${topIoDriver}, ${avgPhysReadMbS.toFixed(1)} MB/s phys)`,
+        keyMetric: `Log ${Math.round(totalLogicalIops).toLocaleString()} ops/s vs Phys ${avgPhysReadMbS.toFixed(1)} MB/s | ${cachedOrPipeShare.toFixed(0)}% sys`,
+        estGain: {
+          kind: 'qualitative',
+          label: '-sys% / 16x syscalls',
+          detail: 'Qualitative: cuts user-to-kernel syscall transitions and page-cache memcpy overhead on cached files or pipes'
+        },
+        why: `GetProcessIoCounters shows ${avgReadMbS.toFixed(1)} MB/s (${Math.round(totalLogicalIops).toLocaleString()} logical ops/s >= 1,000/s) while EVENT_TRACE_FLAG_DISK_IO records only ${avgPhysReadMbS.toFixed(1)} MB/s (${Math.round(avgPhysReadIops || 0)} IOPS) hitting physical storage. Simultaneously, ${cachedOrPipeShare.toFixed(1)}% (>=30%) of ${proc.name}'s ${kernelSys.targetSysSamples} target kernel samples land in Cached I/O (${cachedIoPct.toFixed(1)}%, Cc*/ntfs.sys) + Network/Pipes (${netIpcPct.toFixed(1)}%, npfs.sys/afd.sys) at ${avgSys.toFixed(1)}% sys CPU - proving kernel-bound cached/pipe syscall churn rather than a slow SSD.`,
+        action: `Batch reads/writes into larger user-space buffers (e.g. 64 KiB instead of 4 KiB loops to cut syscall rate 16x) or memory-map (mmap / CreateFileMapping) read-only assets instead of repeated ReadFile calls.`,
+        cascade: `Slashes kernel syscall transition overhead (sys%) and removes redundant CcCopyRead / pipe buffer copies.`,
+        quickJumpTab: 7
+      });
+    }
+
+    // --- GROUP A RULE 10c: AV / Minifilter Tax (WdFilter.sys / fltmgr.sys / Anti-Cheat Filter >= 25% sys) ---
+    if (hasKernelSys && avFilterPct >= 25.0) {
+      const avDriverName = kernelSys.topAvDriver ? kernelSys.topAvDriver.name : 'fltmgr.sys';
+      const isHi = avFilterPct >= 40.0 || avgSys >= 18.0;
+      pushFinding({
+        id: 'av_minifilter_overhead',
+        category: 'OsKernelChurn',
+        severity: isHi ? 'HI' : 'MD',
+        scope: '[OS / TUI]',
+        confidence: 'HIGH',
+        impact: isHi ? 0.36 : 0.23,
+        title: `AV / minifilter kernel tax: ${avDriverName} (${avFilterPct.toFixed(1)}% of target sys%)`,
+        keyMetric: `${avDriverName} ${avFilterPct.toFixed(1)}% sys | cpuSys ${avgSys.toFixed(1)}%`,
+        estGain: {
+          kind: 'qualitative',
+          label: '-sys% / build & load',
+          detail: 'Qualitative: removes synchronous AV/minifilter file & handle inspection stalls on hot asset/build paths'
+        },
+        why: `SampledProfile kernel stack classification attributes ${avFilterPct.toFixed(1)}% (>=25%) of ${proc.name}'s ${kernelSys.targetSysSamples} target kernel samples to AV/minifilter driver ${avDriverName} (cpuSys ${avgSys.toFixed(1)}% >= 8%), proving real-time file/handle scanning is stalling file opens and reads.`,
+        action: `Add a Windows Defender / antivirus exclusion for ${proc.name}'s build output, shader cache, or asset directories (if ${avDriverName} is Defender/AV rather than required game anti-cheat).`,
+        cascade: `Eliminates synchronous minifilter I/O inspection overhead, cutting sys% CPU and load/compile wall-clock time.`,
+        quickJumpTab: 7
+      });
+    }
+
+    // --- GROUP A RULE 10d: GPU Kernel Submission Overhead (dxgkrnl.sys + GPU KMD >= 40% sys while !gpuBound) ---
+    if (hasKernelSys && !gpuBound && gpuKmdPct >= 40.0) {
+      const gpuDriverName = kernelSys.topGpuDriver ? kernelSys.topGpuDriver.name : 'dxgkrnl.sys';
+      const isHi = gpuKmdPct >= 55.0 || avgSys >= 18.0;
+      pushFinding({
+        id: 'gpu_kernel_submission_overhead',
+        category: 'OsKernelChurn',
+        severity: isHi ? 'HI' : 'MD',
+        scope: '[Code / OS]',
+        confidence: 'HIGH',
+        impact: isHi ? 0.35 : 0.22,
+        title: `GPU kernel submission overhead: dxgkrnl.sys / ${gpuDriverName} (${gpuKmdPct.toFixed(1)}% of sys%)`,
+        keyMetric: `${gpuDriverName} ${gpuKmdPct.toFixed(1)}% sys | cpuSys ${avgSys.toFixed(1)}%`,
+        estGain: {
+          kind: 'qualitative',
+          label: 'Render-thread CPU',
+          detail: 'Qualitative: cuts kernel-mode D3D11/DX12/Vulkan command submission and dynamic allocation overhead'
+        },
+        why: `While the GPU is not saturated, ${gpuKmdPct.toFixed(1)}% (>=40%) of ${proc.name}'s ${kernelSys.targetSysSamples} target kernel samples land inside GPU/display kernel modules (dxgkrnl.sys / dxgmms2.sys / ${gpuDriverName}) at ${avgSys.toFixed(1)}% sys CPU.`,
+        action: `Batch small draw calls and command-list submissions (instancing / indirect draws / fewer SubmitCommand calls per frame) and pool dynamic GPU buffers instead of creating/destroying resources mid-frame on the render thread.`,
+        cascade: `Cuts D3DKMT kernel transitions and frees render-thread CPU cycles so frames reach the GPU faster.`,
+        quickJumpTab: 7
       });
     }
 

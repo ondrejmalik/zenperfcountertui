@@ -3,6 +3,17 @@
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
 
+  const KERNEL_ADDR_MIN = 0xFFFF800000000000n;
+
+  function isKernelAddress(addr) {
+    if (addr === null || addr === undefined) return false;
+    try {
+      return BigInt(addr) >= KERNEL_ADDR_MIN;
+    } catch (_err) {
+      return false;
+    }
+  }
+
   function parseRva(val) {
     if (typeof val === 'number' && Number.isFinite(val)) return Math.max(0, Math.floor(val));
     if (typeof val === 'bigint') return Number(val);
@@ -101,6 +112,9 @@
         name: modDesc.name,
         base: modDesc.base ?? 0n,
         sizeBytes: modDesc.sizeBytes || Math.round((modDesc.sizeMiB || 4) * 1024 * 1024),
+        isKernel: Boolean(modDesc.isKernel ?? isKernelAddress(modDesc.base ?? 0n)),
+        rsdsGuid: modDesc.rsdsGuid || null,
+        rsdsAge: modDesc.rsdsAge ?? null,
         pdbLoaded: Boolean(modDesc.pdbLoaded ?? pdbSymbols.length > 0),
         pdbPath: modDesc.pdbPath || null,
         pdbSymbols,
@@ -108,6 +122,24 @@
         pdata
       });
       this.invalidateModule(modDesc.name);
+    }
+
+    // Load NtQuerySystemInformation(SystemModuleInformation, class 0x0B) kernel image snapshot (base + sizeBytes)
+    loadKernelModules(kernelModules = []) {
+      let count = 0;
+      for (const km of kernelModules || []) {
+        if (!km || !km.name) continue;
+        const baseBig = BigInt(km.base ?? 0n);
+        const sizeBytes = Number(km.sizeBytes ?? km.imageSize) || Math.round((km.sizeMiB || 1) * 1024 * 1024);
+        this.onModuleLoad({
+          ...km,
+          base: baseBig,
+          sizeBytes,
+          isKernel: true
+        });
+        count += 1;
+      }
+      return count;
     }
 
     onModuleUnload(moduleName) {
@@ -187,6 +219,7 @@
 
       const canonicalMod = mod ? mod.name : moduleName;
       const baseAddr = mod ? mod.base : 0n;
+      const isKernelMod = Boolean(mod ? mod.isKernel : (isKernelAddress(baseAddr) || /\.sys$/i.test(canonicalMod) || /^ntoskrnl\.exe$/i.test(canonicalMod) || /^hal\.dll$/i.test(canonicalMod)));
       let resolved = null;
 
       // Tier 1: PDB Symbols (SymFromAddrW + SymGetLineFromAddrW64)
@@ -296,6 +329,11 @@
         };
       }
 
+      if (resolved) {
+        resolved.isKernel = isKernelMod;
+        resolved.va = baseAddr > 0n ? (BigInt(baseAddr) + BigInt(rva)) : 0n;
+      }
+
       this.cache.set(cacheKey, resolved);
       return resolved;
     }
@@ -313,6 +351,8 @@
       return {
         module: 'unknown',
         base: 0n,
+        va,
+        isKernel: isKernelAddress(va),
         rva: 0,
         fnStartRva: 0,
         fnEndRva: 0,
@@ -357,6 +397,8 @@
   }
 
   Object.assign(Z, {
+    KERNEL_ADDR_MIN,
+    isKernelAddress,
     parseRva,
     fmtHexRva,
     binarySearchRange,
