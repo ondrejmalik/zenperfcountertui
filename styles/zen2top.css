@@ -258,7 +258,7 @@ html, body {
   text-overflow: ellipsis;
 }
 
-/* GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with Shift+K, mirrors .ccx-strip density) */
+/* GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with 'k', mirrors .ccx-strip density) */
 .kernel-strip {
   display: none;
   padding: 5px 12px 6px 12px;

@@ -74,7 +74,7 @@
     </div>
   </div>
 
-  <!-- GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with 'K' / Shift+K, opens above everything on EVERY tab) -->
+  <!-- GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with 'k', opens above everything on EVERY tab) -->
   <div class="kernel-strip" id="kernel-strip">
     <div class="kernel-strip-header" id="kernel-strip-header"></div>
     <div class="kernel-strip-bar" id="kernel-strip-bar"></div>
@@ -599,7 +599,7 @@
 
   </div>
 
-  <!-- BOTTOM CHROME (1 line, max 7 items) -->
+  <!-- BOTTOM CHROME (1 line) -->
   <div class="bottom-line">
     <div class="keybar">
       <button class="key-btn" data-action="tabs"><span class="k">1-7</span> Tabs</button>
@@ -607,10 +607,11 @@
       <button class="key-btn" data-action="mux"><span class="k">m</span> Packs</button>
       <button class="key-btn" data-action="baseline"><span class="k">b</span> Baseline</button>
       <button class="key-btn" data-action="ccx"><span class="k">c</span> CCX</button>
+      <button class="key-btn" data-action="kernel" title="Toggle global Kernel sys% breakdown strip (k)"><span class="k">k</span> Kernel</button>
       <button class="key-btn" data-action="help"><span class="k">?</span> Help</button>
       <button class="key-btn" data-action="quit"><span class="k">q</span> Quit</button>
     </div>
-    <div id="bottom-hint" class="c-muted">Space Pause │ j/k Scroll │ K Kernel │ d Detach</div>
+    <div id="bottom-hint" class="c-muted">Space Pause │ ↑/↓ Scroll │ d Detach</div>
   </div>
 
   <div class="toast" id="toast"></div>

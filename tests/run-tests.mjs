@@ -116,12 +116,13 @@ if (!(ccxIdx > 0 && krnlIdx > ccxIdx && mainPaneIdx > krnlIdx)) {
   process.exit(1);
 }
 const keybarMatch = html.match(/<div class="keybar">([\s\S]*?)<\/div>/);
-const keybarButtons = keybarMatch ? (keybarMatch[1].match(/class="key-btn"/g) || []).length : 0;
-if (keybarButtons > 7) {
-  console.error('[FAIL] .keybar exceeded 7-item limit:', keybarButtons);
+const keybarHtml = keybarMatch ? keybarMatch[1] : '';
+const keybarButtons = (keybarHtml.match(/class="key-btn"/g) || []).length;
+if (!keybarHtml.includes('data-action="kernel"') || !keybarHtml.includes('<span class="k">k</span> Kernel') || keybarHtml.indexOf('data-action="kernel"') < keybarHtml.indexOf('data-action="ccx"')) {
+  console.error('[FAIL] .keybar must include clickable k Kernel button next to c CCX');
   process.exit(1);
 }
-console.log('[PASS] HTML structure, #kernel-strip placement, keybar (' + keybarButtons + '/7), & script wiring verified (' + requiredIds.length + ' checks)');
+console.log('[PASS] HTML structure, #kernel-strip placement, keybar (' + keybarButtons + ' buttons incl. k Kernel), & script wiring verified (' + requiredIds.length + ' checks)');
 
 // Verify Tab 7 #prof-context-strip stays strictly 3 symbol lines (no misplaced Kernel sys% footer)
 const profJs = fs.readFileSync(path.join(rootDir, 'js/render-profiler.js'), 'utf8');
@@ -189,39 +190,39 @@ console.log('[PASS] Tab 7 symbol context strip clean (3 lines only, no misplaced
   const fireKey = (key) => keydown({ key, preventDefault() {} });
 
   if (typeof keydown !== 'function' || st.kernelStripOpen !== false) {
-    console.error('[FAIL] Shift+K test harness failed to initialize keydown handler');
+    console.error('[FAIL] k Kernel test harness failed to initialize keydown handler');
     process.exit(1);
   }
   for (let tab = 1; tab <= 7; tab++) {
     st.activeTab = tab;
     st.kernelStripOpen = false;
-    fireKey('K');
+    fireKey('k');
     if (st.kernelStripOpen !== true || !getEl('kernel-strip').classList.contains('visible')) {
-      console.error(`[FAIL] Shift+K failed to open #kernel-strip on Tab ${tab}`);
+      console.error(`[FAIL] 'k' failed to open #kernel-strip on Tab ${tab}`);
       process.exit(1);
     }
-    fireKey('K');
+    fireKey('k');
     if (st.kernelStripOpen !== false || getEl('kernel-strip').classList.contains('visible')) {
-      console.error(`[FAIL] Shift+K failed to close #kernel-strip on Tab ${tab}`);
+      console.error(`[FAIL] 'k' failed to close #kernel-strip on Tab ${tab}`);
       process.exit(1);
     }
   }
-  // Verify lowercase 'k' scrolls tables on Tabs 3, 5, 6, 7 WITHOUT toggling #kernel-strip
+  // Verify ArrowUp/ArrowDown still scroll tables on Tabs 3, 5, 6, 7 WITHOUT toggling #kernel-strip
   st.kernelStripOpen = false;
-  st.activeTab = 3; st.modSelectedIdx = 2; fireKey('k');
+  st.activeTab = 3; st.modSelectedIdx = 2; fireKey('ArrowUp');
   const t3Ok = st.modSelectedIdx === 1 && st.kernelStripOpen === false;
   st.activeTab = 5; st.advisorSelectedIdx = 1;
-  if (st.lastDiag && st.lastDiag.findings.length >= 2) fireKey('k');
+  if (st.lastDiag && st.lastDiag.findings.length >= 2) fireKey('ArrowUp');
   const t5Ok = st.kernelStripOpen === false;
-  st.activeTab = 6; st.threadSelectedIdx = 2; fireKey('k');
+  st.activeTab = 6; st.threadSelectedIdx = 2; fireKey('ArrowUp');
   const t6Ok = st.threadSelectedIdx === 1 && st.kernelStripOpen === false;
-  st.activeTab = 7; st.profiler.selectedIdx = 2; fireKey('k');
+  st.activeTab = 7; st.profiler.selectedIdx = 2; fireKey('ArrowUp');
   const t7Ok = st.profiler.selectedIdx === 1 && st.kernelStripOpen === false;
   if (!(t3Ok && t5Ok && t6Ok && t7Ok)) {
-    console.error('[FAIL] Lowercase k scroll / no-toggle invariant failed:', { t3Ok, t5Ok, t6Ok, t7Ok });
+    console.error('[FAIL] ArrowUp scroll / no-toggle invariant failed:', { t3Ok, t5Ok, t6Ok, t7Ok });
     process.exit(1);
   }
-  console.log('[PASS] Shift+K toggles #kernel-strip on all tabs (1-7) while lowercase k scrolls tables without toggling');
+  console.log('[PASS] k toggles #kernel-strip on all tabs (1-7) while ArrowUp/ArrowDown scroll tables without toggling');
 }
 
 // Verify all static DOM IDs referenced in render-profiler.js and render-pack-picker.js exist in the HTML

@@ -49,6 +49,7 @@
       else if (act === 'mux') openPackPickerModal();
       else if (act === 'baseline') openModal('baseline');
       else if (act === 'ccx') { state.ccxOpen = !state.ccxOpen; renderAll(); }
+      else if (act === 'kernel') toggleKernelStrip();
       else if (act === 'help') openModal('help');
       else if (act === 'quit') {
         cancelHardwareBurst(true);
@@ -389,7 +390,7 @@
     if (e.key === 'M' && state.activeTab !== 7) { fastCyclePreset(); return; }
     if (e.key === 'b') { openModal('baseline'); return; }
     if (e.key === 'c') { state.ccxOpen = !state.ccxOpen; renderAll(); return; }
-    if (e.key === 'K') { toggleKernelStrip(); return; }
+    if (e.key === 'k' || e.key === 'K') { toggleKernelStrip(); return; }
     if (e.key === '?') { openModal('help'); return; }
     if (e.key === 'q') {
       cancelHardwareBurst(true);

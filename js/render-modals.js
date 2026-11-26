@@ -107,9 +107,9 @@
           <tr><td class="k c-bright">p / d</td><td class="v">Open native Win32 Process Picker ('/' filter, 's' sort, 'Enter' attach) / Detach to System-Wide</td></tr>
           <tr><td class="k c-bright">m / M</td><td class="v">Open Modular Metric Pack Picker modal ('m': 1-6 Quick Presets, Space toggle, s save default, Enter apply) │ Fast-cycle presets ('M' on Tabs 1-6)</td></tr>
           <tr><td class="k c-bright">c</td><td class="v">Toggle global CCX0 vs CCX1 + physical-core SMT sibling IPC/C0% strip (above all tabs)</td></tr>
-          <tr><td class="k c-bright">K (Shift+K)</td><td class="v">Toggle global Kernel sys% breakdown strip (Attached or System-Wide; lowercase 'k' scrolls tables)</td></tr>
+          <tr><td class="k c-bright">k</td><td class="v">Toggle global Kernel sys% breakdown strip (Attached or System-Wide, above all tabs)</td></tr>
           <tr><td class="k c-bright">b</td><td class="v">Baseline &amp; sampler modal (Save 'S', Timed 'T', Exact Ret pack 'e', No-PMU 'n', Calibrate 'C', Admin 'a', Zero-PMC 'g/o/l/x/v', Reset 'r')</td></tr>
-          <tr><td class="k c-bright">j / k / Arrows</td><td class="v">Navigate Metric Packs ('m'), PE modules (Tab 3), Advisor findings (Tab 5), Threads (Tab 6), Profiler (Tab 7), or Picker</td></tr>
+          <tr><td class="k c-bright">↑ / ↓ Arrows</td><td class="v">Navigate Metric Packs ('m'), PE modules (Tab 3), Advisor findings (Tab 5), Threads (Tab 6), Profiler (Tab 7), or Picker</td></tr>
           <tr><td class="k c-bright">o / f / v / t / e / r / M</td><td class="v">Tab 7 Profiler: On/Off-CPU ('o'), HW Burst ('f', also Tab 5), Flat/Tree ('v'), Thread Scope ('t'), Pause ETW ('e'), Clear ('r'), Sidecar Map ('M')</td></tr>
           <tr><td class="k c-bright">a / R / v</td><td class="v">Edit thread affinity (Tab 6 'a') │ Revert all session affinity edits (Tab 6 'R') │ Toggle VA/JIT Map (Tab 4 'v')</td></tr>
           <tr><td class="k c-bright">Space / Enter / U</td><td class="v">Pause (global) │ Toggle Pack ('m') or DLL IFEO (Tab 3) │ Toggle Master UseLargePages ('U', Tab 3) │ Jump (Tab 5)</td></tr>

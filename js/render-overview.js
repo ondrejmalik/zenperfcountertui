@@ -75,22 +75,22 @@
       ? `Affinity 12T │ ${CONFIG.cpuModel}`
       : `All 12T │ ${CONFIG.cpuModel}`;
 
-    // Context-sensitive bottom hint (keeps .keybar <= 7 items while surfacing Shift+K Kernel strip)
+    // Context-sensitive bottom hint
     const hintEl = document.getElementById('bottom-hint');
     if (state.activeTab === 3) {
-      hintEl.textContent = 'j/k Select │ Space/Enter Toggle DLL │ U Master IFEO │ K Kernel │ s Sort';
+      hintEl.textContent = '↑/↓ Select │ Space/Enter Toggle DLL │ U Master IFEO │ s Sort';
     } else if (state.activeTab === 4 && proc) {
-      hintEl.textContent = 'v Toggle VA/JIT Map │ K Kernel │ Space Pause │ d Detach';
+      hintEl.textContent = 'v Toggle VA/JIT Map │ Space Pause │ d Detach';
     } else if (state.activeTab === 5) {
-      hintEl.textContent = 'j/k Select │ Enter Jump │ f HW Burst │ K Kernel │ m Packs';
+      hintEl.textContent = '↑/↓ Select │ Enter Jump │ f HW Burst │ m Packs';
     } else if (state.activeTab === 6 && proc) {
-      hintEl.textContent = 'j/k Select Thread │ s Sort │ a Affinity │ R Revert │ K Kernel';
+      hintEl.textContent = '↑/↓ Select Thread │ s Sort │ a Affinity │ R Revert Edits';
     } else if (state.activeTab === 7 && proc) {
-      hintEl.textContent = 'o On/Off-CPU │ f Burst │ v Flat/Tree │ t Scope │ e ETW │ K Kernel │ / Filter';
+      hintEl.textContent = 'o On/Off-CPU │ f HW Burst │ v Flat/Tree │ t Scope │ e Pause ETW │ r Clear │ / Filter';
     } else if ((state.activeTab === 4 || state.activeTab === 6 || state.activeTab === 7) && !proc) {
-      hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ K Kernel │ w Wait Mode';
+      hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ w Wait Mode';
     } else {
-      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ c CCX │ K Kernel';
+      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ d Detach';
     }
 
     // Status Banner
@@ -193,7 +193,7 @@
     document.getElementById('core-spark-line').innerHTML = makeCcxCoreRow(0) + makeCcxCoreRow(1);
   }
 
-  // GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with Shift+K, opens above everything on EVERY tab)
+  // GLOBAL KERNEL SYS% BREAKDOWN STRIP (toggled with 'k', opens above everything on EVERY tab)
   function renderKernelStrip() {
     const strip = document.getElementById('kernel-strip');
     if (!strip) return;
