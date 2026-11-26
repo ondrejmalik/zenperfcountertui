@@ -82,7 +82,7 @@
     } else if (state.activeTab === 4 && proc) {
       hintEl.textContent = 'v Toggle VA/JIT Map │ Space Pause │ d Detach';
     } else if (state.activeTab === 5) {
-      hintEl.textContent = '↑/↓ Select │ Enter Jump │ f HW Burst │ m Packs';
+      hintEl.textContent = '↑/↓ Select │ Enter Jump │ f HW Burst';
     } else if (state.activeTab === 6 && proc) {
       hintEl.textContent = '↑/↓ Select Thread │ s Sort │ a Affinity │ R Revert Edits';
     } else if (state.activeTab === 7 && proc) {
@@ -90,7 +90,7 @@
     } else if ((state.activeTab === 4 || state.activeTab === 6 || state.activeTab === 7) && !proc) {
       hintEl.textContent = '/ Filter │ s Sort │ Enter Attach │ w Wait Mode';
     } else {
-      hintEl.textContent = 'm Packs │ M Fast Preset │ Space Pause │ d Detach';
+      hintEl.textContent = 'M Fast Preset │ Space Pause │ d Detach';
     }
 
     // Status Banner
