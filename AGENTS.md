@@ -22,6 +22,8 @@ Every design choice in this repository exists for a concrete microarchitectural 
 
 - **Language:** Rust (edition 2021+).
 - **Core Crates:** `ratatui`, `crossterm`, `windows`, `clap`, `serde`, `serde_json`, `toml`, `anyhow`.
+- **Submodules & External Dependencies:**
+  - `rminject` ([`third_party/rminject`](third_party/rminject), upstream `https://github.com/ondrejmalik/rminject.git`): Universal mimalloc PE injector & runner for Rust / Win32 `HeapAlloc` binaries with machine-readable allocator inspection. Agents can inspect its source and git history directly in `third_party/rminject` and reference it in `Cargo.toml` via `rminject = { path = "third_party/rminject" }` (or `git = "https://github.com/ondrejmalik/rminject.git"`).
 - **Target Platform:** Windows 11 (x64), optimized first for **AMD Zen 2 (Family 17h Model 71h)** (e.g., Ryzen 5 3600X, 6C/12T, dual 16 MiB CCX, 6 programmable Core PMCs + 3 fixed MSRs + 6 CCX L3 PMCs).
 - **Concurrency Model (Strictly Non-Blocking):**
   - **UI Loop (~15–30 FPS):** Owns terminal rendering and keyboard/modal state; consumes immutable snapshots from channels; **never** blocks on `AMDuProfPcm`, `AMDuProfCLI`, `ReadProcessMemory`, symbol resolution, or ETW flushing.

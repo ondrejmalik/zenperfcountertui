@@ -1,0 +1,3 @@
+[submodule "third_party/rminject"]
+	path = third_party/rminject
+	url = https://github.com/ondrejmalik/rminject.git
