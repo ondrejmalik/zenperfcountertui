@@ -226,6 +226,152 @@ min_inst_per_sec = 1500000000
     }
   }
 
+  function renderRminjectModal() {
+    const proc = getAttachedProcess();
+    const snap = state.lastSnap;
+    const bannerEl = document.getElementById('rminject-target-banner');
+    const guardsEl = document.getElementById('rminject-guardrails');
+    const cmdEl = document.getElementById('rminject-cmd-preview');
+    const stateChipEl = document.getElementById('rminject-state-chip');
+    const stdBadgeEl = document.getElementById('rminject-mode-std-badge');
+    const largeRowEl = document.getElementById('row-rminject-mode-large');
+    const largeBadgeEl = document.getElementById('rminject-mode-large-badge');
+    const gibValEl = document.getElementById('rminject-gib-val');
+    const decBtn = document.getElementById('btn-rminject-gib-dec');
+    const incBtn = document.getElementById('btn-rminject-gib-inc');
+    const baseBadgeEl = document.getElementById('rminject-baseline-badge');
+    const childBadgeEl = document.getElementById('rminject-children-badge');
+    const confirmBtn = document.getElementById('btn-rminject-confirm');
+    if (!bannerEl || !guardsEl || !cmdEl) return;
+
+    if (!proc) {
+      bannerEl.innerHTML = `<span class="c-yellow">No target process attached. Press 'p' to select an eligible process first.</span>`;
+      guardsEl.innerHTML = '';
+      cmdEl.textContent = '# Attach a process first';
+      if (confirmBtn) confirmBtn.disabled = true;
+      return;
+    }
+
+    const elig = typeof Z.classifyAllocatorEligibility === 'function'
+      ? Z.classifyAllocatorEligibility(proc, snap)
+      : null;
+    if (!elig) return;
+
+    const draft = state.rminjectModal || (state.rminjectModal = {
+      targetPid: proc.pid,
+      mode: elig.recommendedMode,
+      hugeGiB: elig.recommendedHugeGiB,
+      autoPinBaseline: true,
+      followChildren: false,
+      successorBySourcePid: {}
+    });
+
+    const largeAllowed = elig.canRelaunch && elig.privPresent && elig.availPhysPct >= 20.0;
+    if (!largeAllowed) {
+      draft.mode = 'standard';
+      draft.hugeGiB = 0;
+    } else if (draft.mode === 'large') {
+      draft.hugeGiB = Math.max(1, Math.min(elig.maxSafeGiB, Number(draft.hugeGiB) || elig.recommendedHugeGiB || 1));
+    }
+
+    const dtlbVal = snap ? snap.l2Dtlb : (proc.pmuProfile ? proc.pmuProfile.l2Dtlb : 0);
+    const peakWsMiB = proc.peakWsMiB || proc.wsMiB || 0;
+    const fmtSize = Z.fmtMiB ? Z.fmtMiB(peakWsMiB) : `${peakWsMiB} MiB`;
+    bannerEl.innerHTML =
+      `Target: <span class="c-bright">${proc.name}</span> <span class="c-dim">(PID ${proc.pid})</span> ` +
+      `<span class="c-muted">│</span> Linkage: <span class="c-cyan">${elig.linkageLabel}</span> ` +
+      `<span class="c-muted">│</span> L2 dTLB: <span class="${dtlbVal >= 0.5 ? 'c-yellow c-bright' : 'c-green'}">${Number(dtlbVal).toFixed(2)} MPKI</span> ` +
+      `<span class="c-muted">│</span> Peak WS: <span class="c-bright">${fmtSize}</span>`;
+
+    const ramSharePct = (draft.mode === 'large' && draft.hugeGiB > 0 && elig.availPhysGiB > 0)
+      ? ` vs ${draft.hugeGiB} GiB reserve = ${((draft.hugeGiB / elig.availPhysGiB) * 100).toFixed(1)}%`
+      : '';
+    const privStatus = elig.privPresent
+      ? `<span class="c-green c-bright">PASS</span>`
+      : `<span class="c-yellow c-bright">WARN (locked to standard mode)</span>`;
+    const ramStatus = elig.availPhysPct >= 20.0
+      ? `<span class="c-green c-bright">PASS</span>`
+      : `<span class="c-yellow c-bright">WARN (blocks --large)</span>`;
+    const protStatus = elig.state === 'BLOCKED_GUARDRAIL'
+      ? `<span class="c-red c-bright">HARD BLOCK</span>`
+      : (elig.canRelaunch
+        ? `<span class="c-green c-bright">PASS</span>`
+        : `<span class="c-yellow c-bright">SKIP (${elig.state})</span>`);
+
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const alertHtml = !elig.canRelaunch
+      ? `<div class="rminject-alert ${elig.state === 'BLOCKED_GUARDRAIL' ? 'c-red c-bright' : 'c-yellow'}">${esc(elig.blockOrSkipReason)}</div>`
+      : (elig.warnings.length > 0
+        ? `<div class="rminject-alert c-yellow">Guardrail: ${esc(elig.warnings.join(' | '))}</div>`
+        : '');
+
+    guardsEl.innerHTML = `
+      <div class="rminject-guard-row"><span>1. Disk Integrity: Non-destructive --inject (in-memory PE IAT; signed binary untouched)</span><span class="c-green c-bright">PASS</span></div>
+      <div class="rminject-guard-row"><span>2. SeLockMemoryPrivilege: <span class="c-bright">${elig.privPresent ? 'Present' : 'Missing'}</span></span>${privStatus}</div>
+      <div class="rminject-guard-row"><span>3. RAM Headroom: <span class="c-bright">${elig.availPhysPct.toFixed(1)}% free</span> (${elig.availPhysGiB.toFixed(1)} GiB avail${ramSharePct})</span>${ramStatus}</div>
+      <div class="rminject-guard-row"><span>4. Anti-Cheat / Protected Process: <span class="c-bright">${elig.state === 'BLOCKED_GUARDRAIL' ? 'Protected' : 'Editable'}</span></span>${protStatus}</div>
+      ${alertHtml}
+    `;
+
+    if (stdBadgeEl) {
+      stdBadgeEl.innerHTML = draft.mode === 'standard'
+        ? `<span class="c-green c-bright">[SELECTED]</span>`
+        : `<span class="c-muted">[ ]</span>`;
+    }
+    if (largeRowEl) {
+      largeRowEl.classList.toggle('is-disabled', !largeAllowed);
+    }
+    if (gibValEl) {
+      gibValEl.textContent = largeAllowed
+        ? `${draft.hugeGiB || elig.recommendedHugeGiB || 1} GiB`
+        : '0 GiB';
+    }
+    if (decBtn) decBtn.disabled = !largeAllowed || (draft.hugeGiB <= 1);
+    if (incBtn) incBtn.disabled = !largeAllowed || (draft.hugeGiB >= elig.maxSafeGiB);
+    if (largeBadgeEl) {
+      if (!elig.canRelaunch) {
+        largeBadgeEl.innerHTML = `<span class="c-muted">[DISABLED]</span>`;
+      } else if (!largeAllowed) {
+        largeBadgeEl.innerHTML = `<span class="c-yellow">[LOCKED]</span>`;
+      } else if (draft.mode === 'large') {
+        largeBadgeEl.innerHTML = `<span class="c-green c-bright">[SELECTED]</span>`;
+      } else {
+        largeBadgeEl.innerHTML = `<span class="c-muted">[ ]</span>`;
+      }
+    }
+    if (baseBadgeEl) {
+      baseBadgeEl.innerHTML = draft.autoPinBaseline
+        ? `<span class="c-green c-bright">[x] ON</span>`
+        : `<span class="c-dim">[ ] OFF</span>`;
+    }
+    if (childBadgeEl) {
+      childBadgeEl.innerHTML = draft.followChildren
+        ? `<span class="c-cyan c-bright">[x] ON</span>`
+        : `<span class="c-dim">[ ] OFF</span>`;
+    }
+
+    if (stateChipEl) {
+      const chipCls = elig.canRelaunch
+        ? 'c-green c-bright'
+        : (elig.state === 'BLOCKED_GUARDRAIL' ? 'c-red c-bright' : 'c-yellow c-bright');
+      stateChipEl.innerHTML = `<span class="${chipCls}">${elig.state}</span>`;
+    }
+    if (elig.canRelaunch && typeof Z.buildRminjectCommand === 'function') {
+      cmdEl.textContent = Z.buildRminjectCommand(proc, draft, elig);
+      cmdEl.className = 'code-block rminject-cmd-preview c-cyan';
+    } else {
+      cmdEl.textContent = `# Disabled (${elig.state}): ${elig.blockOrSkipReason}`;
+      cmdEl.className = `code-block rminject-cmd-preview ${elig.state === 'BLOCKED_GUARDRAIL' ? 'c-red' : 'c-yellow'}`;
+    }
+
+    if (confirmBtn) {
+      confirmBtn.disabled = !elig.canRelaunch;
+      confirmBtn.textContent = draft.autoPinBaseline
+        ? 'Pin Baseline & Relaunch [y / Enter]'
+        : 'Relaunch w/ rminject [y / Enter]';
+    }
+  }
+
   function renderAll() {
     renderChrome();
     renderCcxStrip();
@@ -248,7 +394,8 @@ min_inst_per_sec = 1500000000
     if (state.openModal === 'help') renderHelpModal();
     if (state.openModal === 'affinity') renderAffinityModal();
     if (state.openModal === 'burst') renderBurstModal();
+    if (state.openModal === 'rminject') renderRminjectModal();
   }
 
-  Object.assign(Z, { renderBaselineModal, renderHelpModal, renderAll });
+  Object.assign(Z, { renderBaselineModal, renderHelpModal, renderRminjectModal, renderAll });
 })();

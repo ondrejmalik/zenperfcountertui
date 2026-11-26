@@ -139,6 +139,12 @@
       tag: 'IFEO 2MiB + SMT Hot',
       allocatorType: 'tier0_mimalloc',
       allocatorLabel: 'tier0.dll (mimalloc v2) + IFEO 2MiB',
+      crtProfile: {
+        kind: 'already_mimalloc',
+        crt: 'tier0_mimalloc',
+        linkageLabel: 'tier0.dll (Embedded Mimalloc v2) + /MD ucrtbase.dll',
+        hookedModules: ['tier0.dll', 'ucrtbase.dll']
+      },
       wsMiB: 1640,
       sharedMiB: 412,
       hugeMiB: 4096,
@@ -214,6 +220,12 @@
       tag: '4K Default (No IFEO)',
       allocatorType: 'tier0_mimalloc',
       allocatorLabel: 'tier0.dll (mimalloc v2) - 4K Spillover',
+      crtProfile: {
+        kind: 'already_mimalloc',
+        crt: 'tier0_mimalloc',
+        linkageLabel: 'tier0.dll (Embedded Mimalloc v2)',
+        hookedModules: ['tier0.dll']
+      },
       wsMiB: 2890,
       sharedMiB: 440,
       hugeMiB: 2048,
@@ -288,6 +300,13 @@
       tag: 'IFEO Priv Missing + DPC/IRQ HI',
       allocatorType: 'tier0_mimalloc',
       allocatorLabel: 'tier0.dll (mimalloc v2) - IFEO Fault',
+      crtProfile: {
+        kind: 'blocked_guardrail',
+        crt: 'tier0_mimalloc',
+        protected: true,
+        linkageLabel: 'Protected Source 2 (tier0.dll + VAC Guardrail)',
+        hookedModules: ['tier0.dll']
+      },
       wsMiB: 2610,
       sharedMiB: 380,
       hugeMiB: 1024,
@@ -381,6 +400,12 @@
       tag: 'CRT + Branch / I-Cache / Soft PF',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'ucrtbase.dll (Layer 1 OS Fallback)',
+      crtProfile: {
+        kind: 'eligible',
+        crt: 'dynamic_md',
+        linkageLabel: 'Rust std::alloc::System (HeapAlloc) + /MD ucrtbase.dll',
+        hookedModules: ['ucrtbase.dll', 'rustc_driver-8a91c.dll', 'LLVM-19.dll', 'std-rust.dll']
+      },
       wsMiB: 1940,
       sharedMiB: 190,
       hugeMiB: 0,
@@ -457,6 +482,12 @@
       tag: 'Generic Mimalloc (Healthy)',
       allocatorType: 'generic_mimalloc',
       allocatorLabel: 'mimalloc.dll (Generic v2)',
+      crtProfile: {
+        kind: 'already_mimalloc',
+        crt: 'generic_mimalloc',
+        linkageLabel: 'mimalloc.dll (Generic v2)',
+        hookedModules: ['mimalloc.dll']
+      },
       wsMiB: 2420,
       sharedMiB: 310,
       hugeMiB: 2048,
@@ -543,6 +574,12 @@
       tag: 'Cross-CCX + EcoQoS Throttled',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'PartitionAlloc (Layer 1 OS Fallback)',
+      crtProfile: {
+        kind: 'custom_allocator',
+        crt: 'custom',
+        linkageLabel: 'PartitionAlloc (chrome.dll on VirtualAlloc)',
+        runtimeHint: 'Use Chromium PartitionAlloc flags; rminject skipped'
+      },
       wsMiB: 1180,
       sharedMiB: 310,
       hugeMiB: 0,
@@ -622,6 +659,12 @@
       tag: 'GPU-Bound 99% + Noisy Neighbor',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'REDengine4 Pool (Layer 1 OS Fallback)',
+      crtProfile: {
+        kind: 'custom_allocator',
+        crt: 'custom',
+        linkageLabel: 'REDengine4 Pool (custom VirtualAlloc)',
+        runtimeHint: 'Custom engine pool allocator bypasses CRT/HeapAlloc'
+      },
       wsMiB: 4820,
       sharedMiB: 690,
       hugeMiB: 0,
@@ -709,6 +752,12 @@
       tag: 'Hard Paging + 2MiB RAM Frag',
       allocatorType: 'generic_mimalloc',
       allocatorLabel: 'mimalloc.dll (4 GiB Locked + Disk Paging)',
+      crtProfile: {
+        kind: 'gc_virtualalloc',
+        crt: 'gc_jvm',
+        linkageLabel: 'HotSpot JVM G1GC (jvm.dll on VirtualAlloc)',
+        runtimeHint: 'Use JVM -XX:+UseLargePages instead of rminject'
+      },
       wsMiB: 3180,
       sharedMiB: 280,
       hugeMiB: 4096,
@@ -795,6 +844,12 @@
       tag: 'CtxSw Lock Storm + 0 GiB Huge Frag',
       allocatorType: 'generic_mimalloc',
       allocatorLabel: 'mimalloc.dll (0 GiB Huge - Frag Fallback)',
+      crtProfile: {
+        kind: 'already_mimalloc',
+        crt: 'generic_mimalloc',
+        linkageLabel: 'mimalloc.dll (Generic v2)',
+        hookedModules: ['mimalloc.dll']
+      },
       wsMiB: 2740,
       sharedMiB: 320,
       hugeMiB: 0,
@@ -877,6 +932,12 @@
       tag: '2MiB PE + 4K JIT iTLB Residual',
       allocatorType: 'crt_fallback',
       allocatorLabel: 'CoreCLR GC + RyuJIT (2MiB PE, 4K JIT)',
+      crtProfile: {
+        kind: 'gc_virtualalloc',
+        crt: 'gc_coreclr',
+        linkageLabel: 'CoreCLR GC + RyuJIT (coreclr.dll on VirtualAlloc)',
+        runtimeHint: 'Use COMPlus_GCHeapHardLimit / DOTNET_GCLargePages'
+      },
       wsMiB: 1420,
       sharedMiB: 240,
       hugeMiB: 0,
@@ -946,6 +1007,90 @@
         dcCrossCcx: 0.54, locksSerial: 0.22, opcacheHitPct: 77.2, stlfInterlock: 1.85, misalAccess: 7.6,
         pfRate: 240, cpuUsr: 41.0, cpuSys: 4.2,
         coreC0: [74, 6, 46, 5, 38, 4, 24, 3, 14, 2, 10, 1]
+      }
+    },
+    {
+      pid: 48320,
+      name: 'chatterino.exe',
+      tag: '/MD Qt6 C++ (Heap dTLB + Soft PF)',
+      allocatorType: 'crt_fallback',
+      allocatorLabel: 'ucrtbase.dll (/MD C++ OS Heap Fallback)',
+      crtProfile: {
+        kind: 'eligible',
+        crt: 'dynamic_md',
+        linkageLabel: '/MD UCRT (ucrtbase.dll + Qt6)',
+        hookedModules: ['ucrtbase.dll', 'Qt6Core.dll', 'Qt6Widgets.dll', 'Qt6Gui.dll', 'chatterino.exe']
+      },
+      wsMiB: 1480,
+      sharedMiB: 260,
+      hugeMiB: 0,
+      requestedHugeMiB: 0,
+      commitMiB: 2040,
+      peakWsMiB: 1820,
+      peakCommitMiB: 2260,
+      pageFaults: 3640210,
+      userSec: 328.4,
+      sysSec: 84.6,
+      elapsedSec: 540.0,
+      ifeoEnabled: false,
+      ifeoMasterSessionToggled: false,
+      affinityMask: 0x0FFF,
+      modules: [
+        makeMod('Qt6Widgets.dll', 6.40, false, false, 'RX', true, 0x7FF8C0000000n),
+        makeMod('Qt6Gui.dll', 7.80, false, false, 'RX', true, 0x7FF8C2000000n),
+        makeMod('Qt6Core.dll', 6.90, false, false, 'RX', true, 0x7FF8C4000000n),
+        makeMod('chatterino.exe', 12.60, false, false, 'RX', false, 0x7FF680000000n),
+        makeMod('ucrtbase.dll', 4.30, false, false, 'RX', true, 0x7FFA81200000n)
+      ],
+      arenas: null,
+      heapStats: null,
+      win32Profile: makeWin32Profile({
+        gpu3dPct: 12.0,
+        gpuProc3dPct: 8.0,
+        hardPageReadsPerSec: 0.0,
+        availPhysPct: 46.0,
+        commitPct: 48.0,
+        ctxSwPerSec: 18400,
+        syncWaitPct: 22.0,
+        seLockMemoryPrivilege: 'Present'
+      }),
+      protectedProcess: false,
+      threads: [
+        makeThread(48324, 'QtMainThread',    0x7FF680018200n, 52.0, 2240, 'Running', '-',          9, 0, 0, 0x0FFF),
+        makeThread(48328, 'ChatIrcWorker',   0x7FF8C4042100n, 38.0, 1860, 'Running', '-',          8, 2, 2, 0x0FFF),
+        makeThread(48332, 'MsgCacheCleaner', 0x7FF8C4091400n, 24.0, 1420, 'Waiting', 'WrQueue',    8, 4, 4, 0x0FFF),
+        makeThread(48336, 'EmoteDecodePool', 0x7FF8C2054800n, 18.0, 1180, 'Waiting', 'UserRequest', 8, 6, 6, 0x0FFF)
+      ],
+      presentProfile: {
+        baseFrameMs: 16.67,
+        jitterRel: 0.06,
+        presentMode: 'Hardware: Independent Flip',
+        composedShare: 0.0,
+        spikeChance: 0.0,
+        spikeMultiplier: 1.4
+      },
+      vaProfile: {
+        privateJit4kMiB: 0.8,
+        jitProtect: 'RX',
+        mapped4kMiB: 180
+      },
+      ioProfile: {
+        readMbS: 2.4,
+        writeMbS: 1.1,
+        readIops: 65,
+        writeIops: 32
+      },
+      pmuProfile: {
+        effGhz: 4.18, ipc: 1.18,
+        l1dc: 24.5, l2dc: 6.2, l1ic: 9.4, l2ic: 1.45,
+        demL3: 2.30, hwpfL3: 0.85, demDram: 0.92, hwpfDram: 0.45,
+        l2pfL3: 0.72, l2pfDram: 0.25,
+        l3Acc: 8.2, l3Miss: 1.38, l3LatCyc: 204,
+        br: 146.0, brMiss: 2.65, brMissPct: 2.10,
+        l1ItlbMissPct: 0.36, l2Itlb: 0.14, l1Dtlb: 2.65, l2Dtlb: 0.74,
+        dcCrossCcx: 0.45, locksSerial: 0.28, opcacheHitPct: 79.0, stlfInterlock: 1.80, misalAccess: 7.2,
+        pfRate: 2450, cpuUsr: 22.0, cpuSys: 8.5,
+        coreC0: [52, 6, 38, 4, 24, 3, 18, 2, 12, 1, 8, 1]
       }
     }
   ];
@@ -1042,5 +1187,145 @@
     }
   };
 
-  Object.assign(Z, { PROTECTED_DRIVERS, makeMod, makeThread, buildArenas, SOURCE2_DLLS, makeWin32Profile, PROCESSES, SYSTEM_WIDE_WIN32, SYSTEM_WIDE_PROFILE, BASELINE_PRESETS });
+  function createMiheapSuccessorProcess(srcProc, opts = {}) {
+    const mode = opts.mode === 'large' && (opts.hugeGiB || 0) > 0 ? 'large' : 'standard';
+    const hugeGiB = mode === 'large' ? Math.max(1, Math.round(opts.hugeGiB)) : 0;
+    const hugeMiB = hugeGiB * 1024;
+    const pid = Number(opts.pid) || (srcProc.pid + 100000);
+
+    const mods = (srcProc.modules || []).map(m => ({ ...m }));
+    const hasMod = (name) => mods.some(m => m.name.toLowerCase() === name);
+    if (!hasMod('miheap.dll')) {
+      mods.push(makeMod('miheap.dll', 0.45, false, false, 'RX', true, 0x7FF9A1000000n));
+    }
+    if (!hasMod('mimalloc.dll')) {
+      mods.push(makeMod('mimalloc.dll', 4.60, false, false, 'RX', true, 0x7FF9A2000000n));
+    }
+
+    const srcWsMiB = Number(srcProc.wsMiB) || 1024;
+    const srcPeakWsMiB = Number(srcProc.peakWsMiB) || srcWsMiB;
+    const totalNeededBlocks = Math.max(6, Math.round((srcWsMiB * 0.78) / 32));
+    const fillProfile = [];
+    if (hugeGiB > 0) {
+      const avgPerArena = Math.max(6, Math.min(28, Math.round(totalNeededBlocks / hugeGiB)));
+      for (let g = 0; g < hugeGiB; g++) {
+        const bias = g === 0 ? 6 : (g === hugeGiB - 1 ? -6 : 0);
+        fillProfile.push(Math.max(4, Math.min(29, avgPerArena + bias)));
+      }
+    }
+    const osArenaSpec = hugeGiB === 0
+      ? [{ blocks: 32, inuse: Math.min(28, Math.max(6, Math.round(srcWsMiB / 64))), touched: 30 }]
+      : [];
+
+    const arenas = buildArenas(hugeGiB, fillProfile, osArenaSpec);
+    const activeBlocks = arenas.hugeArenas.reduce((a, g) => a + g.inuse.reduce((x, y) => x + y, 0), 0);
+    const touchedBlocks = arenas.hugeArenas.reduce((a, g) => a + g.touched.reduce((x, y) => x + y, 0), 0);
+    const activeMiB = activeBlocks * 32;
+    const touchedMiB = touchedBlocks * 32;
+
+    const newWsMiB = hugeGiB > 0
+      ? Math.max(120, Math.round(srcWsMiB * 0.14))
+      : Math.max(256, Math.round(srcWsMiB * 0.88));
+    const newPeakWsMiB = hugeGiB > 0
+      ? Math.max(newWsMiB + 64, Math.round(srcPeakWsMiB * 0.16))
+      : Math.max(newWsMiB + 128, Math.round(srcPeakWsMiB * 0.90));
+
+    const heapStats = {
+      normal:    { peak: Math.round(srcPeakWsMiB * 0.85), total: Math.round(srcWsMiB * 6.4), current: Math.max(128, activeMiB || Math.round(newWsMiB * 0.72)) },
+      huge:      { peak: hugeMiB, total: hugeMiB, current: hugeMiB },
+      reserved:  { peak: Math.max(hugeMiB, 1024), total: Math.max(hugeMiB, 1024), current: Math.max(hugeMiB, 1024) },
+      committed: { peak: Math.max(touchedMiB, newWsMiB), total: Math.round(srcWsMiB * 1.6), current: Math.max(activeMiB, newWsMiB) },
+      touched:   { peak: touchedMiB || newWsMiB, total: touchedMiB || newWsMiB, current: activeMiB || Math.round(newWsMiB * 0.8) },
+      segments:  { peak: Math.max(16, Math.round(srcWsMiB / 32)), total: Math.max(32, Math.round(srcWsMiB / 16)), current: Math.max(12, Math.round(srcWsMiB / 40)), isCount: true },
+      pages:     { peak: Math.max(1200, Math.round(srcWsMiB * 8)), total: Math.max(4800, Math.round(srcWsMiB * 32)), current: Math.max(960, Math.round(srcWsMiB * 6)), isCount: true },
+      softReset: hugeGiB > 0 ? 48 : 260
+    };
+
+    const srcPmu = srcProc.pmuProfile || {};
+    const newL2Dtlb = hugeGiB > 0
+      ? 0.11
+      : Math.min(Number(srcPmu.l2Dtlb) || 0.5, Number(((srcPmu.l2Dtlb || 0.6) * 0.75).toFixed(2)));
+    const newPfRate = hugeGiB > 0
+      ? 190
+      : Math.max(220, Math.round((srcPmu.pfRate || 2000) * 0.24));
+    const newCpuSys = Number(Math.max(2.1, (srcPmu.cpuSys || 8.0) * (hugeGiB > 0 ? 0.30 : 0.48)).toFixed(1));
+    const newIpc = Number(Math.min(2.8, (srcPmu.ipc || 1.1) + (hugeGiB > 0 ? 0.14 : 0.06)).toFixed(2));
+
+    const hookedCrts = [];
+    const lowerMods = mods.map(m => m.name.toLowerCase());
+    if (lowerMods.includes('ucrtbase.dll') || lowerMods.includes('ucrtbased.dll')) hookedCrts.push('ucrtbase.dll');
+    if (lowerMods.includes('msvcrt.dll')) hookedCrts.push('msvcrt.dll');
+    if ((srcProc.crtProfile && srcProc.crtProfile.linkageLabel && srcProc.crtProfile.linkageLabel.includes('HeapAlloc')) || hookedCrts.length === 0) {
+      hookedCrts.push('kernel32!HeapAlloc');
+    }
+    const iatMods = Math.max(2, (srcProc.modules || []).filter(m => !m.protectedDriver).length);
+    const iatSlots = iatMods * 4 + 2;
+
+    const srcW32 = srcProc.win32Profile || makeWin32Profile();
+    const availPhysAfter = hugeGiB > 0
+      ? Math.max(5.0, Number((srcW32.availPhysPct - (hugeGiB / 32.0) * 100.0).toFixed(1)))
+      : srcW32.availPhysPct;
+    const newCommitMiB = Math.max(newWsMiB + hugeMiB, srcProc.commitMiB || (newWsMiB + hugeMiB));
+    const newPeakCommitMiB = Math.max(srcProc.peakCommitMiB || 0, newCommitMiB);
+
+    return {
+      ...srcProc,
+      pid,
+      tag: hugeGiB > 0 ? `miheap 2MiB (${hugeGiB} GiB)` : 'miheap Standard (0 GiB Huge)',
+      allocatorType: 'miheap_injected',
+      allocatorLabel: hugeGiB > 0
+        ? 'miheap.dll -> mimalloc.dll (2 MiB Arenas)'
+        : 'miheap.dll -> mimalloc.dll (Standard Heap)',
+      crtProfile: {
+        kind: 'already_mimalloc',
+        crt: 'miheap_injected',
+        linkageLabel: 'miheap.dll -> mimalloc.dll (Injected 2 MiB)',
+        hookedModules: [...hookedCrts]
+      },
+      wsMiB: newWsMiB,
+      hugeMiB,
+      requestedHugeMiB: hugeGiB > 0 ? hugeMiB : 0,
+      commitMiB: newCommitMiB,
+      peakCommitMiB: newPeakCommitMiB,
+      peakWsMiB: newPeakWsMiB,
+      pageFaults: Math.round((srcProc.pageFaults || 100000) * 0.08),
+      elapsedSec: 12.0,
+      userSec: 18.0,
+      sysSec: 1.4,
+      modules: mods,
+      arenas,
+      heapStats,
+      miheapStats: {
+        mode,
+        hugeGiB,
+        crts: hookedCrts,
+        iatMods,
+        iatSlots,
+        miAllocs: 142800,
+        miFrees: 138100,
+        fallbackAllocs: 12,
+        sourcePid: srcProc.pid,
+        sourceName: srcProc.name,
+        followChildren: Boolean(opts.followChildren),
+        commandLine: opts.commandLine || ''
+      },
+      win32Profile: makeWin32Profile({
+        ...srcW32,
+        availPhysPct: availPhysAfter,
+        hardPageReadsPerSec: 0.0
+      }),
+      threads: (srcProc.threads || []).map(t => ({ ...t })),
+      pmuProfile: {
+        ...srcPmu,
+        ipc: newIpc,
+        l1Dtlb: hugeGiB > 0 ? 0.78 : Math.max(0.85, Number(((srcPmu.l1Dtlb || 2.0) * 0.72).toFixed(2))),
+        l2Dtlb: newL2Dtlb,
+        l3LatCyc: Math.max(190, Math.round((srcPmu.l3LatCyc || 210) - (hugeGiB > 0 ? 8 : 3))),
+        pfRate: newPfRate,
+        cpuSys: newCpuSys
+      }
+    };
+  }
+
+  Object.assign(Z, { PROTECTED_DRIVERS, makeMod, makeThread, buildArenas, SOURCE2_DLLS, makeWin32Profile, createMiheapSuccessorProcess, PROCESSES, SYSTEM_WIDE_WIN32, SYSTEM_WIDE_PROFILE, BASELINE_PRESETS });
 })();

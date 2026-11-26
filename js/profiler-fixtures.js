@@ -57,6 +57,12 @@
       { tid: 41258, name: 'QueryWorker1', cpuPct: 13.8, state: 'Waiting', waitReason: 'WrPushLock', ctxSw: 21800, cpu: 2, ccx: 0 },
       { tid: 41264, name: 'LogWriterThread', cpuPct: 11.4, state: 'Running', waitReason: 'WrQueue', ctxSw: 18600, cpu: 6, ccx: 1 },
       { tid: 41270, name: 'LatchMgr', cpuPct: 9.3, state: 'Waiting', waitReason: 'WrPushLock', ctxSw: 15700, cpu: 8, ccx: 1 }
+    ],
+    48320: [ // chatterino.exe (/MD Qt6 C++ heap dTLB + soft page faults)
+      { tid: 48324, name: 'QtMainThread', cpuPct: 21.8, state: 'Running', waitReason: 'UserRequest', ctxSw: 2240, cpu: 0, ccx: 0 },
+      { tid: 48328, name: 'ChatIrcWorker', cpuPct: 14.2, state: 'Running', waitReason: 'WrQueue', ctxSw: 1860, cpu: 2, ccx: 0 },
+      { tid: 48332, name: 'MsgCacheCleaner', cpuPct: 8.6, state: 'Waiting', waitReason: 'WrQueue', ctxSw: 1420, cpu: 4, ccx: 0 },
+      { tid: 48336, name: 'EmoteDecodePool', cpuPct: 6.4, state: 'Waiting', waitReason: 'UserRequest', ctxSw: 1180, cpu: 6, ccx: 1 }
     ]
   };
 
@@ -77,6 +83,10 @@
     sql: [
       { module: 'sqlmin.dll', rva_start: '0x18B400', rva_end: '0x18B820', name: 'sqlmin::SOS_RWLock::GetLongWait', signature: 'void sqlmin::SOS_RWLock::GetLongWait(SOS_Task*)' },
       { module: 'sqlmin.dll', rva_start: '0x219000', rva_end: '0x219540', name: 'sqlmin::BPool::LookupPageHash', signature: 'BUF* sqlmin::BPool::LookupPageHash(PageId id)' }
+    ],
+    chatterino: [
+      { module: 'chatterino.exe', rva_start: '0x048200', rva_end: '0x048700', name: 'chatterino::MessageLayout::rebuildTextLayout', signature: 'void chatterino::MessageLayout::rebuildTextLayout()' },
+      { module: 'chatterino.exe', rva_start: '0x061000', rva_end: '0x061480', name: 'chatterino::Channel::appendMessage', signature: 'void chatterino::Channel::appendMessage(MessagePtr)' }
     ]
   };
 
@@ -84,6 +94,7 @@
     if (pid === 14820 || pid === 19204 || pid === 27408) return SIDECAR_MAPS.source2;
     if (pid === 34112) return SIDECAR_MAPS.cyberpunk;
     if (pid === 41250) return SIDECAR_MAPS.sql;
+    if (pid === 48320) return SIDECAR_MAPS.chatterino;
     return SIDECAR_MAPS.source2;
   }
 
@@ -311,8 +322,68 @@
       ]
     });
 
+    // PDB-backed chatterino.exe + Qt6 + ucrtbase.dll (/MD C++ heap target)
+    resolver.onModuleLoad({
+      name: 'chatterino.exe',
+      base: 0x7FF680000000n,
+      sizeMiB: 12.60,
+      pdbLoaded: true,
+      pdbSymbols: [
+        { rvaStart: 0x048200, rvaEnd: 0x048700, name: 'chatterino::MessageLayout::rebuildTextLayout', signature: 'void chatterino::MessageLayout::rebuildTextLayout()', file: 'src/messages/MessageLayout.cpp', line: 342 },
+        { rvaStart: 0x061000, rvaEnd: 0x061480, name: 'chatterino::Channel::appendMessage', signature: 'void chatterino::Channel::appendMessage(MessagePtr)', file: 'src/common/Channel.cpp', line: 184 }
+      ]
+    });
+    resolver.onModuleLoad({
+      name: 'Qt6Core.dll',
+      base: 0x7FF8C4000000n,
+      sizeMiB: 6.90,
+      pdbLoaded: false,
+      exports: [
+        { rva: 0x042100, rvaEnd: 0x042480, name: 'QArrayData::allocate', ordinal: 112 },
+        { rva: 0x091400, rvaEnd: 0x091720, name: 'QCoreApplicationPrivate::sendPostedEvents', ordinal: 814 }
+      ]
+    });
+    resolver.onModuleLoad({
+      name: 'Qt6Widgets.dll',
+      base: 0x7FF8C0000000n,
+      sizeMiB: 6.40,
+      pdbLoaded: false,
+      exports: [
+        { rva: 0x028400, rvaEnd: 0x028800, name: 'QWidgetPrivate::drawWidget', ordinal: 512 }
+      ]
+    });
+    resolver.onModuleLoad({
+      name: 'ucrtbase.dll',
+      base: 0x7FFA81200000n,
+      sizeMiB: 4.30,
+      pdbLoaded: false,
+      exports: [
+        { rva: 0x01A200, rvaEnd: 0x01A500, name: '_malloc_base', ordinal: 420 },
+        { rva: 0x01B000, rvaEnd: 0x01B300, name: 'free', ordinal: 590 }
+      ]
+    });
+    resolver.onModuleLoad({
+      name: 'miheap.dll',
+      base: 0x7FF9A1000000n,
+      sizeMiB: 0.45,
+      pdbLoaded: false,
+      exports: [
+        { rva: 0x004100, rvaEnd: 0x004400, name: 'MiHeapUcrtMalloc', ordinal: 12 }
+      ]
+    });
+    resolver.onModuleLoad({
+      name: 'mimalloc.dll',
+      base: 0x7FF9A2000000n,
+      sizeMiB: 4.60,
+      pdbLoaded: false,
+      exports: [
+        { rva: 0x012200, rvaEnd: 0x012600, name: 'mi_heap_malloc_small', ordinal: 44 }
+      ]
+    });
+
     if (loadSidecar) {
-      resolver.loadSidecarJson(getSidecarForPid(pid));
+      const sidecarPid = (proc && proc.miheapStats && proc.miheapStats.sourcePid) ? proc.miheapStats.sourcePid : pid;
+      resolver.loadSidecarJson(getSidecarForPid(sidecarPid));
     }
     return resolver;
   }
@@ -338,11 +409,70 @@
 
   // Generate realistic ETW On-CPU + Off-CPU batches per process
   function getEtwTemplatesForPid(pid, proc = null) {
+    const effPid = (proc && proc.miheapStats && proc.miheapStats.sourcePid) ? proc.miheapStats.sourcePid : pid;
+    const isMiheapInjected = Boolean(proc && proc.allocatorType === 'miheap_injected');
     const threads = getThreadsForProcess(proc || { pid });
     const tAt = (i) => threads[Math.min(i, threads.length - 1)] || { tid: pid + 4, name: 'MainThread' };
     const t0 = tAt(0), t1 = tAt(1), t2 = tAt(2), t3 = tAt(3);
 
-    if (pid === 31088) { // rustc.exe
+    if (effPid === 48320) { // chatterino.exe (/MD Qt6 C++ app)
+      const onCpu = [
+        { tid: t0.tid, weight: 38, stack: [
+          { module: 'Qt6Core.dll', rva: 0x091440 },
+          { module: 'Qt6Widgets.dll', rva: 0x028480 },
+          { module: 'chatterino.exe', rva: 0x048240 }
+        ]},
+        { tid: t1.tid, weight: 28, stack: [
+          { module: 'chatterino.exe', rva: 0x061040 },
+          { module: 'Qt6Core.dll', rva: 0x042140 },
+          isMiheapInjected
+            ? { module: 'mimalloc.dll', rva: 0x012240 }
+            : { module: 'ucrtbase.dll', rva: 0x01A240 }
+        ]},
+        { tid: t2.tid, weight: 20, stack: [
+          { module: 'chatterino.exe', rva: 0x048240 },
+          isMiheapInjected
+            ? { module: 'miheap.dll', rva: 0x004140 }
+            : { module: 'ucrtbase.dll', rva: 0x01B040 }
+        ]},
+        { tid: t3.tid, weight: 14, stack: [
+          { module: 'Qt6Widgets.dll', rva: 0x028480 },
+          { module: 'Qt6Core.dll', rva: 0x042140 }
+        ]}
+      ];
+      if (!isMiheapInjected) {
+        onCpu.push(
+          { tid: t0.tid, weight: 8, stack: [
+            { module: 'chatterino.exe', rva: 0x048240 },
+            { module: 'ucrtbase.dll', rva: 0x01A240 },
+            { module: 'ntoskrnl.exe', rva: 0x00414040 },
+            { module: 'ntoskrnl.exe', rva: 0x00350080 },
+            { module: 'ntoskrnl.exe', rva: 0x00352080 }
+          ]},
+          { tid: t1.tid, weight: 2, stack: [
+            { module: 'chatterino.exe', rva: 0x061040 },
+            { module: 'ntoskrnl.exe', rva: 0x00412040 },
+            { module: 'ntoskrnl.exe', rva: 0x00310080 },
+            { module: 'ntfs.sys', rva: 0x018040 }
+          ]}
+        );
+      }
+      return {
+        onCpu,
+        offCpu: [
+          { tid: t0.tid, threadName: t0.name, wakerTid: t1.tid, wakerName: t1.name, durUs: 1620, stack: [
+            { module: 'Qt6Core.dll', rva: 0x091440 },
+            { module: 'kernelbase.dll', rva: 0x03A120 }
+          ]},
+          { tid: t2.tid, threadName: t2.name, wakerTid: t0.tid, wakerName: t0.name, durUs: 980, stack: [
+            { module: 'chatterino.exe', rva: 0x048240 },
+            { module: 'kernelbase.dll', rva: 0x041240 }
+          ]}
+        ]
+      };
+    }
+
+    if (effPid === 31088) { // rustc.exe
       return {
         onCpu: [
           { tid: t0.tid, weight: 38, stack: [
@@ -390,7 +520,7 @@
         ]
       };
     }
-    if (pid === 41250) { // sqlservr.exe (Heavy Off-CPU CSwitch lock storm)
+    if (effPid === 41250) { // sqlservr.exe (Heavy Off-CPU CSwitch lock storm)
       return {
         onCpu: [
           { tid: t0.tid, weight: 36, stack: [
@@ -434,7 +564,7 @@
         ]
       };
     }
-    if (pid === 22910) { // blender.exe
+    if (effPid === 22910) { // blender.exe
       return {
         onCpu: [
           { tid: t0.tid, weight: 46, stack: [
@@ -458,7 +588,7 @@
         ]
       };
     }
-    if (pid === 34112) { // cyberpunk2077.exe
+    if (effPid === 34112) { // cyberpunk2077.exe
       return {
         onCpu: [
           { tid: t0.tid, weight: 42, stack: [
@@ -487,7 +617,7 @@
         ]
       };
     }
-    if (pid === 6104) { // chrome.exe
+    if (effPid === 6104) { // chrome.exe
       return {
         onCpu: [
           { tid: t0.tid, weight: 44, stack: [
@@ -510,7 +640,7 @@
         ]
       };
     }
-    if (pid === 38904) { // javaw.exe
+    if (effPid === 38904) { // javaw.exe
       return {
         onCpu: [
           { tid: t0.tid, weight: 48, stack: [
@@ -608,11 +738,29 @@
   // Generate realistic AMDuProfCLI report.csv text per process + burst type
   function generateBurstCsvForProcess(proc, burstType) {
     const pid = proc ? proc.pid : 14820;
+    const effPid = (proc && proc.miheapStats && proc.miheapStats.sourcePid) ? proc.miheapStats.sourcePid : pid;
     const threads = getThreadsForProcess(proc || { pid });
     const t0 = threads[0].tid;
     const t1 = (threads[1] || threads[0]).tid;
 
-    if (pid === 31088) { // rustc.exe
+    if (effPid === 48320) { // chatterino.exe
+      if (burstType === 'tlb_walk') {
+        return [
+          'Function,Module,RVA,Self Samples,Inclusive Samples,Avg Load Latency (cyc),Data Source,Call Stack,TID',
+          `chatterino::MessageLayout::rebuildTextLayout,chatterino.exe,0x048240,1280,1280,0,,Qt6Widgets.dll!QWidgetPrivate::drawWidget@0x028480,${t0}`,
+          `chatterino::Channel::appendMessage,chatterino.exe,0x061040,860,860,0,,Qt6Core.dll!QArrayData::allocate@0x042140,${t1}`,
+          `QArrayData::allocate,Qt6Core.dll,0x042140,540,540,0,,chatterino.exe!chatterino::Channel::appendMessage@0x061040,${t1}`
+        ].join('\n');
+      }
+      return [
+        'Function,Module,RVA,Self Samples,Inclusive Samples,Avg Load Latency (cyc),Data Source,Call Stack,TID',
+        `chatterino::MessageLayout::rebuildTextLayout,chatterino.exe,0x048240,1180,1180,196,DRAM,Qt6Widgets.dll!QWidgetPrivate::drawWidget@0x028480,${t0}`,
+        `chatterino::Channel::appendMessage,chatterino.exe,0x061040,820,820,164,L3,Qt6Core.dll!QArrayData::allocate@0x042140,${t1}`,
+        `QArrayData::allocate,Qt6Core.dll,0x042140,460,460,42,L2,chatterino.exe!chatterino::Channel::appendMessage@0x061040,${t1}`
+      ].join('\n');
+    }
+
+    if (effPid === 31088) { // rustc.exe
       if (burstType === 'branch_miss') {
         return [
           'Function,Module,RVA,Self Samples,Inclusive Samples,Avg Load Latency (cyc),Data Source,Call Stack,TID',
@@ -638,7 +786,7 @@
       ].join('\n');
     }
 
-    if (pid === 41250) { // sqlservr.exe (raw hex RVAs enriched by SymbolResolver!)
+    if (effPid === 41250) { // sqlservr.exe (raw hex RVAs enriched by SymbolResolver!)
       return [
         'Function,Module,RVA,Self Samples,Inclusive Samples,Avg Load Latency (cyc),Data Source,Call Stack,TID',
         `0x219080,sqlmin.dll,0x219080,1420,1420,238,DRAM,sqllang.dll!0x0C4240@0x0C4240,${t0}`,

@@ -341,7 +341,7 @@
       const isCur = p.pid === state.attachedPid && !state.waitingTarget;
       const wsTotal = p.wsMiB + p.hugeMiB;
       const cpu = p.pmuProfile.cpuUsr + p.pmuProfile.cpuSys;
-      const allocCls = p.allocatorType === 'tier0_mimalloc' ? 'c-green'
+      const allocCls = (p.allocatorType === 'tier0_mimalloc' || p.allocatorType === 'miheap_injected') ? 'c-green'
                      : (p.allocatorType === 'generic_mimalloc' ? 'c-cyan' : 'c-dim');
       return `
         <tr class="selectable ${sel}" data-pid="${p.pid}" data-idx="${idx}">
@@ -429,6 +429,39 @@
     );
 
     const root = document.getElementById('mem-layer2-root');
+    const elig = typeof Z.classifyAllocatorEligibility === 'function'
+      ? Z.classifyAllocatorEligibility(proc, snap)
+      : null;
+    const buildEligibilityStripHtml = (el) => {
+      if (!el) return '';
+      const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      if (el.state === 'ELIGIBLE') {
+        const recText = el.recommendedMode === 'large' && el.recommendedHugeGiB > 0
+          ? `--large ${el.recommendedHugeGiB} GiB (non-destructive)`
+          : `standard mode (${el.warnings[0] || '0 locked RAM'})`;
+        return `
+          <div class="rminject-strip eligible" id="t4-rminject-strip">
+            <span class="rminject-strip-text">rminject Eligibility: <span class="c-green c-bright">ELIGIBLE</span> (<span class="c-bright">${esc(el.linkageLabel)}</span>) <span class="c-muted">│</span> Rec: <span class="c-cyan">${esc(recText)}</span></span>
+            <button class="btn-inline btn-rminject-launch" id="btn-t4-rminject">i: Relaunch w/ rminject</button>
+          </div>
+        `;
+      }
+      if (el.state === 'BLOCKED_GUARDRAIL') {
+        return `
+          <div class="rminject-strip blocked" id="t4-rminject-strip">
+            <span class="rminject-strip-text">rminject Eligibility: <span class="c-red c-bright">BLOCKED</span> (${esc(el.linkageLabel)} - injection disabled)</span>
+          </div>
+        `;
+      }
+      const badgeText = el.state === 'ALREADY_MIMALLOC' ? 'ALREADY MIMALLOC' : 'SKIPPED';
+      const badgeCls = el.state === 'ALREADY_MIMALLOC' ? 'c-cyan c-bright' : 'c-yellow c-bright';
+      const hintText = el.hint || el.blockOrSkipReason;
+      return `
+        <div class="rminject-strip skipped" id="t4-rminject-strip">
+          <span class="rminject-strip-text">rminject Eligibility: <span class="${badgeCls}">${badgeText}</span> (${esc(el.linkageLabel)}) <span class="c-muted">│</span> ${esc(hintText)}</span>
+        </div>
+      `;
+    };
     const buildVaMapTableHtml = (vaMap) => {
       if (!vaMap) return `<div class="c-dim">VA map pending VirtualQueryEx scan...</div>`;
       return `
@@ -535,7 +568,39 @@
 
       const allocTitle = proc.allocatorType === 'tier0_mimalloc'
         ? 'Mimalloc v2 Huge Arenas (tier0.dll)'
-        : 'Mimalloc v2 Huge Arenas (mimalloc.dll)';
+        : (proc.allocatorType === 'miheap_injected'
+          ? 'Mimalloc v2 Huge Arenas (miheap.dll -> mimalloc.dll)'
+          : 'Mimalloc v2 Huge Arenas (mimalloc.dll)');
+
+      const blockedArenaStrip = (elig && elig.state === 'BLOCKED_GUARDRAIL')
+        ? buildEligibilityStripHtml(elig)
+        : '';
+
+      const fmtCountK = v => v >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : (v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(Math.round(v)));
+      let miheapKvHtml = '';
+      let miheapFooterHtml = '';
+      if (proc.allocatorType === 'miheap_injected' && proc.miheapStats) {
+        const ms = proc.miheapStats;
+        const totalAllocs = Math.max(1, (ms.miAllocs || 0) + (ms.fallbackAllocs || 0));
+        const fallbackPct = (((ms.fallbackAllocs || 0) / totalAllocs) * 100).toFixed(2);
+        const crtsText = Array.isArray(ms.crts) && ms.crts.length > 0 ? ms.crts.join(', ') : 'ucrtbase.dll';
+        miheapKvHtml = `
+          <tr><td class="k">[miheap] crts</td><td class="v c-cyan">${crtsText}</td></tr>
+          <tr><td class="k">[miheap] iatMods</td><td class="v">${ms.iatMods} modules (${ms.iatSlots} IAT slots)</td></tr>
+          <tr><td class="k">[miheap] mi_allocs / mi_frees</td><td class="v c-green">${fmtCountK(ms.miAllocs)} / ${fmtCountK(ms.miFrees)}</td></tr>
+          <tr><td class="k">[miheap] fallback_allocs</td><td class="v ${ms.fallbackAllocs > 100 ? 'c-yellow' : 'c-dim'}">${ms.fallbackAllocs} (${fallbackPct}% fallback)</td></tr>
+        `;
+        const base = state.activeBaseline;
+        const deltaNote = (base && snap && base.l2dtlbMpki !== null && base.l2dtlbMpki !== undefined)
+          ? `<span>vs BASE (<span class="c-bright">${base.name}</span>): L2 dTLB <span class="c-bright">${snap.l2Dtlb.toFixed(2)}</span> ${fmtDeltaPct(snap.l2Dtlb, base.l2dtlbMpki, false)} <span class="c-muted">│</span> IPC <span class="c-bright">${snap.ipc.toFixed(2)}</span> ${fmtDeltaPct(snap.ipc, base.ipc, true)}</span>`
+          : `<span class="c-dim">rminject active (${ms.mode === 'large' ? `--large ${ms.hugeGiB} GiB` : 'standard mode'})</span>`;
+        miheapFooterHtml = `
+          <div class="miheap-footer-bar" id="t4-miheap-footer">
+            ${deltaNote}
+            <button class="btn-inline" id="btn-miheap-revert">Revert / Relaunch Baseline</button>
+          </div>
+        `;
+      }
 
       root.innerHTML = `
         <div class="split-2" style="height: 100%;">
@@ -547,6 +612,7 @@
                 <button class="btn-inline" id="btn-toggle-va">VA Map (v)</button>
               </span>
             </div>
+            ${blockedArenaStrip}
             <div style="margin-bottom: 4px;">${arenaRows}${osRowsHtml}</div>
             <hr class="h-rule-tight">
             <table class="kv-table" style="font-size: 12px;">
@@ -554,7 +620,9 @@
               <tr><td class="k">Peak Touched Blocks</td><td class="v c-yellow">${tchBlocks}/${totalBlocks} (${fmtMiB(tchBlocks * 32)}, ${totalBlocks > 0 ? ((tchBlocks / totalBlocks) * 100).toFixed(1) : '0.0'}%)</td></tr>
               <tr><td class="k">Real Free Headroom</td><td class="v ${freeCls}">${freeBlocks}/${totalBlocks} (${fmtMiB(freeBlocks * 32)}, ${freePct}%)</td></tr>
               <tr><td class="k">4 KiB OS Arenas</td><td class="v">${osArenaSummary}</td></tr>
+              ${miheapKvHtml}
             </table>
+            ${miheapFooterHtml}
           </div>
           <div class="v-rule"></div>
           <div style="display: flex; flex-direction: column; min-height: 0; overflow-y: auto;">
@@ -589,6 +657,10 @@
       `;
       const btnVa = document.getElementById('btn-toggle-va');
       if (btnVa) btnVa.onclick = () => Z.toggleVaMapView();
+      const btnRevert = document.getElementById('btn-miheap-revert');
+      if (btnRevert && typeof Z.revertRminjectBaseline === 'function') {
+        btnRevert.onclick = () => Z.revertRminjectBaseline();
+      }
     } else if (proc.arenas && proc.heapStats && state.memShowVaMap) {
       root.innerHTML = `
         <div style="display: flex; flex-direction: column; height: 100%; overflow-y: auto;">
@@ -620,6 +692,7 @@
               <button class="btn-inline" id="btn-toggle-va">${state.memShowVaMap ? 'Compact VA (v)' : 'Expand Backing (v)'}</button>
             </span>
           </div>
+          ${buildEligibilityStripHtml(elig)}
           ${state.memShowVaMap ? `
           <table class="tui-table" style="margin-bottom: 6px;">
             <colgroup>
@@ -649,6 +722,10 @@
       `;
       const btnVa = document.getElementById('btn-toggle-va');
       if (btnVa) btnVa.onclick = () => Z.toggleVaMapView();
+      const btnRm = document.getElementById('btn-t4-rminject');
+      if (btnRm && typeof Z.openRminjectModal === 'function') {
+        btnRm.onclick = () => Z.openRminjectModal();
+      }
     }
   }
 
@@ -736,21 +813,33 @@
       });
 
       const tabNames = { 1: 'Overview', 2: 'Cache', 3: 'TLB', 4: 'Memory', 5: 'Advisor', 6: 'Threads', 7: 'Profiler' };
+      const rminjectBtnHtml = selFinding.rminjectEligible === true
+        ? `<button class="btn-inline btn-rminject-launch" id="btn-adv-rminject">i: Relaunch w/ rminject</button>`
+        : '';
       const jumpHtml = selFinding.quickJumpTab
-        ? `<span style="display:flex; gap:6px; align-items:center;"><button class="btn-inline" id="btn-adv-burst">f: HW Burst</button><button class="btn-inline" id="btn-adv-jump">Enter: Jump to Tab ${selFinding.quickJumpTab} (${tabNames[selFinding.quickJumpTab]})</button></span>`
-        : `<button class="btn-inline" id="btn-adv-burst">f: HW Burst</button>`;
+        ? `<span style="display:flex; gap:6px; align-items:center;">${rminjectBtnHtml}<button class="btn-inline" id="btn-adv-burst">f: HW Burst</button><button class="btn-inline" id="btn-adv-jump">Enter: Jump to Tab ${selFinding.quickJumpTab} (${tabNames[selFinding.quickJumpTab]})</button></span>`
+        : `<span style="display:flex; gap:6px; align-items:center;">${rminjectBtnHtml}<button class="btn-inline" id="btn-adv-burst">f: HW Burst</button></span>`;
       const gainDetailText = selFinding.estGain ? selFinding.estGain.detail : 'N/A';
+      const rmElig = selFinding.rminjectEligibility;
+      const rminjectNoteRow = rmElig
+        ? (selFinding.rminjectEligible === true
+          ? `<div class="advisor-detail-row" id="adv-rminject-note"><span class="c-dim">rminject</span><span class="c-green">ELIGIBLE (${rmElig.linkageLabel}) <span class="c-muted">│</span> Rec: ${rmElig.hint}</span></div>`
+          : `<div class="advisor-detail-row" id="adv-rminject-note"><span class="c-dim">rminject</span><span class="${rmElig.state === 'BLOCKED_GUARDRAIL' ? 'c-red' : 'c-yellow'}">${rmElig.state}: ${rmElig.blockOrSkipReason}</span></div>`)
+        : '';
 
       detailEl.innerHTML = `
         <div class="advisor-detail-row"><span class="c-dim">Why</span><span>${selFinding.why}</span></div>
         <div class="advisor-detail-row"><span class="c-dim">Gain Est</span><span class="c-cyan">${gainDetailText}</span></div>
         <div class="advisor-detail-row"><span class="c-dim">Action</span><span class="c-bright">${selFinding.action}</span></div>
+        ${rminjectNoteRow}
         <div class="advisor-detail-row"><span class="c-dim">Cascade</span><span class="c-dim">${selFinding.cascade}</span></div>
         <div style="display:flex; justify-content:space-between; align-items:center; font-size: 11.5px; margin-top: 2px;">
           <span class="c-dim">Rule: <span class="c-bright">${selFinding.id}</span> │ Scope: ${selFinding.scope} │ Confidence: ${selFinding.confidence}</span>
           ${jumpHtml}
         </div>
       `;
+      const rmAdvBtn = document.getElementById('btn-adv-rminject');
+      if (rmAdvBtn && typeof Z.openRminjectModal === 'function') rmAdvBtn.onclick = () => Z.openRminjectModal();
       const jumpBtn = document.getElementById('btn-adv-jump');
       if (jumpBtn) jumpBtn.onclick = () => Z.jumpToFindingTab(selFinding);
       const burstBtn = document.getElementById('btn-adv-burst');

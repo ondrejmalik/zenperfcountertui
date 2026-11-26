@@ -18,7 +18,10 @@
     applyCustomAffinityMask, revertAllSessionAffinities, runAndShowGroupATests, toggleTargetLockPriv,
     toggleProfilerOnOffCpu, toggleProfilerViewMode, toggleProfilerScope, toggleProfilerEtwPause,
     clearProfilerData, toggleProfilerSidecarMap, toggleBurstDuration,
-    startHardwareBurst, cancelHardwareBurst, getActiveProfilerRows
+    startHardwareBurst, cancelHardwareBurst, getActiveProfilerRows,
+    openRminjectModal, setRminjectMode, adjustRminjectHugeGiB, toggleRminjectAutoPin,
+    toggleRminjectFollowChildren, confirmRminjectRelaunch, revertRminjectBaseline,
+    renderRminjectModal, classifyAllocatorEligibility, buildRminjectCommand
   } = Z;
 
   // =========================================================================
@@ -180,6 +183,27 @@
     if (state.pendingIfeoAction) applyIfeoToggle(state.pendingIfeoAction.proc, state.pendingIfeoAction.mod);
   };
 
+  const btnRmStd = document.getElementById('btn-rminject-mode-standard');
+  if (btnRmStd && typeof setRminjectMode === 'function') btnRmStd.onclick = () => setRminjectMode('standard');
+  const rowRmLarge = document.getElementById('row-rminject-mode-large');
+  if (rowRmLarge && typeof setRminjectMode === 'function') rowRmLarge.onclick = () => setRminjectMode('large');
+  const btnRmDec = document.getElementById('btn-rminject-gib-dec');
+  if (btnRmDec && typeof adjustRminjectHugeGiB === 'function') {
+    btnRmDec.onclick = (e) => { e.stopPropagation(); adjustRminjectHugeGiB(-1); };
+  }
+  const btnRmInc = document.getElementById('btn-rminject-gib-inc');
+  if (btnRmInc && typeof adjustRminjectHugeGiB === 'function') {
+    btnRmInc.onclick = (e) => { e.stopPropagation(); adjustRminjectHugeGiB(1); };
+  }
+  const btnRmBase = document.getElementById('btn-rminject-opt-baseline');
+  if (btnRmBase && typeof toggleRminjectAutoPin === 'function') btnRmBase.onclick = () => toggleRminjectAutoPin();
+  const btnRmChild = document.getElementById('btn-rminject-opt-children');
+  if (btnRmChild && typeof toggleRminjectFollowChildren === 'function') btnRmChild.onclick = () => toggleRminjectFollowChildren();
+  const btnRmCancel = document.getElementById('btn-rminject-cancel');
+  if (btnRmCancel) btnRmCancel.onclick = () => closeModal();
+  const btnRmConfirm = document.getElementById('btn-rminject-confirm');
+  if (btnRmConfirm && typeof confirmRminjectRelaunch === 'function') btnRmConfirm.onclick = () => confirmRminjectRelaunch();
+
   document.querySelectorAll('#help-tabs .tab-btn').forEach(btn => {
     btn.onclick = () => {
       state.helpTab = btn.dataset.htab;
@@ -334,6 +358,18 @@
       return;
     }
 
+    if (state.openModal === 'rminject') {
+      if (e.key === '1') { e.preventDefault(); if (typeof setRminjectMode === 'function') setRminjectMode('standard'); }
+      else if (e.key === '2') { e.preventDefault(); if (typeof setRminjectMode === 'function') setRminjectMode('large'); }
+      else if (e.key === '-' || e.key === '_' || e.key === '[') { e.preventDefault(); if (typeof adjustRminjectHugeGiB === 'function') adjustRminjectHugeGiB(-1); }
+      else if (e.key === '+' || e.key === '=' || e.key === ']') { e.preventDefault(); if (typeof adjustRminjectHugeGiB === 'function') adjustRminjectHugeGiB(1); }
+      else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); if (typeof toggleRminjectAutoPin === 'function') toggleRminjectAutoPin(); }
+      else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); if (typeof toggleRminjectFollowChildren === 'function') toggleRminjectFollowChildren(); }
+      else if (e.key === 'y' || e.key === 'Y' || e.key === 'Enter') { e.preventDefault(); if (typeof confirmRminjectRelaunch === 'function') confirmRminjectRelaunch(); }
+      else if (e.key === 'n' || e.key === 'N' || e.key === 'i' || e.key === 'I') { e.preventDefault(); closeModal(); }
+      return;
+    }
+
     if (state.openModal === 'help') {
       if (e.key === '1') { state.helpTab = 'keys'; renderHelpModal(); }
       else if (e.key === '2') { state.helpTab = 'pmu'; renderHelpModal(); }
@@ -421,7 +457,7 @@
       }
     }
 
-    // Tab 4 shortcuts (unattached picker OR attached 'v' VA map toggle)
+    // Tab 4 shortcuts (unattached picker OR attached 'v' VA map toggle / 'i' rminject modal)
     if (state.activeTab === 4) {
       if (!getAttachedProcess()) {
         if (e.key === '/') { e.preventDefault(); document.getElementById('t4-picker-input').focus(); return; }
@@ -435,15 +471,29 @@
           if (list[state.pickerSelectedIdx]) attachProcess(list[state.pickerSelectedIdx].pid);
           return;
         }
-      } else if (e.key === 'v' || e.key === 'V') {
-        toggleVaMapView();
-        return;
+      } else {
+        if (e.key === 'v' || e.key === 'V') {
+          toggleVaMapView();
+          return;
+        }
+        if (e.key === 'i' || e.key === 'I') {
+          e.preventDefault();
+          if (typeof openRminjectModal === 'function') openRminjectModal();
+          return;
+        }
       }
     }
 
     // Tab 5 Advisor shortcuts
     if (state.activeTab === 5) {
       if (e.key === 'f' || e.key === 'F') { openModal('burst'); return; }
+      if (e.key === 'i' || e.key === 'I') {
+        if (getAttachedProcess()) {
+          e.preventDefault();
+          if (typeof openRminjectModal === 'function') openRminjectModal();
+        }
+        return;
+      }
       const diag = state.lastDiag;
       if (diag && diag.ready && diag.findings.length > 0) {
         if (e.key === 'j' || e.key === 'ArrowDown') {
@@ -621,7 +671,17 @@
     cancelHardwareBurst,
     renderAll,
     openModal,
-    closeModal
+    closeModal,
+    classifyAllocatorEligibility: classifyAllocatorEligibility || Z.classifyAllocatorEligibility,
+    buildRminjectCommand: buildRminjectCommand || Z.buildRminjectCommand,
+    openRminjectModal: openRminjectModal || Z.openRminjectModal,
+    confirmRminjectRelaunch: confirmRminjectRelaunch || Z.confirmRminjectRelaunch,
+    setRminjectMode: setRminjectMode || Z.setRminjectMode,
+    adjustRminjectHugeGiB: adjustRminjectHugeGiB || Z.adjustRminjectHugeGiB,
+    toggleRminjectAutoPin: toggleRminjectAutoPin || Z.toggleRminjectAutoPin,
+    toggleRminjectFollowChildren: toggleRminjectFollowChildren || Z.toggleRminjectFollowChildren,
+    revertRminjectBaseline: revertRminjectBaseline || Z.revertRminjectBaseline,
+    renderRminjectModal: renderRminjectModal || Z.renderRminjectModal
   };
 
   // Boot (seed 160 samples so Braille graphs span full width and Advisor >= 10 evidence gate is ready)

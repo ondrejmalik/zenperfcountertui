@@ -13,6 +13,7 @@
       avgL3Miss, avgL3HitPct, avgL3LatNs, avgL3LatCyc, avgL2IcMiss, avgL1Ic, avgL2DcExcl,
       avgBranch, avgBranchPct, avgL2Itlb, avgL1ItlbPct, avgL2Dtlb,
       avgPfRate, avgUsr, avgSys, sysSharePct, avgCoreC0, avgCcxLat,
+      avgAvailPhysPct, seLockMemoryPrivilege,
       avgTierCpi, sumModeledCpi, pushFinding, pushHealthy
     } = ctx;
     const { largePageFailureTriggered } = groupA;
@@ -54,6 +55,13 @@
     }
 
     // --- RULE 2: Heap dTLB + Mimalloc Spillover (dTLB gated strictly on DtlbFull) ---
+    const rminjectEligibility = (proc && typeof Z.classifyAllocatorEligibility === 'function')
+      ? Z.classifyAllocatorEligibility(proc, state.lastSnap, {
+          availPhysPct: avgAvailPhysPct,
+          seLockMemoryPrivilege
+        })
+      : null;
+
     if (proc) {
       const dtlbGain = (hasFreeBase && hasDtlb)
         ? Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Dtlb, 0.80, 'mlp', 'assumes -80% L2 dTLB walks from 2 MiB heap arenas')
@@ -89,6 +97,17 @@
         }
         if (hasDtlb && avgL2Dtlb < 0.50) pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
       } else if (hasDtlb && proc.hugeMiB === 0 && avgL2Dtlb >= 0.50 && proc.wsMiB >= 512) {
+        const rminjectEligible = Boolean(rminjectEligibility && rminjectEligibility.canRelaunch);
+        let dtlbAction = `Switch heap to a 2 MiB large-page allocator (e.g. mimalloc with MIMALLOC_RESERVE_HUGE_OS_PAGES or VirtualAlloc MEM_LARGE_PAGES in custom code).`;
+        if (rminjectEligibility) {
+          if (rminjectEligible) {
+            dtlbAction = rminjectEligibility.recommendedMode === 'large' && rminjectEligibility.recommendedHugeGiB > 0
+              ? `Detected ${rminjectEligibility.linkageLabel}. Press 'i' for non-destructive rminject run --inject --large --env MIMALLOC_RESERVE_HUGE_OS_PAGES=${rminjectEligibility.recommendedHugeGiB} (auto-sized from Peak WS), or jump to Tab 4 (Enter).`
+              : `Detected ${rminjectEligibility.linkageLabel}. Press 'i' for non-destructive rminject run --inject (standard low-RAM mode; --large locked out: ${rminjectEligibility.warnings.join('; ')}).`;
+          } else {
+            dtlbAction = `${dtlbAction} ${rminjectEligibility.blockOrSkipReason}`;
+          }
+        }
         pushFinding({
           id: 'crt_heap_dtlb',
           category: 'TlbTranslationBound',
@@ -100,9 +119,11 @@
           keyMetric: `L2 dTLB ${avgL2Dtlb.toFixed(2)} | Huge 0 B`,
           estGain: dtlbGain,
           why: `${proc.name} uses ${fmtMiB(proc.wsMiB)} Private WS with 0 B 2 MiB huge pages, driving ${avgL2Dtlb.toFixed(3)} MPKI L2 dTLB walks (Zen 2's 2,048-entry L2 dTLB covers only ~8 MiB of 4 KiB pages).`,
-          action: `Switch heap to a 2 MiB large-page allocator (e.g. mimalloc with MIMALLOC_RESERVE_HUGE_OS_PAGES or VirtualAlloc MEM_LARGE_PAGES in custom code).`,
+          action: dtlbAction,
           cascade: `Cuts L2 dTLB walks, lowers Page Faults/s (${Math.round(avgPfRate).toLocaleString()}/s), and removes page-table entry (PTE) pollution from L1d/L2/L3.`,
-          quickJumpTab: 4
+          quickJumpTab: 4,
+          rminjectEligibility,
+          rminjectEligible
         });
       } else if (hasDtlb && avgL2Dtlb < 0.50) {
         pushHealthy('L2 dTLB', `${avgL2Dtlb.toFixed(2)} MPKI`);
@@ -326,6 +347,19 @@
       const mmConfirmed = mmPct >= 40.0 && avgPfRate >= 2000;
       if (mmConfirmed || (avgPfRate >= 2000 && sysSharePct >= 20.0)) {
         const isHi = avgPfRate >= 3500 || (mmConfirmed && mmPct >= 55.0);
+        const rminjectEligible = Boolean(!proc.arenas && rminjectEligibility && rminjectEligibility.canRelaunch);
+        let pfAction = proc.arenas
+          ? `Raise MIMALLOC_PURGE_DELAY (or MIMALLOC_PURGE_DECOMMITS=0) and pre-reserve 2 MiB huge arenas so VirtualAlloc commit/decommit cycles stop trapping into ntoskrnl.`
+          : `Pool and reuse large heap buffers instead of repeatedly allocating/freeing virtual ranges (or test a pooling allocator like mimalloc).`;
+        if (rminjectEligibility) {
+          if (rminjectEligible) {
+            pfAction = rminjectEligibility.recommendedMode === 'large' && rminjectEligibility.recommendedHugeGiB > 0
+              ? `Detected ${rminjectEligibility.linkageLabel}. Press 'i' for non-destructive rminject run --inject --large --env MIMALLOC_RESERVE_HUGE_OS_PAGES=${rminjectEligibility.recommendedHugeGiB} to pool CRT/HeapAlloc traffic and cut VirtualAlloc commit churn.`
+              : `Detected ${rminjectEligibility.linkageLabel}. Press 'i' for non-destructive rminject run --inject (standard low-RAM mode; --large locked out: ${rminjectEligibility.warnings.join('; ')}) to pool CRT allocations.`;
+          } else if (!proc.arenas || rminjectEligibility.state === 'BLOCKED_GUARDRAIL' || rminjectEligibility.state === 'GC_VIRTUALALLOC' || rminjectEligibility.state === 'CUSTOM_ALLOCATOR') {
+            pfAction = `${pfAction} ${rminjectEligibility.blockOrSkipReason}`;
+          }
+        }
         pushFinding({
           id: 'kernel_page_fault_churn',
           category: 'OsKernelChurn',
@@ -348,11 +382,11 @@
           why: mmConfirmed
             ? `SampledProfile kernel frames confirm ${mmPct.toFixed(1)}% (>=40%) of ${proc.name}'s ${kernelSys.targetSysSamples} target kernel samples land in ntoskrnl Memory Manager (Mi*/Mm*/KiFlushProcessTb*) alongside ${Math.round(avgPfRate).toLocaleString()} soft page faults/s (cpuSys ${avgSys.toFixed(1)}%), proving VirtualAlloc commit/decommit thrashing rather than guessing from total sys%.`
             : `${proc.name} averages ${Math.round(avgPfRate).toLocaleString()} page faults/s with kernel time at ${sysSharePct.toFixed(1)}% of CPU execution (usr ${avgUsr.toFixed(1)}% / sys ${avgSys.toFixed(1)}%).`,
-          action: proc.arenas
-            ? `Raise MIMALLOC_PURGE_DELAY (or MIMALLOC_PURGE_DECOMMITS=0) and pre-reserve 2 MiB huge arenas so VirtualAlloc commit/decommit cycles stop trapping into ntoskrnl.`
-            : `Pool and reuse large heap buffers instead of repeatedly allocating/freeing virtual ranges (or test a pooling allocator like mimalloc).`,
+          action: pfAction,
           cascade: `Drops kernel sys% CPU overhead, removes TLB shootdowns, and eliminates frame-time / build-step latency spikes.`,
-          quickJumpTab: 4
+          quickJumpTab: 4,
+          rminjectEligibility,
+          rminjectEligible
         });
       } else {
         pushHealthy('Page faults', `${Math.round(avgPfRate).toLocaleString()}/s (sys ${sysSharePct.toFixed(0)}%)`);

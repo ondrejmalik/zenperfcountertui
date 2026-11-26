@@ -1422,3 +1422,115 @@ table.tui-table tr.selected {
   background: rgba(93, 194, 127, 0.14);
   color: var(--fg-bright);
 }
+
+/* rminject Eligibility Strip (Tab 4), miheap Live Footer, & #modal-rminject */
+.rminject-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 7px;
+  margin-bottom: 5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.rminject-strip.eligible {
+  border-color: rgba(93, 194, 127, 0.35);
+}
+.rminject-strip.skipped {
+  border-color: rgba(223, 176, 82, 0.35);
+}
+.rminject-strip.blocked {
+  border-color: rgba(224, 100, 100, 0.45);
+  background: rgba(224, 100, 100, 0.06);
+}
+.rminject-strip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.btn-rminject-launch {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  flex-shrink: 0;
+}
+.btn-rminject-launch:hover {
+  border-color: var(--green);
+  color: var(--fg-bright);
+  background: rgba(93, 194, 127, 0.14);
+}
+.miheap-footer-bar {
+  margin-top: 5px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-dim);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+.rminject-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rminject-banner {
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  padding: 5px 8px;
+  margin-bottom: 0;
+}
+.rminject-guardrails {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border-dim);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.rminject-guard-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rminject-alert {
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-dim);
+  font-size: 11.5px;
+}
+.rminject-large-row {
+  cursor: pointer;
+}
+.rminject-large-row.is-disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.rminject-gib-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.rminject-gib-val {
+  min-width: 44px;
+  text-align: center;
+}
+.rminject-cmd-preview {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+#btn-rminject-confirm:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  border-color: var(--border);
+  color: var(--fg-muted);
+}

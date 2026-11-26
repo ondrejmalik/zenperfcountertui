@@ -905,6 +905,55 @@
   </div>
 </div>
 
+<!-- RMINJECT + MIHEAP RELAUNCH MODAL ('i' on Tab 4 & Tab 5) -->
+<div class="modal-backdrop" id="modal-rminject">
+  <div class="modal-window">
+    <div class="modal-header">
+      <span class="modal-title" id="rminject-modal-title">Relaunch with rminject + miheap.dll (In-Memory PE Injection)</span>
+      <span class="c-dim">y Confirm │ Esc Cancel</span>
+    </div>
+    <div class="modal-body rminject-modal-body">
+      <div id="rminject-target-banner" class="baseline-info rminject-banner"></div>
+      <div id="rminject-guardrails" class="rminject-guardrails"></div>
+      <div id="rminject-options" class="modal-action-list rminject-options">
+        <button class="modal-action-row" id="btn-rminject-mode-standard" data-rm-act="mode-standard">
+          <span><span class="c-bright">[1]</span> Standard Low-RAM Mode (<span class="c-dim">MIMALLOC_ALLOW_LARGE_OS_PAGES=0</span>, ~2.2x faster alloc/free, 0 locked RAM)</span>
+          <span id="rminject-mode-std-badge" class="c-dim"></span>
+        </button>
+        <div class="modal-action-row rminject-large-row" id="row-rminject-mode-large" data-rm-act="mode-large">
+          <span class="rminject-large-label"><span class="c-bright">[2]</span> --large 2 MiB Huge Arenas (<span class="c-dim">MIMALLOC_RESERVE_HUGE_OS_PAGES</span>)</span>
+          <span class="rminject-gib-controls">
+            <button class="btn-inline" id="btn-rminject-gib-dec" title="Decrease reserved GiB (- or [)">-</button>
+            <span class="c-bright rminject-gib-val" id="rminject-gib-val">3 GiB</span>
+            <button class="btn-inline" id="btn-rminject-gib-inc" title="Increase reserved GiB (+ or ])">+</button>
+            <span id="rminject-mode-large-badge" class="c-dim"></span>
+          </span>
+        </div>
+        <button class="modal-action-row" id="btn-rminject-opt-baseline" data-rm-act="toggle-baseline">
+          <span><span class="c-bright">[b]</span> Auto-pin current session as Baseline before relaunch</span>
+          <span id="rminject-baseline-badge" class="c-green">[x] ON</span>
+        </button>
+        <button class="modal-action-row" id="btn-rminject-opt-children" data-rm-act="toggle-children">
+          <span><span class="c-bright">[c]</span> Follow child processes (<span class="c-dim">--follow-children; skips cmd/pwsh/conhost/WerFault</span>)</span>
+          <span id="rminject-children-badge" class="c-dim">[ ] OFF</span>
+        </button>
+      </div>
+      <div class="section-label" style="margin-top: 4px; margin-bottom: 2px;">
+        <span>Command Preview (Non-Destructive --inject)</span>
+        <span class="c-dim" id="rminject-state-chip"></span>
+      </div>
+      <pre class="code-block rminject-cmd-preview" id="rminject-cmd-preview"></pre>
+    </div>
+    <div class="modal-footer">
+      <span>1/2 Mode │ -/+ or [/] GiB │ b Auto-Pin │ c Children │ y/Enter Relaunch</span>
+      <span style="display:flex; gap:6px; align-items:center;">
+        <button class="btn-inline" id="btn-rminject-cancel">Cancel [N / Esc]</button>
+        <button class="btn-inline btn-pack-apply" id="btn-rminject-confirm">Pin Baseline &amp; Relaunch [y / Enter]</button>
+      </span>
+    </div>
+  </div>
+</div>
+
 <!-- QUIT OVERLAY ('q') -->
 <div class="modal-backdrop" id="modal-quit">
   <div class="modal-window compact">
@@ -932,6 +981,7 @@
 <script src="js/profiler-engine.js"></script>
 <script src="js/profiler-fixtures.js"></script>
 <script src="js/state.js"></script>
+<script src="js/rminject.js"></script>
 <script src="js/telemetry.js"></script>
 <script src="js/advisor-group-a.js"></script>
 <script src="js/advisor-pmu.js"></script>

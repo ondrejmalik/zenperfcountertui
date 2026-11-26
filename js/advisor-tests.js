@@ -944,17 +944,383 @@
     return { passed, total: results.length, results };
   }
 
+  function runRminjectTests() {
+    const {
+      PROCESSES, state, classifyAllocatorEligibility, buildRminjectCommand,
+      createMiheapSuccessorProcess
+    } = Z;
+    const results = [];
+    const check = (name, cond, detail) => results.push({ name, pass: Boolean(cond), detail });
+
+    const byName = (name) => PROCESSES.find(p => p.name.toLowerCase() === name.toLowerCase());
+    const chatterino = byName('chatterino.exe');
+    const rustc = byName('rustc.exe');
+    const deadlock = byName('deadlock.exe');
+    const blender = byName('blender.exe');
+    const chrome = byName('chrome.exe');
+    const cyberpunk = byName('cyberpunk2077.exe');
+    const javaw = byName('javaw.exe');
+    const coreclr = byName('coreclr_sim.exe');
+    const cs2 = byName('cs2.exe');
+
+    // 1. State ELIGIBLE: chatterino.exe (/MD), rustc.exe (HeapAlloc+/MD), synthetic /MT & MinGW msvcrt.dll
+    const eChat = classifyAllocatorEligibility(chatterino);
+    const eRust = classifyAllocatorEligibility(rustc);
+    const mtProc = {
+      pid: 9901,
+      name: 'mt_tool.exe',
+      allocatorType: 'crt_fallback',
+      allocatorLabel: 'Win32 HeapAlloc (/MT)',
+      wsMiB: 900,
+      peakWsMiB: 1024,
+      hugeMiB: 0,
+      modules: [makeMod('mt_tool.exe', 12.0, false, false, 'RX', false, 0x7FF600000000n)],
+      win32Profile: makeWin32Profile({ availPhysPct: 45.0, seLockMemoryPrivilege: 'Present' })
+    };
+    const eMt = classifyAllocatorEligibility(mtProc);
+    const mingwProc = {
+      pid: 9902,
+      name: 'mingw_app.exe',
+      wsMiB: 700,
+      peakWsMiB: 820,
+      hugeMiB: 0,
+      modules: [makeMod('msvcrt.dll', 1.2, false, false, 'RX', true, 0x7FFA81000000n)],
+      win32Profile: makeWin32Profile({ availPhysPct: 45.0, seLockMemoryPrivilege: 'Present' })
+    };
+    const eMingw = classifyAllocatorEligibility(mingwProc);
+    check(
+      'rminject_eligible_md_rust_mt_msvcrt',
+      Boolean(chatterino) && Boolean(rustc) &&
+      eChat.state === 'ELIGIBLE' && eChat.canRelaunch === true && eChat.recommendedMode === 'large' && eChat.recommendedHugeGiB === 3 &&
+      eRust.state === 'ELIGIBLE' && eRust.canRelaunch === true && eRust.recommendedMode === 'large' && eRust.recommendedHugeGiB === 3 &&
+      eMt.state === 'ELIGIBLE' && eMt.canRelaunch === true && eMt.recommendedHugeGiB === 2 &&
+      eMingw.state === 'ELIGIBLE' && eMingw.canRelaunch === true && eMingw.linkageLabel.includes('msvcrt.dll'),
+      `chat=${eChat.state}/${eChat.recommendedHugeGiB}G, rust=${eRust.state}/${eRust.recommendedHugeGiB}G, mt=${eMt.state}/${eMt.recommendedHugeGiB}G, mingw=${eMingw.linkageLabel}`
+    );
+
+    // 2. State ALREADY_MIMALLOC: deadlock.exe, blender.exe, miheap_injected
+    const eDeadlock = classifyAllocatorEligibility(deadlock);
+    const eBlender = classifyAllocatorEligibility(blender);
+    const injectedPreview = createMiheapSuccessorProcess(chatterino, { pid: 49900, mode: 'large', hugeGiB: 3 });
+    const eInjected = classifyAllocatorEligibility(injectedPreview);
+    check(
+      'rminject_already_mimalloc_deadlock_blender_injected',
+      eDeadlock.state === 'ALREADY_MIMALLOC' && eDeadlock.canRelaunch === false &&
+      eBlender.state === 'ALREADY_MIMALLOC' && eBlender.canRelaunch === false &&
+      eInjected.state === 'ALREADY_MIMALLOC' && eInjected.canRelaunch === false && eInjected.linkageLabel.includes('miheap.dll'),
+      `deadlock=${eDeadlock.state}, blender=${eBlender.state}, injected=${eInjected.state}`
+    );
+
+    // 3. State CUSTOM_ALLOCATOR: chrome.exe, cyberpunk2077.exe, tbbmalloc.dll / jemalloc.dll
+    const eChrome = classifyAllocatorEligibility(chrome);
+    const eCp = classifyAllocatorEligibility(cyberpunk);
+    const eTbb = classifyAllocatorEligibility({
+      pid: 9903, name: 'tbb_app.exe', wsMiB: 1024, hugeMiB: 0,
+      modules: [makeMod('tbbmalloc.dll', 2.0, false, false, 'RX', true, 0x7FF800000000n)],
+      win32Profile: makeWin32Profile()
+    });
+    check(
+      'rminject_custom_allocator_chrome_cyberpunk_tbb',
+      eChrome.state === 'CUSTOM_ALLOCATOR' && eChrome.canRelaunch === false && eChrome.blockOrSkipReason.includes('PartitionAlloc') &&
+      eCp.state === 'CUSTOM_ALLOCATOR' && eCp.canRelaunch === false && eCp.blockOrSkipReason.includes('REDengine4') &&
+      eTbb.state === 'CUSTOM_ALLOCATOR' && eTbb.canRelaunch === false,
+      `chrome=${eChrome.state}, cp2077=${eCp.state}, tbb=${eTbb.state}`
+    );
+
+    // 4. State GC_VIRTUALALLOC: javaw.exe, coreclr_sim.exe, UnityPlayer / mono
+    const eJava = classifyAllocatorEligibility(javaw);
+    const eClr = classifyAllocatorEligibility(coreclr);
+    const eUnity = classifyAllocatorEligibility({
+      pid: 9904, name: 'unity_app.exe', wsMiB: 1500, hugeMiB: 0,
+      modules: [makeMod('UnityPlayer.dll', 32.0, false, false, 'RX', true, 0x7FF810000000n)],
+      win32Profile: makeWin32Profile()
+    });
+    check(
+      'rminject_gc_virtualalloc_javaw_coreclr_unity',
+      eJava.state === 'GC_VIRTUALALLOC' && eJava.canRelaunch === false && eJava.blockOrSkipReason.includes('-XX:+UseLargePages') &&
+      eClr.state === 'GC_VIRTUALALLOC' && eClr.canRelaunch === false && eClr.blockOrSkipReason.includes('coreclr.dll') &&
+      eUnity.state === 'GC_VIRTUALALLOC' && eUnity.canRelaunch === false,
+      `javaw=${eJava.state}, coreclr=${eClr.state}, unity=${eUnity.state}`
+    );
+
+    // 5. State BLOCKED_GUARDRAIL: cs2.exe, simProtectedProcess, anti-cheat modules
+    const eCs2 = classifyAllocatorEligibility(cs2);
+    const eSimProt = classifyAllocatorEligibility(chatterino, null, { simProtectedProcess: true });
+    const eEac = classifyAllocatorEligibility({
+      pid: 9905, name: 'eac_game.exe', wsMiB: 1024, hugeMiB: 0,
+      modules: [makeMod('EasyAntiCheat_EOS.dll', 4.0, false, false, 'RX', true, 0x7FF820000000n)],
+      win32Profile: makeWin32Profile()
+    });
+    const eVgk = classifyAllocatorEligibility({
+      pid: 9906, name: 'val_sim.exe', wsMiB: 1024, hugeMiB: 0,
+      modules: [makeMod('vgk.sys', 2.0, false, false, 'RX', true, 0x7FF830000000n)],
+      win32Profile: makeWin32Profile()
+    });
+    check(
+      'rminject_blocked_guardrail_cs2_sim_anticheat',
+      eCs2.state === 'BLOCKED_GUARDRAIL' && eCs2.canRelaunch === false && eCs2.recommendedMode === 'standard' && eCs2.recommendedHugeGiB === 0 &&
+      eSimProt.state === 'BLOCKED_GUARDRAIL' && eSimProt.canRelaunch === false &&
+      eEac.state === 'BLOCKED_GUARDRAIL' && eEac.canRelaunch === false &&
+      eVgk.state === 'BLOCKED_GUARDRAIL' && eVgk.canRelaunch === false,
+      `cs2=${eCs2.state}, simProt=${eSimProt.state}, eac=${eEac.state}, vgk=${eVgk.state}`
+    );
+
+    // 6. Guardrail clamps: SeLockMemoryPrivilege === 'Missing', availPhysPct < 20, Peak-WS 45% cap, & never 'patch'
+    const eNoPriv = classifyAllocatorEligibility(chatterino, null, { seLockMemoryPrivilege: 'Missing', availPhysPct: 48.0 });
+    const eLowRam = classifyAllocatorEligibility(chatterino, null, { seLockMemoryPrivilege: 'Present', availPhysPct: 19.5 });
+    const hugePeakProc = {
+      ...mtProc,
+      peakWsMiB: 20480,
+      win32Profile: makeWin32Profile({ availPhysPct: 50.0, seLockMemoryPrivilege: 'Present' })
+    };
+    const eCapped = classifyAllocatorEligibility(hugePeakProc, null, { totalRamGiB: 32 });
+    const cmdLarge = buildRminjectCommand(chatterino, { mode: 'large', hugeGiB: 3, followChildren: true }, eChat);
+    const cmdStd = buildRminjectCommand(chatterino, { mode: 'large', hugeGiB: 3 }, eNoPriv);
+    check(
+      'rminject_guardrail_clamps_and_non_destructive_cmd',
+      eNoPriv.state === 'ELIGIBLE' && eNoPriv.recommendedMode === 'standard' && eNoPriv.recommendedHugeGiB === 0 &&
+      eLowRam.state === 'ELIGIBLE' && eLowRam.recommendedMode === 'standard' && eLowRam.recommendedHugeGiB === 0 &&
+      eCapped.maxSafeGiB === 7 && eCapped.recommendedHugeGiB === 7 &&
+      cmdLarge === 'rminject run --inject --large --env MIMALLOC_RESERVE_HUGE_OS_PAGES=3 --follow-children -- chatterino.exe' &&
+      cmdStd === 'rminject run --inject --env MIMALLOC_ALLOW_LARGE_OS_PAGES=0 -- chatterino.exe' &&
+      !cmdLarge.includes(' patch') && !cmdStd.includes(' patch'),
+      `noPriv=${eNoPriv.recommendedMode}/${eNoPriv.recommendedHugeGiB}, lowRam=${eLowRam.recommendedMode}/${eLowRam.recommendedHugeGiB}, cap=${eCapped.recommendedHugeGiB}/${eCapped.maxSafeGiB}`
+    );
+
+    // 7. Advisor enrichment & suppression (crt_heap_dtlb & kernel_page_fault_churn)
+    const mkAdvOv = (proc, extra = {}) => ({
+      samples: 15,
+      muxId: 'full',
+      proc,
+      base: null,
+      avg: {
+        avgC0Pct: 30.0, instPerSec: 8e9, ipc: proc.pmuProfile.ipc, actualCpi: 1 / proc.pmuProfile.ipc, modeledCpi: 0.50,
+        oooHiddenCpi: 0.0, retiringPct: 28.0, effGhz: 4.18,
+        dram: 1.4, demDram: 0.9, hwpfDram: 0.5, l2pfDram: 0.2,
+        l3Hit: 2.3, l3Miss: 1.4, l3HitPct: 84.0, latNs: 49.0, latCyc: 204,
+        l2icMiss: 1.4, l2icExcl: 8.0, l1ic: 9.4, l2dcExcl: 18.0,
+        branch: 2.6, branchMissPct: 2.1, l2itlb: 0.14, l1ItlbMissPct: 0.36,
+        l2dtlb: proc.pmuProfile.l2Dtlb, pageFaultRate: proc.pmuProfile.pfRate,
+        cpuUsr: proc.pmuProfile.cpuUsr, cpuSys: proc.pmuProfile.cpuSys,
+        ...(extra.avg || {})
+      },
+      avgCoreC0: proc.pmuProfile.coreC0,
+      avgCcxLat: [48, 50],
+      avgGpu3dPct: 20.0,
+      avgCoreDpc: new Array(12).fill(0.3),
+      avgCoreIrq: new Array(12).fill(0.2),
+      avgCoreIrqRate: new Array(12).fill(300),
+      avgHardPageReads: 0.0,
+      avgAvailPhysPct: proc.win32Profile.availPhysPct,
+      avgCommitPct: 48.0,
+      avgCtxSw: 18000,
+      avgSyncWaitPct: 20.0,
+      topWaitReason: 'WrQueue',
+      priorityClass: proc.win32Profile.priorityClass || 'NORMAL',
+      ecoQos: proc.win32Profile.ecoQos || 'Inactive',
+      seLockMemoryPrivilege: proc.win32Profile.seLockMemoryPrivilege || 'Present',
+      noisyNeighbors: [],
+      ...extra
+    });
+    const dChatAdv = evaluateDiagnostics(mkAdvOv(chatterino));
+    const fChatDtlb = dChatAdv.findings.find(f => f.id === 'crt_heap_dtlb');
+    const fChatPf = dChatAdv.findings.find(f => f.id === 'kernel_page_fault_churn');
+    const dChatNoPriv = evaluateDiagnostics(mkAdvOv(chatterino, { seLockMemoryPrivilege: 'Missing' }));
+    const fChatNoPrivDtlb = dChatNoPriv.findings.find(f => f.id === 'crt_heap_dtlb');
+    const dChromeAdv = evaluateDiagnostics(mkAdvOv(chrome));
+    const fChromeDtlb = dChromeAdv.findings.find(f => f.id === 'crt_heap_dtlb');
+    const dProtFallback = evaluateDiagnostics(mkAdvOv({ ...chatterino, protectedProcess: true, crtProfile: { ...chatterino.crtProfile, protected: true } }));
+    const fProtFallback = dProtFallback.findings.find(f => f.id === 'crt_heap_dtlb');
+    check(
+      'rminject_advisor_enrichment_and_suppression',
+      Boolean(fChatDtlb) && fChatDtlb.rminjectEligible === true &&
+      fChatDtlb.rminjectEligibility.recommendedHugeGiB === 3 &&
+      fChatDtlb.action.includes('MIMALLOC_RESERVE_HUGE_OS_PAGES=3') &&
+      fChatDtlb.estGain.kind === 'numeric' &&
+      Boolean(fChatPf) && fChatPf.rminjectEligible === true &&
+      Boolean(fChatNoPrivDtlb) && fChatNoPrivDtlb.rminjectEligible === true &&
+      fChatNoPrivDtlb.rminjectEligibility.recommendedHugeGiB === 0 &&
+      fChatNoPrivDtlb.action.includes('standard low-RAM mode') &&
+      Boolean(fChromeDtlb) && fChromeDtlb.rminjectEligible === false &&
+      fChromeDtlb.rminjectEligibility.state === 'CUSTOM_ALLOCATOR' &&
+      fChromeDtlb.action.includes('PartitionAlloc') &&
+      Boolean(fProtFallback) && fProtFallback.rminjectEligible === false &&
+      fProtFallback.rminjectEligibility.state === 'BLOCKED_GUARDRAIL',
+      `chatDtlb=${fChatDtlb?.rminjectEligible}, chatPf=${fChatPf?.rminjectEligible}, noPrivGiB=${fChatNoPrivDtlb?.rminjectEligibility?.recommendedHugeGiB}, chrome=${fChromeDtlb?.rminjectEligible}, prot=${fProtFallback?.rminjectEligible}`
+    );
+
+    // 8. Successor process builder transitions
+    const succLarge = createMiheapSuccessorProcess(chatterino, { pid: 49200, mode: 'large', hugeGiB: 3 });
+    check(
+      'rminject_successor_process_builder',
+      succLarge.allocatorType === 'miheap_injected' &&
+      succLarge.hugeMiB === 3072 &&
+      succLarge.arenas && succLarge.arenas.hugeArenas.length === 3 && succLarge.arenas.osArenas.length === 0 &&
+      succLarge.miheapStats && succLarge.miheapStats.miAllocs > 0 && succLarge.miheapStats.crts.includes('ucrtbase.dll') &&
+      succLarge.pmuProfile.l2Dtlb < chatterino.pmuProfile.l2Dtlb &&
+      succLarge.pmuProfile.pfRate < chatterino.pmuProfile.pfRate,
+      `hugeMiB=${succLarge.hugeMiB}, arenas=${succLarge.arenas.hugeArenas.length}, dtlb=${chatterino.pmuProfile.l2Dtlb}->${succLarge.pmuProfile.l2Dtlb}`
+    );
+
+    const passed = results.filter(r => r.pass).length;
+    return { passed, total: results.length, results };
+  }
+
+  function runRminjectActionTests() {
+    const {
+      PROCESSES, state, openRminjectModal, setRminjectMode, adjustRminjectHugeGiB,
+      toggleRminjectAutoPin, toggleRminjectFollowChildren, confirmRminjectRelaunch,
+      revertRminjectBaseline, resetHistoryAndSeed
+    } = Z;
+    const results = [];
+    const check = (name, cond, detail) => results.push({ name, pass: Boolean(cond), detail });
+
+    if (typeof confirmRminjectRelaunch !== 'function') {
+      return { passed: 0, total: 0, results };
+    }
+
+    const byName = (name) => PROCESSES.find(p => p.name.toLowerCase() === name.toLowerCase());
+    const chatterino = byName('chatterino.exe');
+    const cs2 = byName('cs2.exe');
+    const chrome = byName('chrome.exe');
+
+    // Snapshot global state so browser 'b -> v' self-test never corrupts the live session
+    const saved = {
+      attachedPid: state.attachedPid,
+      waitingTarget: state.waitingTarget,
+      activeBaseline: state.activeBaseline,
+      activeTab: state.activeTab,
+      openModal: state.openModal,
+      simProtectedProcess: state.simProtectedProcess,
+      memShowVaMap: state.memShowVaMap,
+      advisorSelectedIdx: state.advisorSelectedIdx,
+      modSelectedIdx: state.modSelectedIdx,
+      threadSelectedIdx: state.threadSelectedIdx,
+      affinityModalTid: state.affinityModalTid,
+      sampleCount: state.sampleCount,
+      rminjectModal: state.rminjectModal
+        ? { ...state.rminjectModal, successorBySourcePid: { ...(state.rminjectModal.successorBySourcePid || {}) } }
+        : null,
+      cum: { ...state.cum, coreC0Sum: [...state.cum.coreC0Sum], ccxLatSum: [...state.cum.ccxLatSum], coreDpcSum: [...state.cum.coreDpcSum], coreIrqSum: [...state.cum.coreIrqSum], coreIrqRateSum: [...state.cum.coreIrqRateSum], bgProcCpuSum: { ...state.cum.bgProcCpuSum } },
+      history: Object.fromEntries(Object.entries(state.history).map(([k, v]) => [k, [...v]])),
+      presentFrames: [...state.presentFrames],
+      spikeRing: [...state.spikeRing],
+      threadRollingWindow: [...state.threadRollingWindow],
+      presentRollingWindow: [...state.presentRollingWindow],
+      vaMapCache: state.vaMapCache,
+      vaMapTickCounter: state.vaMapTickCounter,
+      lastSnap: state.lastSnap,
+      lastDiag: state.lastDiag,
+      procLen: PROCESSES.length,
+      chatPriv: chatterino && chatterino.win32Profile ? chatterino.win32Profile.seLockMemoryPrivilege : 'Present'
+    };
+
+    try {
+      // 1. Reject blocked & ineligible targets
+      const rejCs2 = confirmRminjectRelaunch({ proc: cs2 });
+      const rejChrome = confirmRminjectRelaunch({ proc: chrome });
+      check(
+        'rminject_action_rejects_blocked_and_custom',
+        !rejCs2.ok && rejCs2.error === 'BLOCKED_GUARDRAIL' &&
+        !rejChrome.ok && rejChrome.error === 'CUSTOM_ALLOCATOR',
+        `cs2=${rejCs2.error}, chrome=${rejChrome.error}`
+      );
+
+      // 2. Modal draft guardrails under Missing SeLockMemoryPrivilege & low availPhysPct
+      state.attachedPid = chatterino.pid;
+      state.waitingTarget = null;
+      chatterino.win32Profile.seLockMemoryPrivilege = 'Missing';
+      resetHistoryAndSeed(12);
+      openRminjectModal(chatterino);
+      const lockedModeOk = setRminjectMode('large');
+      const lockedStepOk = adjustRminjectHugeGiB(1);
+      const clampedPriv = confirmRminjectRelaunch({ proc: chatterino, mode: 'large', hugeGiB: 3, autoPinBaseline: false, seedSamples: 12 });
+      chatterino.win32Profile.seLockMemoryPrivilege = 'Present';
+      const clampedRam = confirmRminjectRelaunch({ proc: chatterino, mode: 'large', hugeGiB: 3, availPhysPct: 14.0, autoPinBaseline: false, seedSamples: 12 });
+      check(
+        'rminject_action_guardrail_clamps_standard_mode',
+        lockedModeOk === false && lockedStepOk === false &&
+        state.rminjectModal.mode === 'standard' && state.rminjectModal.hugeGiB === 0 &&
+        clampedPriv.ok && clampedPriv.process.hugeMiB === 0 && clampedPriv.process.miheapStats.mode === 'standard' &&
+        clampedRam.ok && clampedRam.process.hugeMiB === 0 && clampedRam.process.miheapStats.mode === 'standard',
+        `lockedMode=${lockedModeOk}, privMode=${clampedPriv.process?.miheapStats?.mode}, ramMode=${clampedRam.process?.miheapStats?.mode}`
+      );
+
+      // 3. Closed-loop relaunch on chatterino.exe: pin baseline, attach miheap_injected, drop l2Dtlb vs BASE, revert
+      state.attachedPid = chatterino.pid;
+      state.activeBaseline = null;
+      resetHistoryAndSeed(15);
+      openRminjectModal(chatterino);
+      const incRes = adjustRminjectHugeGiB(1); // 3 -> 4
+      const decRes = adjustRminjectHugeGiB(-1); // 4 -> 3
+      const childState = toggleRminjectFollowChildren();
+      const res = confirmRminjectRelaunch({ seedSamples: 16 });
+      const postDtlb = state.lastSnap ? state.lastSnap.l2Dtlb : 99;
+      const baseDtlb = state.activeBaseline ? state.activeBaseline.l2dtlbMpki : 0;
+      const reverted = revertRminjectBaseline();
+      check(
+        'rminject_action_closed_loop_relaunch_and_revert',
+        incRes === true && decRes === true && childState === true &&
+        res.ok === true &&
+        res.baseline && res.baseline.name.startsWith('chatterino_pre_rminject_') &&
+        baseDtlb >= 0.50 &&
+        res.process.allocatorType === 'miheap_injected' &&
+        res.process.arenas && res.process.arenas.hugeArenas.length === 3 &&
+        res.process.miheapStats && res.process.miheapStats.miAllocs === 142800 &&
+        res.process.miheapStats.followChildren === true &&
+        state.activeTab === 4 &&
+        postDtlb < baseDtlb &&
+        reverted === true && state.attachedPid === chatterino.pid,
+        `base=${res.baseline?.name}, dtlb=${baseDtlb.toFixed(2)}->${postDtlb.toFixed(2)}, arenas=${res.process.arenas?.hugeArenas?.length}, reverted=${reverted}`
+      );
+    } finally {
+      if (chatterino && chatterino.win32Profile) chatterino.win32Profile.seLockMemoryPrivilege = saved.chatPriv;
+      PROCESSES.length = saved.procLen;
+      state.attachedPid = saved.attachedPid;
+      state.waitingTarget = saved.waitingTarget;
+      state.activeBaseline = saved.activeBaseline;
+      state.activeTab = saved.activeTab;
+      state.openModal = saved.openModal;
+      state.simProtectedProcess = saved.simProtectedProcess;
+      state.memShowVaMap = saved.memShowVaMap;
+      state.advisorSelectedIdx = saved.advisorSelectedIdx;
+      state.modSelectedIdx = saved.modSelectedIdx;
+      state.threadSelectedIdx = saved.threadSelectedIdx;
+      state.affinityModalTid = saved.affinityModalTid;
+      state.sampleCount = saved.sampleCount;
+      if (saved.rminjectModal) state.rminjectModal = saved.rminjectModal;
+      state.cum = saved.cum;
+      state.history = saved.history;
+      state.presentFrames = saved.presentFrames;
+      state.spikeRing = saved.spikeRing;
+      state.threadRollingWindow = saved.threadRollingWindow;
+      state.presentRollingWindow = saved.presentRollingWindow;
+      state.vaMapCache = saved.vaMapCache;
+      state.vaMapTickCounter = saved.vaMapTickCounter;
+      state.lastSnap = saved.lastSnap;
+      state.lastDiag = saved.lastDiag;
+      if (typeof document !== 'undefined' && typeof Z.renderAll === 'function') {
+        Z.renderAll();
+      }
+    }
+
+    const passed = results.filter(r => r.pass).length;
+    return { passed, total: results.length, results };
+  }
+
   function runAllDiagnosticTests() {
     const a = runGroupADiagnosticTests();
     const b = runDeepDiveTests();
     const c = runActionableRulesTests();
-    const results = [...a.results, ...b.results, ...c.results];
+    const d = runRminjectTests();
+    const e = typeof Z.confirmRminjectRelaunch === 'function' ? runRminjectActionTests() : { passed: 0, total: 0, results: [] };
+    const results = [...a.results, ...b.results, ...c.results, ...d.results, ...e.results];
     return {
-      passed: a.passed + b.passed + c.passed,
-      total: a.total + b.total + c.total,
+      passed: a.passed + b.passed + c.passed + d.passed + e.passed,
+      total: a.total + b.total + c.total + d.total + e.total,
       results
     };
   }
 
-  Object.assign(Z, { runGroupADiagnosticTests, runDeepDiveTests, runActionableRulesTests, runAllDiagnosticTests });
+  Object.assign(Z, { runGroupADiagnosticTests, runDeepDiveTests, runActionableRulesTests, runRminjectTests, runRminjectActionTests, runAllDiagnosticTests });
 })();

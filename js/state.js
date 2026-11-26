@@ -47,8 +47,18 @@
     affinityModalTid: null,
     memShowVaMap: false,
     originalAffinityByPid: {}, // { [pid]: { [tid]: originalMask } }
-    openModal: null,     // null | 'picker' | 'packs' | 'baseline' | 'help' | 'quit' | 'ifeo' | 'affinity' | 'burst'
+    openModal: null,     // null | 'picker' | 'packs' | 'baseline' | 'help' | 'quit' | 'ifeo' | 'affinity' | 'burst' | 'rminject'
     helpTab: 'keys',
+
+    // rminject + miheap relaunch modal draft state
+    rminjectModal: {
+      targetPid: null,
+      mode: 'large',           // 'standard' | 'large'
+      hugeGiB: 3,              // MIMALLOC_RESERVE_HUGE_OS_PAGES GiB (clamped by guardrails)
+      autoPinBaseline: true,   // Auto-pin current cumulative session as Baseline before relaunch
+      followChildren: false,   // --follow-children
+      successorBySourcePid: {} // sourcePid -> injected successor PID
+    },
 
     // Tab 7 Profiler state (Live ETW On-CPU/Off-CPU + AMDuProfCLI Burst Engine)
     profiler: {

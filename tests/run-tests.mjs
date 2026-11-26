@@ -43,6 +43,7 @@ const scripts = [
   'js/profiler-engine.js',
   'js/profiler-fixtures.js',
   'js/state.js',
+  'js/rminject.js',
   'js/telemetry.js',
   'js/advisor-group-a.js',
   'js/advisor-pmu.js',
@@ -100,11 +101,29 @@ const requiredIds = [
   'modal-packs', 'pack-budget-meter', 'pack-presets-strip', 'pack-guardrail-note',
   'pack-picker-tbody', 'overview-uarch-wrap', 'overview-uarch-tbody',
   'cpi-row-decode', 'cpi-track-decode',
-  'js/packs.js', 'js/render-pack-picker.js', 'js/packs-tests.js'
+  'js/packs.js', 'js/render-pack-picker.js', 'js/packs-tests.js',
+  'js/rminject.js',
+  'modal-rminject', 'rminject-modal-title', 'rminject-target-banner', 'rminject-guardrails',
+  'rminject-options', 'btn-rminject-mode-standard', 'rminject-mode-std-badge',
+  'row-rminject-mode-large', 'btn-rminject-gib-dec', 'rminject-gib-val', 'btn-rminject-gib-inc',
+  'rminject-mode-large-badge', 'btn-rminject-opt-baseline', 'rminject-baseline-badge',
+  'btn-rminject-opt-children', 'rminject-children-badge', 'rminject-state-chip',
+  'rminject-cmd-preview', 'btn-rminject-cancel', 'btn-rminject-confirm'
 ];
 const missingIds = requiredIds.filter(id => !html.includes(id));
 if (missingIds.length > 0) {
   console.error('[FAIL] HTML missing required elements/scripts:', missingIds);
+  process.exit(1);
+}
+// Verify js/rminject.js load order in HTML (after state.js and before advisor-pmu.js / render-tabs.js / render-modals.js / actions.js)
+const stateScriptIdx = html.indexOf('src="js/state.js"');
+const rminjectScriptIdx = html.indexOf('src="js/rminject.js"');
+const advPmuScriptIdx = html.indexOf('src="js/advisor-pmu.js"');
+const renderTabsScriptIdx = html.indexOf('src="js/render-tabs.js"');
+const renderModalsScriptIdx = html.indexOf('src="js/render-modals.js"');
+const actionsScriptIdx = html.indexOf('src="js/actions.js"');
+if (!(stateScriptIdx > 0 && rminjectScriptIdx > stateScriptIdx && advPmuScriptIdx > rminjectScriptIdx && renderTabsScriptIdx > rminjectScriptIdx && renderModalsScriptIdx > rminjectScriptIdx && actionsScriptIdx > rminjectScriptIdx)) {
+  console.error('[FAIL] js/rminject.js script load order invalid');
   process.exit(1);
 }
 // Verify #kernel-strip sits directly below #ccx-strip and above .main-pane, and .keybar stays <= 7 items
@@ -223,34 +242,108 @@ console.log('[PASS] Tab 7 symbol context strip clean (3 lines only, no misplaced
     process.exit(1);
   }
   console.log('[PASS] k toggles #kernel-strip on all tabs (1-7) while ArrowUp/ArrowDown scroll tables without toggling');
+
+  // Verify 'i' hotkey on Tab 4 & Tab 5 + #modal-rminject controls + closed-loop relaunch action suite
+  const chatProc = domSandbox.Zen2Top.PROCESSES.find(p => p.name === 'chatterino.exe');
+  const chromeProc = domSandbox.Zen2Top.PROCESSES.find(p => p.name === 'chrome.exe');
+  if (!chatProc || !chromeProc) {
+    console.error('[FAIL] Missing chatterino.exe or chrome.exe profile in domCtx');
+    process.exit(1);
+  }
+  // Detached Tab 4: 'i' must NOT open #modal-rminject
+  domSandbox.Zen2Top.detachProcess();
+  st.activeTab = 4;
+  st.openModal = null;
+  fireKey('i');
+  if (st.openModal === 'rminject') {
+    console.error('[FAIL] i hotkey opened #modal-rminject while detached on Tab 4');
+    process.exit(1);
+  }
+  // Attached chatterino.exe on Tab 4: 'i' opens #modal-rminject, Esc closes
+  domSandbox.Zen2Top.attachProcess(chatProc.pid);
+  st.activeTab = 4;
+  fireKey('i');
+  if (st.openModal !== 'rminject' || !getEl('modal-rminject').classList.contains('open')) {
+    console.error('[FAIL] i hotkey did not open #modal-rminject on Tab 4');
+    process.exit(1);
+  }
+  fireKey('Escape');
+  if (st.openModal !== null) {
+    console.error('[FAIL] Escape did not close #modal-rminject');
+    process.exit(1);
+  }
+  // Attached chrome.exe on Tab 5: suppress btn-adv-rminject
+  domSandbox.Zen2Top.attachProcess(chromeProc.pid);
+  st.activeTab = 5;
+  domSandbox.Zen2Top.renderAll();
+  const chromeAdvHtml = getEl('advisor-detail').innerHTML;
+  if (chromeAdvHtml.includes('btn-adv-rminject')) {
+    console.error('[FAIL] Tab 5 rendered btn-adv-rminject for custom allocator chrome.exe');
+    process.exit(1);
+  }
+  // Attached chatterino.exe on Tab 5: render btn-adv-rminject, 'i' opens modal, 'y' relaunches to Tab 4 miheap_injected
+  domSandbox.Zen2Top.attachProcess(chatProc.pid);
+  st.activeTab = 5;
+  domSandbox.Zen2Top.renderAll();
+  if (!getEl('advisor-detail').innerHTML.includes('btn-adv-rminject')) {
+    console.error('[FAIL] Tab 5 missing btn-adv-rminject for eligible chatterino.exe');
+    process.exit(1);
+  }
+  fireKey('i');
+  if (st.openModal !== 'rminject') {
+    console.error('[FAIL] i hotkey did not open #modal-rminject on Tab 5');
+    process.exit(1);
+  }
+  fireKey('y');
+  const postProc = domSandbox.Zen2Top.getAttachedProcess();
+  if (!postProc || postProc.allocatorType !== 'miheap_injected' || st.activeTab !== 4 || st.openModal !== null) {
+    console.error('[FAIL] Modal y confirm did not relaunch into miheap_injected on Tab 4:', {
+      allocatorType: postProc?.allocatorType, activeTab: st.activeTab, openModal: st.openModal
+    });
+    process.exit(1);
+  }
+  console.log('[PASS] i hotkey on Tab 4 & Tab 5, chrome.exe button suppression, and #modal-rminject y relaunch verified');
+
+  // Run closed-loop action/relaunch tests inside domCtx (where actions.js is loaded)
+  const rmActionReport = domSandbox.Zen2Top.runRminjectActionTests();
+  console.log(`=== rminject Action Transitions: ${rmActionReport.passed}/${rmActionReport.total} PASSED ===`);
+  for (const r of rmActionReport.results) {
+    console.log(`${r.pass ? '[PASS]' : '[FAIL]'} ${r.name}: ${r.detail}`);
+  }
+  if (rmActionReport.passed !== rmActionReport.total) {
+    process.exit(1);
+  }
 }
 
-// Verify all static DOM IDs referenced in render-profiler.js and render-pack-picker.js exist in the HTML
+// Verify all static DOM IDs referenced in render-profiler.js, render-pack-picker.js, render-modals.js, and rminject controls exist in the HTML
 const packPickerJs = fs.readFileSync(path.join(rootDir, 'js/render-pack-picker.js'), 'utf8');
+const modalsJs = fs.readFileSync(path.join(rootDir, 'js/render-modals.js'), 'utf8');
+const mainJs = fs.readFileSync(path.join(rootDir, 'js/main.js'), 'utf8');
 const dynamicIds = new Set(['btn-prof-source', 'btn-prof-scope', 'btn-prof-onoff', 'btn-prof-burst', 'btn-prof-view', 'btn-prof-pause', 'btn-prof-clear', 'btn-prof-sidecar']);
-const staticIds = [...profJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g), ...packPickerJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)]
-  .map(m => m[1])
-  .filter(id => !dynamicIds.has(id));
+const staticIds = [...new Set([
+  ...profJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g),
+  ...packPickerJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g),
+  ...modalsJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g),
+  ...mainJs.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)
+].map(m => m[1]).filter(id => !dynamicIds.has(id)))];
 const missingStatic = staticIds.filter(id => !html.includes(`id="${id}"`));
 if (missingStatic.length > 0) {
-  console.error('[FAIL] Missing static DOM IDs referenced by renderers:', missingStatic);
+  console.error('[FAIL] Missing static DOM IDs referenced by renderers/modals/main:', missingStatic);
   process.exit(1);
 }
-console.log('[PASS] All ' + staticIds.length + ' static DOM IDs in profiler & pack picker renderers verified in HTML');
+console.log('[PASS] All ' + staticIds.length + ' static DOM IDs in profiler, pack picker, modals & main verified in HTML');
 
-// Check that no em-dashes or en-dashes appear in our newly authored UI JS / HTML strings
-for (const rel of [
-  'js/symbols.js', 'js/profiler-engine.js', 'js/profiler-fixtures.js', 'js/render-profiler.js', 'js/profiler-tests.js',
-  'js/packs.js', 'js/render-pack-picker.js', 'js/packs-tests.js', 'js/config.js', 'js/advisor.js', 'js/advisor-pmu.js',
-  'js/render-overview.js', 'js/render-modals.js'
-]) {
+// Check that no em-dashes or en-dashes appear in any HTML, CSS, or JS file
+const jsFiles = fs.readdirSync(path.join(rootDir, 'js')).filter(f => f.endsWith('.js')).map(f => `js/${f}`);
+const dashFiles = ['zen2top_interactive_tui_prototype.html', 'styles/zen2top.css', ...jsFiles];
+for (const rel of dashFiles) {
   const txt = fs.readFileSync(path.join(rootDir, rel), 'utf8');
   if (/[\u2013\u2014]/.test(txt)) {
     console.error('[FAIL] Found em/en dash in', rel);
     process.exit(1);
   }
 }
-console.log('[PASS] Zero em/en dashes across all profiler & modular pack modules');
+console.log(`[PASS] Zero em/en dashes across all ${dashFiles.length} HTML/CSS/JS files`);
 
 if (report.passed !== report.total) {
   process.exit(1);
