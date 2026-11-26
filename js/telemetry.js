@@ -54,6 +54,7 @@
     const instDelta = instPerSec * dtSec;
     const aperfDelta = aperfPerSec * dtSec;
     const mperfDelta = mperfPerSec * dtSec;
+    const retUopsDelta = retUopsPerSec * dtSec;
     const disUopsDelta = instDelta * hwUopsRatio;
     const simCrossCcx = jitter((prof.dcCrossCcx ?? 0.65) * burst, 0.075, 14.1);
     const simLocks = jitter((prof.locksSerial ?? 0.22) * burst, 0.085, 14.7);
@@ -63,6 +64,7 @@
 
     const uarchRawDelta = {
       inst: instDelta,
+      ret_uops: retUopsDelta,
       dc_cross_ccx: (simCrossCcx / 1000.0) * instDelta,
       locks_serial: (simLocks / 1000.0) * instDelta,
       oc_uops: disUopsDelta * (simOcHitPct / 100.0),
@@ -413,6 +415,7 @@
       state.cum.instRaw += instDelta;
       state.cum.aperfRaw += aperfDelta;
       state.cum.mperfRaw += mperfDelta;
+      state.cum.retUopsRaw += retUopsDelta;
       state.cum.dcCrossCcxRaw += uarchRawDelta.dc_cross_ccx;
       state.cum.locksSerialRaw += uarchRawDelta.locks_serial;
       state.cum.decUopsRaw += uarchRawDelta.dec_uops;
@@ -468,10 +471,36 @@
         state.cum.readIopsSum += diskIo.readIops;
         state.cum.writeIopsSum += diskIo.writeIops;
       }
+      if (proc && threadSnapshots.length > 0) {
+        state.threadRollingWindow.push(
+          threadSnapshots.map(t => ({
+            tid: t.tid,
+            cpuPct: t.cpuPct,
+            description: t.description,
+            startAddress: t.startAddress,
+            affinityMask: t.affinityMask,
+            currentCpu: t.currentCpu
+          }))
+        );
+        if (state.threadRollingWindow.length > CONFIG.advisor.minSamples) {
+          state.threadRollingWindow.shift();
+        }
+      }
       if (presentStats) {
         state.cum.fpsSum += presentStats.fps;
         state.cum.avgFrameMsSum += presentStats.avgMs;
         state.cum.presentSamples += 1;
+        state.presentRollingWindow.push({
+          frameCount: presentStats.frameCount,
+          medianMs: presentStats.medianMs,
+          low1Ms: presentStats.low1Ms,
+          low01Ms: presentStats.low01Ms,
+          fps: presentStats.fps,
+          low1Fps: presentStats.low1Fps
+        });
+        if (state.presentRollingWindow.length > CONFIG.advisor.minSamples) {
+          state.presentRollingWindow.shift();
+        }
       }
       for (const bg of noisyNeighbors) {
         const key = `${bg.name}|${bg.pid}`;
@@ -509,6 +538,7 @@
         tc.instRaw += instDelta;
         tc.aperfRaw += aperfDelta;
         tc.mperfRaw += mperfDelta;
+        tc.retUopsRaw = (tc.retUopsRaw || 0) + retUopsDelta;
         tc.dcCrossCcxRaw += uarchRawDelta.dc_cross_ccx;
         tc.locksSerialRaw += uarchRawDelta.locks_serial;
         tc.decUopsRaw += uarchRawDelta.dec_uops;
@@ -560,6 +590,8 @@
     }
     state.presentFrames = [];
     state.spikeRing = [];
+    state.threadRollingWindow = [];
+    state.presentRollingWindow = [];
     state.vaMapCache = null;
     state.vaMapTickCounter = 0;
     state.sampleCount = 0;

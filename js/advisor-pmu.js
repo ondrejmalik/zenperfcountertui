@@ -7,10 +7,10 @@
   function evaluatePmuRules(ctx, groupA) {
     const {
       proc, base, plan,
-      hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Ic, hasL2Hwpf,
+      hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
       hasBranches, hasItlb, hasDtlb,
       avgC0, avgIpc, avgActualCpi, avgGhz, avgDram, avgDemDram, avgHwpfDram, avgL2pfDram,
-      avgL3Miss, avgL3HitPct, avgL3LatNs, avgL3LatCyc, avgL2IcMiss, avgL1Ic,
+      avgL3Miss, avgL3HitPct, avgL3LatNs, avgL3LatCyc, avgL2IcMiss, avgL1Ic, avgL2DcExcl,
       avgBranch, avgBranchPct, avgL2Itlb, avgL1ItlbPct, avgL2Dtlb,
       avgPfRate, avgUsr, avgSys, sysSharePct, avgCoreC0, avgCcxLat,
       avgTierCpi, sumModeledCpi, pushFinding, pushHealthy
@@ -193,12 +193,12 @@
 
     // --- RULE 5: Loaded DRAM Queueing Inflation vs. Calibrated Baseline (DcDemand + Free Base L3) ---
     let dramQueueing = false;
+    const hwpfTotalDram = (hasDcHwpf ? avgHwpfDram : 0) + (hasL2Hwpf ? avgL2pfDram : 0);
     if (hasFreeBase && hasDcDemand) {
       const expectedUnloadedNs = CONFIG.calibrated
         ? Math.max(25.0, (CONFIG.latencies.dramFallback - CONFIG.latencies.l3Hit) / Math.max(0.5, avgGhz))
         : null;
       const latTriggerNs = expectedUnloadedNs !== null ? expectedUnloadedNs * 1.25 : 70.0;
-      const hwpfTotalDram = (hasDcHwpf ? avgHwpfDram : 0) + (hasL2Hwpf ? avgL2pfDram : 0);
 
       if (avgL3LatNs >= latTriggerNs && (avgDram >= 3.0 || hwpfTotalDram >= 1.5)) {
         dramQueueing = true;
@@ -267,6 +267,54 @@
         cascade: `Improves L1/L2 stride prefetcher hit rate and cuts both Demand DRAM stalls and ROB fill stalls.`,
         quickJumpTab: 2
       });
+    }
+
+    // --- RULE 6b: Streaming DRAM Bandwidth Saturation (Prefetcher-Driven Complement to Rule 6) ---
+    const hwpfStreamShare = hwpfTotalDram / Math.max(0.01, avgDemDram + hwpfTotalDram);
+    if (dramQueueing && hasDcHwpf && hasL2Hwpf && hwpfTotalDram >= 2.0 && hwpfStreamShare >= 0.65) {
+      const hwpfSharePct = hwpfStreamShare * 100.0;
+      pushFinding({
+        id: 'streaming_dram_bw_saturation',
+        category: 'MemoryBandwidthQueueing',
+        severity: hwpfTotalDram >= 3.5 ? 'HI' : 'MD',
+        scope: '[Code / HW]',
+        confidence: 'HIGH',
+        impact: avgTierCpi.dram + 0.04,
+        title: `Streaming DRAM bandwidth saturation (${hwpfSharePct.toFixed(0)}% HWPF-driven under queueing)`,
+        keyMetric: `HWPF ${hwpfTotalDram.toFixed(2)} MPKI (${hwpfSharePct.toFixed(0)}%) @ ${avgL3LatNs.toFixed(1)} ns`,
+        estGain: Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.dram, 0.25, 'mlp', 'illustrative -25% streaming DRAM bytes via narrower elements / loop fusion / movnt*'),
+        why: `Hardware prefetchers (L1 DC HWPF ${avgHwpfDram.toFixed(2)} + L2 HWPF ${avgL2pfDram.toFixed(2)} = ${hwpfTotalDram.toFixed(2)} MPKI) account for ${hwpfSharePct.toFixed(1)}% (>=65%) of DRAM fills (vs ${avgDemDram.toFixed(2)} MPKI demand) while measured L3 miss latency is queueing at ${avgL3LatNs.toFixed(1)} ns. Zen 2's hardware prefetchers are already tracking regular strides cleanly.`,
+        action: `Do not waste effort on manual software prefetching or pointer-chasing refactors. Instead, shrink element width (f32 -> f16/i16), fuse multi-pass loops to avoid re-streaming arrays from DRAM, use non-temporal stores (movnt*) on write-only outputs, or raise DDR4/FCLK bandwidth.`,
+        cascade: `Reduces total DRAM bytes transferred per instruction -> relieves memory controller queueing latency and lifts streaming throughput.`,
+        quickJumpTab: 2
+      });
+    }
+
+    // --- RULE 6c: L1 Data Cache Capacity Spill into L2 (L2 Hit Bound) ---
+    let l2DcBound = false;
+    if (hasL1L2Dc && hasFreeBase) {
+      const l2DcCpiShare = avgTierCpi.l2Dc / Math.max(0.25, avgActualCpi);
+      if (avgL2DcExcl >= 25.0 && l2DcCpiShare >= 0.20 && (!hasDcDemand || avgTierCpi.l2Dc >= avgTierCpi.dram)) {
+        l2DcBound = true;
+        const sharePct = l2DcCpiShare * 100.0;
+        pushFinding({
+          id: 'l1d_capacity_spill_l2',
+          category: 'MemoryLatencyBound',
+          severity: avgL2DcExcl >= 45.0 ? 'HI' : 'MD',
+          scope: '[Code / Build]',
+          confidence: 'HIGH',
+          impact: avgTierCpi.l2Dc,
+          title: `L1 data cache capacity spill into L2 (${avgL2DcExcl.toFixed(1)} MPKI, ${sharePct.toFixed(0)}% of CPI)`,
+          keyMetric: `L2d hit ${avgL2DcExcl.toFixed(1)} MPKI | ${avgTierCpi.l2Dc.toFixed(2)} CPI (${sharePct.toFixed(0)}%)`,
+          estGain: Z.estimateAmdahlGain(avgActualCpi, sumModeledCpi, avgTierCpi.l2Dc, 0.40, 'mlp', 'illustrative -40% L1d->L2 spills via <=24 KiB loop tiling / struct packing'),
+          why: `Exclusive L1d misses satisfied by L2 (l1dc - l2dcMiss = ${avgL2DcExcl.toFixed(1)} MPKI @ ${CONFIG.latencies.l2Hit.toFixed(0)} cyc = ${avgTierCpi.l2Dc.toFixed(2)} CPI) consume ${sharePct.toFixed(1)}% (>=20%) of Actual CPI (${avgActualCpi.toFixed(2)}) and meet or exceed DRAM stalls. Hot loop working sets exceed Zen 2's 32 KiB 8-way L1d while still fitting inside the 512 KiB L2.`,
+          action: `Tile/block hot loops to <= 24 KiB per thread (<= 12 KiB when sharing an SMT core), pack hot struct fields tightly, or pad arrays to break 4 KiB stride aliasing (Zen 2's 32 KiB 8-way L1d aliases every 4 KiB).`,
+          cascade: `Restores 4-cycle L1d hit rate -> cuts 12-cycle L2 fill traffic and lowers load-to-use latency in inner loops.`,
+          quickJumpTab: 2
+        });
+      } else {
+        pushHealthy('L1d->L2 spill', `${avgL2DcExcl.toFixed(1)} MPKI`);
+      }
     }
 
     // --- RULE 7: Kernel / Page-Fault Churn (Win32 OS) ---
@@ -436,14 +484,14 @@
 
     return {
       smtContendedHot, hotCoreProof, crossCcxActive, dramQueueing,
-      demandDramChase, demShare, branchBound, icacheBound
+      demandDramChase, demShare, branchBound, icacheBound, l2DcBound
     };
   }
 
   function evaluateMicroArchRules(ctx, pmuRes = {}) {
     const {
-      plan, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits,
-      hasL3, avgIpc, avgActualCpi, avgL3Miss, avgL3LatNs, uarchRawOverride, pushFinding, pushHealthy
+      plan, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits, hasExactRetiring, hasBranches,
+      hasL3, avgIpc, avgActualCpi, avgL3Miss, avgL3LatNs, avgBranch, uarchRawOverride, pushFinding, pushHealthy
     } = ctx;
     const { smtContendedHot = false, hotCoreProof = '' } = pmuRes;
 
@@ -453,12 +501,16 @@
     let opcacheThrash = false;
     let stlfBound = false;
     let splitsBound = false;
+    let badSpecBound = false;
+    let nonBranchFlushBound = false;
+    let microcodeBound = false;
     let crossCcxCpi = 0;
     let stlfCpi = 0;
 
     if (hasCrossCcxLocks || hasOpCacheDecode || hasStlfSplits) {
       const cumUarchRaw = uarchRawOverride || {
         inst: state.cum.instRaw,
+        ret_uops: state.cum.retUopsRaw,
         dc_cross_ccx: state.cum.dcCrossCcxRaw,
         locks_serial: state.cum.locksSerialRaw,
         dec_uops: state.cum.decUopsRaw,
@@ -613,25 +665,82 @@
           });
         }
 
-        // Rule 14c: dispatched MOP/instruction inflation (microcode or speculative work).
-        const disUopsPerInst = cumUarchRaw.inst > 0 ? totalDisUops / cumUarchRaw.inst : 0;
-        if (hasOpCacheDecode && totalDisUops > 0 && disUopsPerInst >= 1.65 && avgIpc < 2.2) {
+        // Rule 14c: Exact Bad Speculation vs. Microcode/CISC Expansion Split (with fallback when ExactRetiring is absent)
+        const disMopsPerInst = cumUarchRaw.inst > 0 ? totalDisUops / cumUarchRaw.inst : 0;
+        const rawRetUops = Number(cumUarchRaw.ret_uops) || 0;
+        if (hasOpCacheDecode && hasExactRetiring && totalDisUops > 0 && cumUarchRaw.inst > 0 && rawRetUops > 0) {
+          const retUopsPerInst = rawRetUops / cumUarchRaw.inst;
+          const specRatio = disMopsPerInst / Math.max(1.0, retUopsPerInst);
+          if (specRatio >= 1.30) {
+            badSpecBound = true;
+            const isNonBranchFlush = Boolean(hasBranches && avgBranch < 2.0);
+            if (isNonBranchFlush) nonBranchFlushBound = true;
+            const flushedPct = (1.0 - (1.0 / specRatio)) * 100.0;
+            pushFinding({
+              id: 'confirmed_bad_speculation',
+              category: isNonBranchFlush ? 'MicroArchContention' : 'BranchMispredictBound',
+              severity: specRatio >= 1.50 ? 'HI' : 'MD',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: Math.min(0.42, (specRatio - 1.0) * 0.45),
+              title: isNonBranchFlush
+                ? `Confirmed non-branch pipeline flushes (${flushedPct.toFixed(0)}% dispatched MOPs flushed, branch ${avgBranch.toFixed(2)} MPKI)`
+                : `Confirmed bad speculation (${flushedPct.toFixed(0)}% dispatched MOPs never retire, ${specRatio.toFixed(2)}x dis/ret)`,
+              keyMetric: `dis/ret ${specRatio.toFixed(2)}x (${flushedPct.toFixed(0)}% flushed) | ret ${retUopsPerInst.toFixed(2)} uops/inst`,
+              estGain: {
+                kind: 'qualitative',
+                label: isNonBranchFlush ? 'Machine clears' : 'Bad speculation',
+                detail: isNonBranchFlush
+                  ? 'Qualitative: eliminates non-branch memory-ordering machine clears / SMC / serializing traps'
+                  : 'Qualitative: eliminates flushed speculative MOPs from branch/indirect-call mispredicts or machine clears'
+              },
+              why: `Dispatched MOPs/inst (${disMopsPerInst.toFixed(2)}) divided by max(1.0, retired uops/inst ${retUopsPerInst.toFixed(2)} from 0x4300C1) is ${specRatio.toFixed(2)}x (>=1.30), proving at least ${flushedPct.toFixed(1)}% of dispatched MOPs are flushed before retirement (excluding multi-uop microcode expansion).${isNonBranchFlush ? ` Because branch mispredicts are low (${avgBranch.toFixed(2)} MPKI < 2.0), this proves non-branch pipeline flushes (memory-ordering machine clears, self-modifying code, or serializing traps).` : ''}`,
+              action: isNonBranchFlush
+                ? `Inspect Tab 7 hotspots for memory-ordering machine clears (store-load aliasing across threads), self-modifying code (SMC) in JIT regions, or unnecessary serializing traps/fences.`
+                : `Inspect Tab 7 hotspots (and Branch burst if needed) to eliminate unpredictable branches, devirtualize hot indirect calls, or remove machine-clear triggers.`,
+              cascade: `Eliminates wasted front-end dispatch and ROB/execution cycles spent on squashed speculative paths.`,
+              quickJumpTab: 7
+            });
+          } else if (retUopsPerInst >= 1.55 && (disMopsPerInst / retUopsPerInst) < 1.15 && avgIpc < 2.0) {
+            microcodeBound = true;
+            const ratioDisRet = disMopsPerInst / retUopsPerInst;
+            pushFinding({
+              id: 'confirmed_microcode_expansion',
+              category: 'FrontendCodeBound',
+              severity: retUopsPerInst >= 1.90 ? 'HI' : 'MD',
+              scope: '[Code / Build]',
+              confidence: 'HIGH',
+              impact: Math.min(0.28, (retUopsPerInst - 1.15) * 0.25),
+              title: `Confirmed microcode / CISC uop expansion (${retUopsPerInst.toFixed(2)} retired uops/inst)`,
+              keyMetric: `ret ${retUopsPerInst.toFixed(2)} uops/inst | dis/ret ${ratioDisRet.toFixed(2)}x | IPC ${avgIpc.toFixed(2)}`,
+              estGain: {
+                kind: 'qualitative',
+                label: 'Replace microcode',
+                detail: 'Qualitative: replaces multi-uop MSROM CISC instructions with fast-path ALU/SIMD instructions'
+              },
+              why: `Exact retired uops/inst (ExRetUops 0x4300C1 / IRPerf) averages ${retUopsPerInst.toFixed(2)} (>=1.55) while dis/ret is only ${ratioDisRet.toFixed(2)}x (<1.15) at ${avgIpc.toFixed(2)} IPC (<2.0). Because 0x4300C1 only counts retired uops, bad speculation is ruled out and MSROM / multi-uop CISC expansion is confirmed.`,
+              action: `Inspect hot functions in Tab 7 and replace microcoded instructions: integer div/idiv (use strength reduction / multiplicative inverse), small rep movsb/stosb, xchg, or legacy x87 instructions.`,
+              cascade: `Cuts retired uop count per instruction -> frees Zen 2 6-wide dispatch bandwidth and raises effective IPC.`,
+              quickJumpTab: 7
+            });
+          }
+        } else if (hasOpCacheDecode && totalDisUops > 0 && disMopsPerInst >= 1.65 && avgIpc < 2.2) {
           pushFinding({
             id: 'uop_expansion_or_speculation',
             category: 'FrontendCodeBound',
-            severity: disUopsPerInst >= 2.0 ? 'MD' : 'LO',
+            severity: disMopsPerInst >= 2.0 ? 'MD' : 'LO',
             scope: '[Code / Build]',
             confidence: 'MED',
-            impact: Math.min(0.18, (disUopsPerInst - 1.2) * 0.12),
-            title: `High dispatched MOPs/inst ratio (${disUopsPerInst.toFixed(2)} MOPs/inst)`,
-            keyMetric: `${disUopsPerInst.toFixed(2)} dis-MOPs/inst | IPC ${avgIpc.toFixed(2)}`,
+            impact: Math.min(0.18, (disMopsPerInst - 1.2) * 0.12),
+            title: `High dispatched MOPs/inst ratio (${disMopsPerInst.toFixed(2)} MOPs/inst)`,
+            keyMetric: `${disMopsPerInst.toFixed(2)} dis-MOPs/inst | IPC ${avgIpc.toFixed(2)}`,
             estGain: {
               kind: 'qualitative',
               label: 'MSROM / bad spec',
               detail: 'Qualitative: investigate multi-MOP instructions or speculative dispatch waste'
             },
-            why: `Dispatched MOPs (0x4301AA + 0x4302AA) per retired instruction (IRPerf) average ${disUopsPerInst.toFixed(2)}. These counters include speculative dispatches, so the ratio alone cannot distinguish complex instructions from misprediction waste.`,
-            action: `Use a compatible Full (3-Mux) measurement to separate branch mispredicts from retired MOP expansion. If branch activity is low, inspect hot paths for division/modulo, small rep movsb operations, or serializing instructions.`,
+            why: `Dispatched MOPs (0x4301AA + 0x4302AA) per retired instruction (IRPerf) average ${disMopsPerInst.toFixed(2)}. These counters include speculative dispatches, so without ExactRetiring (0x4300C1) the ratio alone cannot distinguish complex instructions from misprediction waste.`,
+            action: `Enable ExactRetiring (0x4300C1) via 'm' (or 'r') alongside OpCacheDecode to split confirmed bad speculation from microcode expansion. If branch activity is low, inspect hot paths for div/idiv, small rep movsb, xchg, or serializing instructions.`,
             cascade: `Identifies a possible source of front-end work for follow-up measurement.`,
             quickJumpTab: 1
           });
@@ -694,6 +803,7 @@
 
     return {
       uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound,
+      badSpecBound, nonBranchFlushBound, microcodeBound,
       crossCcxCpi, stlfCpi
     };
   }

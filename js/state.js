@@ -67,9 +67,11 @@
       resolver: null
     },
 
-    // Rolling 300-frame Present ETW ring + spike correlation ring + cached VA map (2-3s cadence)
+    // Rolling 300-frame Present ETW ring + spike correlation ring + 10-sample Advisor rolling windows + cached VA map
     presentFrames: [],
     spikeRing: [],
+    threadRollingWindow: [],
+    presentRollingWindow: [],
     vaMapCache: null,
     vaMapTickCounter: 0,
 
@@ -105,6 +107,7 @@
       instRaw: 0,
       aperfRaw: 0,
       mperfRaw: 0,
+      retUopsRaw: 0,
       dcCrossCcxRaw: 0,
       locksSerialRaw: 0,
       decUopsRaw: 0,

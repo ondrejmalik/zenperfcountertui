@@ -25,6 +25,18 @@
   function jumpToFindingTab(finding) {
     if (!finding || !finding.quickJumpTab) return;
     if (finding.openCcx) state.ccxOpen = true;
+    if (finding.profilerSource && state.profiler) {
+      state.profiler.source = finding.profilerSource;
+      state.profiler.selectedIdx = 0;
+    }
+    if (finding.targetTid && state.attachedPid) {
+      const proc = getAttachedProcess();
+      if (proc && typeof Z.getSortedThreads === 'function') {
+        const sorted = Z.getSortedThreads(state.lastSnap, proc);
+        const idx = sorted.findIndex(t => t.tid === finding.targetTid);
+        if (idx >= 0) state.threadSelectedIdx = idx;
+      }
+    }
     switchTab(finding.quickJumpTab);
     showToast(`Jumped to Tab ${finding.quickJumpTab} (${finding.id})`);
   }
@@ -257,6 +269,7 @@
         cycles: 0,
         aperf: hasFree ? acc.aperfRaw : 0,
         mperf: hasFree ? acc.mperfRaw : 0,
+        ret_uops: plan.has(MetricPack.ExactRetiring) ? (acc.retUopsRaw || 0) : 0,
         dc_cross_ccx: plan.has(MetricPack.CrossCcxLocks) ? acc.dcCrossCcxRaw : 0,
         locks_serial: plan.has(MetricPack.CrossCcxLocks) ? acc.locksSerialRaw : 0,
         dec_uops: plan.has(MetricPack.OpCacheDecode) ? acc.decUopsRaw : 0,
@@ -297,7 +310,7 @@
       remainingSec: seconds,
       totalSec: seconds,
       samples: 0, elapsedSec: 0,
-      ipc: 0, instRaw: 0, aperfRaw: 0, mperfRaw: 0,
+      ipc: 0, instRaw: 0, aperfRaw: 0, mperfRaw: 0, retUopsRaw: 0,
       dcCrossCcxRaw: 0, locksSerialRaw: 0, decUopsRaw: 0,
       ocUopsRaw: 0, stlfInterlockRaw: 0, misalAccessRaw: 0,
       dram: 0, l3Hit: 0, l2dcExcl: 0, l2icExcl: 0,

@@ -532,16 +532,429 @@
     return { passed, total: results.length, results };
   }
 
+  function runActionableRulesTests() {
+    const { MetricPack, makeThread } = Z;
+    const results = [];
+    const check = (name, cond, detail) => results.push({ name, pass: Boolean(cond), detail });
+
+    const baseProc = {
+      pid: 9100,
+      name: 'rules_app.exe',
+      wsMiB: 1024,
+      hugeMiB: 0,
+      requestedHugeMiB: 0,
+      ifeoEnabled: true,
+      modules: [makeMod('engine.dll', 64.0, true, true, 'RX', false, 0x7FF810000000n)],
+      arenas: null,
+      threads: [
+        makeThread(9101, 'MainThread', 0x7FF810012400n, 48.0, 1200, 'Running', '-', 10, 0, 0, 0x0FFF),
+        makeThread(9102, 'Worker#0',   0x7FF810024800n, 32.0,  900, 'Running', '-',  8, 2, 2, 0x0FFF)
+      ],
+      win32Profile: makeWin32Profile()
+    };
+
+    const mkOv = (extra = {}) => {
+      const { avg: extraAvg = {}, uarchRaw: extraUarchRaw, ...rest } = extra;
+      const out = {
+        samples: 15,
+        muxId: 'full',
+        proc: baseProc,
+        base: null,
+        avgCoreC0: [55, 5, 45, 5, 30, 4, 25, 4, 15, 2, 10, 2],
+        avgCcxLat: [48, 49],
+        avgGpu3dPct: 65.0,
+        avgCoreDpc: new Array(12).fill(0.3),
+        avgCoreIrq: new Array(12).fill(0.2),
+        avgCoreIrqRate: new Array(12).fill(300),
+        avgHardPageReads: 0.0,
+        avgAvailPhysPct: 48.0,
+        avgCommitPct: 45.0,
+        avgCtxSw: 10000,
+        avgSyncWaitPct: 15.0,
+        topWaitReason: 'WrQueue',
+        priorityClass: 'NORMAL',
+        ecoQos: 'Inactive',
+        seLockMemoryPrivilege: 'Present',
+        noisyNeighbors: [],
+        presentStats: null,
+        spikeCorrelation: null,
+        vaMap: null,
+        profiler: null,
+        avgReadMbS: 4.0,
+        avgWriteMbS: 1.0,
+        avgReadIops: 90,
+        avgWriteIops: 20,
+        ...rest,
+        avg: {
+          avgC0Pct: 35.0, instPerSec: 8e9, ipc: 1.50, actualCpi: 0.67, modeledCpi: 0.50,
+          oooHiddenCpi: 0.0, retiringPct: 28.0, effGhz: 4.2,
+          dram: 0.8, demDram: 0.5, hwpfDram: 0.3, l2pfDram: 0.2,
+          l3Hit: 2.0, l3Miss: 0.9, l3HitPct: 88.0, latNs: 48.0, latCyc: 200,
+          l2icMiss: 0.8, l2icExcl: 4.0, l1ic: 5.0, l2dcExcl: 10.0,
+          branch: 1.5, branchMissPct: 1.5, l2itlb: 0.05, l1ItlbMissPct: 0.2,
+          l2dtlb: 0.08, pageFaultRate: 120, cpuUsr: 35.0, cpuSys: 4.0,
+          ...extraAvg
+        }
+      };
+      if (extraUarchRaw !== undefined) out.uarchRaw = extraUarchRaw;
+      return out;
+    };
+
+    // 1. Exact Bad Speculation vs Microcode/CISC Expansion Split (Upgrades Rule 14c)
+    const specPacks = [MetricPack.OpCacheDecode, MetricPack.ExactRetiring, MetricPack.Branches];
+    // 1a. Confirmed Bad Speculation (branch-driven): dis=1.60, ret=1.10 -> ratio=1.45 >= 1.30, branch=4.5
+    const dBadSpecBr = evaluateDiagnostics(mkOv({
+      packs: specPacks,
+      avg: { ipc: 1.35, actualCpi: 0.74, branch: 4.5, branchMissPct: 3.0 },
+      uarchRaw: { inst: 10_000_000, ret_uops: 11_000_000, oc_uops: 14_000_000, dec_uops: 2_000_000 }
+    }));
+    const fBadSpecBr = dBadSpecBr.findings.find(f => f.id === 'confirmed_bad_speculation');
+    // 1b. Confirmed Non-Branch Pipeline Flushes: ratio >= 1.30 AND hasBranches && avgBranch < 2.0
+    const dBadSpecNonBr = evaluateDiagnostics(mkOv({
+      packs: specPacks,
+      avg: { ipc: 1.30, actualCpi: 0.77, branch: 0.8, branchMissPct: 0.6 },
+      uarchRaw: { inst: 10_000_000, ret_uops: 11_000_000, oc_uops: 14_500_000, dec_uops: 1_500_000 }
+    }));
+    const fBadSpecNonBr = dBadSpecNonBr.findings.find(f => f.id === 'confirmed_bad_speculation');
+    // 1c. Confirmed Microcode/CISC Expansion: ret=1.80 >= 1.55, dis/ret=1.06 < 1.15, ipc=1.40 < 2.0
+    const dMicrocode = evaluateDiagnostics(mkOv({
+      packs: specPacks,
+      avg: { ipc: 1.40, actualCpi: 0.71, branch: 1.2, branchMissPct: 1.0 },
+      uarchRaw: { inst: 10_000_000, ret_uops: 18_000_000, oc_uops: 16_000_000, dec_uops: 3_100_000 }
+    }));
+    const fMicrocode = dMicrocode.findings.find(f => f.id === 'confirmed_microcode_expansion');
+    // 1d. Guard: microcode does NOT fire when avgIpc >= 2.0 or dis/ret >= 1.15; bad spec does NOT fire from high ret_uops alone
+    const dMicroHighIpc = evaluateDiagnostics(mkOv({
+      packs: specPacks,
+      avg: { ipc: 2.15, actualCpi: 0.47 },
+      uarchRaw: { inst: 10_000_000, ret_uops: 18_000_000, oc_uops: 16_000_000, dec_uops: 3_100_000 }
+    }));
+    check(
+      'rule_14c_exact_bad_spec_vs_microcode_split',
+      Boolean(fBadSpecBr) && !fBadSpecBr.title.includes('non-branch') &&
+      !dBadSpecBr.findings.some(f => f.id === 'confirmed_microcode_expansion' || f.id === 'uop_expansion_or_speculation') &&
+      Boolean(fBadSpecNonBr) && fBadSpecNonBr.title.includes('non-branch') && fBadSpecNonBr.why.includes('memory-ordering') &&
+      Boolean(fMicrocode) && !dMicrocode.findings.some(f => f.id === 'confirmed_bad_speculation' || f.id === 'uop_expansion_or_speculation') &&
+      !dMicroHighIpc.findings.some(f => f.id === 'confirmed_microcode_expansion' || f.id === 'confirmed_bad_speculation'),
+      `badSpec=${Boolean(fBadSpecBr)}, nonBr=${Boolean(fBadSpecNonBr)}, microcode=${Boolean(fMicrocode)}, highIpcSilenced=${!dMicroHighIpc.findings.some(f => f.id === 'confirmed_microcode_expansion')}`
+    );
+
+    // 2. Streaming DRAM Bandwidth Saturation (Prefetcher-Driven Complement to Rule 6)
+    const dStreamFire = evaluateDiagnostics(mkOv({
+      avg: { dram: 3.4, demDram: 1.0, hwpfDram: 2.4, l2pfDram: 1.6, latNs: 82.0, latCyc: 344 }
+    }));
+    const fStream = dStreamFire.findings.find(f => f.id === 'streaming_dram_bw_saturation');
+    // Suppressed if not queueing (latNs < 70), or if L2Hwpf pack absent, or if HWPF share < 65%
+    const dStreamNoQ = evaluateDiagnostics(mkOv({
+      avg: { dram: 3.4, demDram: 1.0, hwpfDram: 2.4, l2pfDram: 1.6, latNs: 54.0, latCyc: 226 }
+    }));
+    const dStreamNoL2pf = evaluateDiagnostics(mkOv({
+      packs: [MetricPack.DcDemand, MetricPack.DcHwpf],
+      avg: { dram: 3.4, demDram: 1.0, hwpfDram: 2.4, l2pfDram: 1.6, latNs: 82.0, latCyc: 344 }
+    }));
+    const dStreamLowShare = evaluateDiagnostics(mkOv({
+      avg: { dram: 4.5, demDram: 2.5, hwpfDram: 2.0, l2pfDram: 1.0, latNs: 82.0, latCyc: 344 }
+    }));
+    check(
+      'rule_6b_streaming_dram_bw_saturation',
+      Boolean(fStream) && fStream.action.includes('movnt*') && fStream.action.includes('Do not waste effort') &&
+      !dStreamNoQ.findings.some(f => f.id === 'streaming_dram_bw_saturation') &&
+      !dStreamNoL2pf.findings.some(f => f.id === 'streaming_dram_bw_saturation') &&
+      !dStreamLowShare.findings.some(f => f.id === 'streaming_dram_bw_saturation'),
+      `fired=${Boolean(fStream)}, noQ=${dStreamNoQ.findings.some(f => f.id === 'streaming_dram_bw_saturation')}, noL2pf=${dStreamNoL2pf.findings.some(f => f.id === 'streaming_dram_bw_saturation')}, lowShare=${dStreamLowShare.findings.some(f => f.id === 'streaming_dram_bw_saturation')}`
+    );
+
+    // 3. L1 Data Cache Capacity Spill into L2 (L2 Hit Bound)
+    // avgL2DcExcl=30 -> 0.36 CPI; actualCpi=0.80 -> 45% >= 20%; dram=0.8*200/1000=0.16 <= 0.36 -> FIRES
+    const dL1SpillFire = evaluateDiagnostics(mkOv({
+      avg: { l2dcExcl: 30.0, actualCpi: 0.80, ipc: 1.25, dram: 0.8, latCyc: 200 }
+    }));
+    const fL1Spill = dL1SpillFire.findings.find(f => f.id === 'l1d_capacity_spill_l2');
+    // Suppressed when DRAM CPI > L2d CPI, or when L2d CPI share < 20%, or when L2d MPKI < 25
+    const dL1SpillDramHigher = evaluateDiagnostics(mkOv({
+      avg: { l2dcExcl: 30.0, actualCpi: 1.00, ipc: 1.00, dram: 2.5, latCyc: 220 }
+    }));
+    const dL1SpillLowShare = evaluateDiagnostics(mkOv({
+      avg: { l2dcExcl: 26.0, actualCpi: 2.00, ipc: 0.50, dram: 0.4, latCyc: 200 }
+    }));
+    // Still fires without DcDemand pack when L1L2Dc is active
+    const dL1SpillNoDcDem = evaluateDiagnostics(mkOv({
+      packs: [MetricPack.L1L2Dc],
+      avg: { l2dcExcl: 32.0, actualCpi: 0.90, ipc: 1.11 }
+    }));
+    check(
+      'rule_6c_l1d_capacity_spill_into_l2',
+      Boolean(fL1Spill) && fL1Spill.action.includes('<= 24 KiB') && fL1Spill.action.includes('4 KiB stride aliasing') &&
+      !dL1SpillDramHigher.findings.some(f => f.id === 'l1d_capacity_spill_l2') &&
+      !dL1SpillLowShare.findings.some(f => f.id === 'l1d_capacity_spill_l2') &&
+      dL1SpillNoDcDem.findings.some(f => f.id === 'l1d_capacity_spill_l2'),
+      `fired=${Boolean(fL1Spill)}, dramDom=${dL1SpillDramHigher.findings.some(f => f.id === 'l1d_capacity_spill_l2')}, lowShare=${dL1SpillLowShare.findings.some(f => f.id === 'l1d_capacity_spill_l2')}, noDcDem=${dL1SpillNoDcDem.findings.some(f => f.id === 'l1d_capacity_spill_l2')}`
+    );
+
+    // 4. Single-Thread Serial Bottleneck - Exact Thread Pinpoint (Zero-PMC, 10-sample rolling window)
+    const serialProc = {
+      ...baseProc,
+      threads: [
+        makeThread(9201, '', 0x7FF81001A420n, 96.4, 2400, 'Running', '-', 10, 0, 0, 0x0FFF),
+        makeThread(9202, 'JobWorker#0', 0x7FF810030000n, 28.0, 900, 'Waiting', 'WrQueue', 8, 2, 2, 0x0FFF)
+      ]
+    };
+    const dSerialFire = evaluateDiagnostics(mkOv({
+      muxId: 'no-pmu',
+      proc: serialProc,
+      avg: { avgC0Pct: 24.0, instPerSec: 0 },
+      avgCoreC0: [96, 4, 28, 2, 8, 1, 6, 1, 4, 0, 2, 0]
+    }));
+    const fSerial = dSerialFire.findings.find(f => f.id === 'single_thread_serial_bottleneck');
+    // Suppressed when GPU-bound, or secondThread >= 65%, or avgC0 >= 50%, or only transient spike in 10-sample window
+    const dSerialGpu = evaluateDiagnostics(mkOv({
+      proc: serialProc,
+      avgGpu3dPct: 99.0,
+      avg: { avgC0Pct: 24.0 },
+      avgCoreC0: [68, 4, 20, 2, 6, 1, 4, 1, 2, 0, 2, 0]
+    }));
+    const transientWin = Array.from({ length: 10 }, (_, idx) => ([
+      { tid: 9201, description: 'MainThread', cpuPct: idx < 3 ? 98.0 : 40.0 },
+      { tid: 9202, description: 'Worker#0', cpuPct: 20.0 }
+    ]));
+    const dSerialTransient = evaluateDiagnostics(mkOv({
+      proc: serialProc,
+      avg: { avgC0Pct: 24.0 },
+      threadRollingWindow: transientWin
+    }));
+    const dSerialDualBusy = evaluateDiagnostics(mkOv({
+      proc: {
+        ...serialProc,
+        threads: [
+          makeThread(9201, 'MainThread', 0x7FF81001A420n, 95.0, 2400, 'Running', '-', 10, 0, 0, 0x0FFF),
+          makeThread(9202, 'RenderThread', 0x7FF810030000n, 72.0, 2100, 'Running', '-', 10, 2, 2, 0x0FFF)
+        ]
+      },
+      avg: { avgC0Pct: 28.0 }
+    }));
+    check(
+      'rule_zero_pmc_single_thread_serial_bottleneck',
+      Boolean(fSerial) && fSerial.targetTid === 9201 && fSerial.title.includes('engine.dll+0x1A420') &&
+      fSerial.action.includes('a -> [4]') && fSerial.quickJumpTab === 6 &&
+      !dSerialGpu.findings.some(f => f.id === 'single_thread_serial_bottleneck') &&
+      !dSerialTransient.findings.some(f => f.id === 'single_thread_serial_bottleneck') &&
+      !dSerialDualBusy.findings.some(f => f.id === 'single_thread_serial_bottleneck'),
+      `fired=${Boolean(fSerial)}, tid=${fSerial?.targetTid}, gpu=${dSerialGpu.findings.some(f => f.id === 'single_thread_serial_bottleneck')}, transient=${dSerialTransient.findings.some(f => f.id === 'single_thread_serial_bottleneck')}, dual=${dSerialDualBusy.findings.some(f => f.id === 'single_thread_serial_bottleneck')}`
+    );
+
+    // 5. Over-Constrained Thread Affinity Mask (Zero-PMC)
+    const affStarvedProc = {
+      ...baseProc,
+      threads: [
+        makeThread(9301, 'Worker#0', 0x7FF810010000n, 68.0, 1800, 'Running', '-', 8, 0, 0, 0x003F),
+        makeThread(9302, 'Worker#1', 0x7FF810010000n, 64.0, 1750, 'Running', '-', 8, 2, 2, 0x003F),
+        makeThread(9303, 'Worker#2', 0x7FF810010000n, 58.0, 1600, 'Running', '-', 8, 4, 4, 0x003F),
+        makeThread(9304, 'Worker#3', 0x7FF810010000n, 52.0, 1500, 'Running', '-', 8, 1, 1, 0x003F)
+      ]
+    };
+    const dAffFire = evaluateDiagnostics(mkOv({
+      muxId: 'no-pmu',
+      proc: affStarvedProc,
+      avg: { avgC0Pct: 40.0, instPerSec: 0 },
+      avgCoreC0: [92, 85, 88, 70, 86, 62, 6, 2, 4, 1, 3, 0]
+    }));
+    const fAff = dAffFire.findings.find(f => f.id === 'overconstrained_thread_affinity');
+    // Suppressed when outside cores are NOT idle (>=20% C0), or when union covers >= heavy thread count
+    const dAffNoIdle = evaluateDiagnostics(mkOv({
+      proc: affStarvedProc,
+      avgCoreC0: [92, 85, 88, 70, 86, 62, 45, 10, 38, 10, 30, 10]
+    }));
+    const dAffEnoughCores = evaluateDiagnostics(mkOv({
+      proc: {
+        ...baseProc,
+        threads: [
+          makeThread(9301, 'Worker#0', 0x7FF810010000n, 68.0, 1800, 'Running', '-', 8, 0, 0, 0x003F),
+          makeThread(9302, 'Worker#1', 0x7FF810010000n, 64.0, 1750, 'Running', '-', 8, 2, 2, 0x003F)
+        ]
+      },
+      avgCoreC0: [70, 5, 65, 5, 10, 2, 4, 1, 3, 0, 2, 0]
+    }));
+    check(
+      'rule_zero_pmc_overconstrained_thread_affinity',
+      Boolean(fAff) && fAff.title.includes('0x003F') && fAff.keyMetric.includes('P3') &&
+      fAff.action.includes('Process Lasso') && fAff.quickJumpTab === 6 &&
+      !dAffNoIdle.findings.some(f => f.id === 'overconstrained_thread_affinity') &&
+      !dAffEnoughCores.findings.some(f => f.id === 'overconstrained_thread_affinity'),
+      `fired=${Boolean(fAff)}, noIdle=${dAffNoIdle.findings.some(f => f.id === 'overconstrained_thread_affinity')}, enoughCores=${dAffEnoughCores.findings.some(f => f.id === 'overconstrained_thread_affinity')}`
+    );
+
+    // 6. Over-Reserved Locked 2 MiB Huge Pages Under RAM Pressure (Zero-PMC)
+    // 4 GiB locked (128 blocks), 40 used (1.25 GiB) -> 88 free (2816 MiB >= 1024, 68.75% >= 40%) -> recommend ceil(1.25)+1 = 3
+    const hugeOverProc = {
+      ...baseProc,
+      hugeMiB: 4096,
+      requestedHugeMiB: 4096,
+      arenas: buildArenas(4, [24, 16, 0, 0], [])
+    };
+    const dHugePhys = evaluateDiagnostics(mkOv({
+      muxId: 'no-pmu',
+      proc: hugeOverProc,
+      avg: { avgC0Pct: 35.0, instPerSec: 0 },
+      avgAvailPhysPct: 11.5,
+      avgCommitPct: 72.0
+    }));
+    const fHugePhys = dHugePhys.findings.find(f => f.id === 'over_reserved_huge_pages');
+    const dHugeCommit = evaluateDiagnostics(mkOv({
+      proc: hugeOverProc,
+      avgAvailPhysPct: 24.0,
+      avgCommitPct: 90.0
+    }));
+    // Suppressed when RAM healthy, or when freeHugeMiB < 1024 (1 GiB arena with 16 free blocks = 512 MiB)
+    const dHugeHealthyRam = evaluateDiagnostics(mkOv({
+      proc: hugeOverProc,
+      avgAvailPhysPct: 32.0,
+      avgCommitPct: 60.0
+    }));
+    const dHugeSmallFree = evaluateDiagnostics(mkOv({
+      proc: { ...hugeOverProc, hugeMiB: 1024, arenas: buildArenas(1, [16], []) },
+      avgAvailPhysPct: 10.0,
+      avgCommitPct: 91.0
+    }));
+    check(
+      'rule_zero_pmc_over_reserved_huge_pages',
+      Boolean(fHugePhys) && fHugePhys.action.includes('MIMALLOC_RESERVE_HUGE_OS_PAGES=3') && fHugePhys.quickJumpTab === 4 &&
+      dHugeCommit.findings.some(f => f.id === 'over_reserved_huge_pages') &&
+      !dHugeHealthyRam.findings.some(f => f.id === 'over_reserved_huge_pages') &&
+      !dHugeSmallFree.findings.some(f => f.id === 'over_reserved_huge_pages'),
+      `physFired=${Boolean(fHugePhys)}, commitFired=${dHugeCommit.findings.some(f => f.id === 'over_reserved_huge_pages')}, healthyRam=${dHugeHealthyRam.findings.some(f => f.id === 'over_reserved_huge_pages')}, smallFree=${dHugeSmallFree.findings.some(f => f.id === 'over_reserved_huge_pages')}`
+    );
+
+    // 7. Explicit Mutex / SRWLock Wait-Chain Bottleneck via Off-CPU ETW (Zero-PMC)
+    const dLockFire = evaluateDiagnostics(mkOv({
+      muxId: 'no-pmu',
+      avg: { avgC0Pct: 42.0, instPerSec: 0 },
+      profiler: {
+        pid: 9100,
+        offCpuTop: {
+          module: 'ntdll.dll',
+          name: 'RtlAcquireSRWLockExclusive',
+          displayName: 'RtlAcquireSRWLockExclusive',
+          displayStack: 'RtlAcquireSRWLockExclusive <- SceneGraph::Lock',
+          blockedPct: 34.5,
+          wakes: 240,
+          topWakerName: 'RenderThread',
+          topWakerPct: 86.0
+        }
+      }
+    }));
+    const fLock = dLockFire.findings.find(f => f.id === 'explicit_lock_wait_chain');
+    // Excluded generic waits (WaitForSingleObject / Sleep / NtDelayExecution), low wakes (<100), and high C0 (>=85%)
+    const dLockGenericWait = evaluateDiagnostics(mkOv({
+      profiler: {
+        pid: 9100,
+        offCpuTop: {
+          module: 'kernelbase.dll',
+          name: 'WaitForSingleObjectEx',
+          displayName: 'WaitForSingleObjectEx',
+          blockedPct: 45.0,
+          wakes: 500,
+          topWakerName: 'RenderThread',
+          topWakerPct: 90.0
+        }
+      }
+    }));
+    const dLockLowWakes = evaluateDiagnostics(mkOv({
+      profiler: {
+        pid: 9100,
+        offCpuTop: {
+          module: 'ntdll.dll',
+          name: 'RtlEnterCriticalSection',
+          displayName: 'RtlEnterCriticalSection',
+          blockedPct: 32.0,
+          wakes: 60,
+          topWakerName: 'Worker#0',
+          topWakerPct: 80.0
+        }
+      }
+    }));
+    const dLockSatC0 = evaluateDiagnostics(mkOv({
+      avg: { avgC0Pct: 88.0 },
+      profiler: {
+        pid: 9100,
+        offCpuTop: {
+          module: 'app.exe',
+          name: 'std::mutex::lock',
+          displayName: 'std::mutex::lock',
+          blockedPct: 30.0,
+          wakes: 220,
+          topWakerName: 'Worker#0',
+          topWakerPct: 75.0
+        }
+      }
+    }));
+    check(
+      'rule_zero_pmc_explicit_lock_wait_chain',
+      Boolean(fLock) && fLock.quickJumpTab === 7 && fLock.profilerSource === 'etw_offcpu' &&
+      fLock.why.includes('RenderThread') && fLock.why.includes('86%') &&
+      !dLockGenericWait.findings.some(f => f.id === 'explicit_lock_wait_chain') &&
+      !dLockLowWakes.findings.some(f => f.id === 'explicit_lock_wait_chain') &&
+      !dLockSatC0.findings.some(f => f.id === 'explicit_lock_wait_chain'),
+      `fired=${Boolean(fLock)}, generic=${dLockGenericWait.findings.some(f => f.id === 'explicit_lock_wait_chain')}, lowWakes=${dLockLowWakes.findings.some(f => f.id === 'explicit_lock_wait_chain')}, satC0=${dLockSatC0.findings.some(f => f.id === 'explicit_lock_wait_chain')}`
+    );
+
+    // 8. Sustained Uncorrelated Frame-Pacing Collapse (Zero-PMC)
+    const badFrame = { frameCount: 240, fps: 120.0, avgMs: 8.3, medianMs: 8.0, low1Ms: 22.0, low1Fps: 45.5, low01Ms: 31.0, presentMode: 'Hardware: Independent Flip', composedPct: 0.0 };
+    const goodFrame = { frameCount: 240, fps: 125.0, avgMs: 8.0, medianMs: 8.0, low1Ms: 11.5, low1Fps: 87.0, low01Ms: 14.0, presentMode: 'Hardware: Independent Flip', composedPct: 0.0 };
+    const win60 = [...Array(6).fill(badFrame), ...Array(4).fill(goodFrame)];
+    const win50 = [...Array(5).fill(badFrame), ...Array(5).fill(goodFrame)];
+    const dPacingFire = evaluateDiagnostics(mkOv({
+      muxId: 'no-pmu',
+      avg: { avgC0Pct: 35.0, instPerSec: 0 },
+      presentStats: badFrame,
+      presentRollingWindow: win60
+    }));
+    const fPacing = dPacingFire.findings.find(f => f.id === 'uncorrelated_frame_pacing_collapse');
+    // Suppressed when <60% persistence (50%), or frozen loading screen (medianMs > 33.3), or frameCount < 120, or Rule 11 fired
+    const dPacing50 = evaluateDiagnostics(mkOv({ presentStats: badFrame, presentRollingWindow: win50 }));
+    const loadingFrame = { ...badFrame, medianMs: 42.0, low1Ms: 110.0 };
+    const dPacingLoading = evaluateDiagnostics(mkOv({ presentStats: loadingFrame, presentRollingWindow: Array(10).fill(loadingFrame) }));
+    const lowCountFrame = { ...badFrame, frameCount: 119 };
+    const dPacingLowCount = evaluateDiagnostics(mkOv({ presentStats: lowCountFrame, presentRollingWindow: Array(10).fill(lowCountFrame) }));
+    const dPacingCorrelated = evaluateDiagnostics(mkOv({
+      presentStats: badFrame,
+      presentRollingWindow: win60,
+      spikeCorrelation: {
+        totalSpikes: 8,
+        dominantCulprit: 'disk_read',
+        dominantCount: 6,
+        dominantSharePct: 75.0,
+        avgSpikeMs: 26.0,
+        minSpikeMs: 20.0,
+        culpritMeta: { scope: '[OS / HW]', tab: 4 },
+        culpritSummary: 'Disk Read bursts >120 MB/s'
+      }
+    }));
+    check(
+      'rule_zero_pmc_uncorrelated_frame_pacing_collapse',
+      Boolean(fPacing) && fPacing.title.includes('120 Avg vs 46 FPS 1% Low') &&
+      fPacing.action.includes('Average-IPC') && fPacing.quickJumpTab === 6 &&
+      !dPacing50.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse') &&
+      !dPacingLoading.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse') &&
+      !dPacingLowCount.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse') &&
+      !dPacingCorrelated.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse'),
+      `fired=${Boolean(fPacing)}, p50=${dPacing50.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse')}, loading=${dPacingLoading.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse')}, lowCnt=${dPacingLowCount.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse')}, corrSuppressed=${!dPacingCorrelated.findings.some(f => f.id === 'uncorrelated_frame_pacing_collapse')}`
+    );
+
+    const passed = results.filter(r => r.pass).length;
+    return { passed, total: results.length, results };
+  }
+
   function runAllDiagnosticTests() {
     const a = runGroupADiagnosticTests();
     const b = runDeepDiveTests();
-    const results = [...a.results, ...b.results];
+    const c = runActionableRulesTests();
+    const results = [...a.results, ...b.results, ...c.results];
     return {
-      passed: a.passed + b.passed,
-      total: a.total + b.total,
+      passed: a.passed + b.passed + c.passed,
+      total: a.total + b.total + c.total,
       results
     };
   }
 
-  Object.assign(Z, { runGroupADiagnosticTests, runDeepDiveTests, runAllDiagnosticTests });
+  Object.assign(Z, { runGroupADiagnosticTests, runDeepDiveTests, runActionableRulesTests, runAllDiagnosticTests });
 })();

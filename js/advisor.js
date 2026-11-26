@@ -129,6 +129,7 @@
     } else {
       if (!hasDcDemand) inactiveRules.push('DRAM/L3');
       else if (!hasDcHwpf) inactiveRules.push('Dem/HWPF');
+      if (!hasL1L2Dc) inactiveRules.push('L1/L2 DC');
       if (!hasBranches) inactiveRules.push('Branches');
       if (!hasL1L2Ic) inactiveRules.push('I-Cache');
       if (!hasItlb) inactiveRules.push('iTLB');
@@ -278,8 +279,29 @@
     const pushFinding = f => findings.push(f);
     const pushHealthy = (label, metric) => healthyChecks.push({ label, metric });
 
+    // Build Tab 7 profiler context upfront so Zero-PMC Off-CPU wait-chain rules and post-sort attribution share it
+    const profCtx = (ov && ('profiler' in ov))
+      ? ov.profiler
+      : buildLiveProfilerContext(proc);
+
+    // 10-sample rolling windows for per-thread serial/affinity and Present frame-pacing persistence rules
+    const threadRollingWindow = (ov && ('threadRollingWindow' in ov))
+      ? (Array.isArray(ov.threadRollingWindow) ? ov.threadRollingWindow : [])
+      : (ov
+        ? (proc && Array.isArray(proc.threads) && proc.threads.length > 0
+          ? Array.from({ length: Math.min(n, minSamples) }, () => proc.threads)
+          : [])
+        : (Array.isArray(state.threadRollingWindow) ? state.threadRollingWindow : []));
+    const presentRollingWindow = (ov && ('presentRollingWindow' in ov))
+      ? (Array.isArray(ov.presentRollingWindow) ? ov.presentRollingWindow : [])
+      : (ov
+        ? (presentStats
+          ? Array.from({ length: Math.min(n, minSamples) }, () => presentStats)
+          : [])
+        : (Array.isArray(state.presentRollingWindow) ? state.presentRollingWindow : []));
+
     const ctx = {
-      proc, base, plan,
+      proc, base, plan, minSamples, profCtx, threadRollingWindow, presentRollingWindow,
       hasPmu, hasL3: hasPmu, hasFreeBase, hasDcDemand, hasDcHwpf, hasL1L2Dc, hasL1L2Ic, hasL2Hwpf,
       hasBranches, hasItlb, hasDtlb, hasCrossCcxLocks, hasOpCacheDecode, hasStlfSplits, hasExactRetiring,
       uarchRawOverride: ov ? (ov.uarchRaw || null) : null,
@@ -303,12 +325,13 @@
     const pmuRes = evaluatePmuRules(ctx, groupA);
     const {
       smtContendedHot, hotCoreProof, crossCcxActive, dramQueueing,
-      demandDramChase, demShare, branchBound, icacheBound
+      demandDramChase, demShare, branchBound, icacheBound, l2DcBound
     } = pmuRes;
 
     const uarchRes = evaluateMicroArchRules(ctx, pmuRes);
     const {
       uarchMetrics, crossCcxBouncing, lockContention, opcacheThrash, stlfBound, splitsBound,
+      badSpecBound, nonBranchFlushBound, microcodeBound,
       crossCcxCpi, stlfCpi
     } = uarchRes;
 
@@ -326,7 +349,7 @@
 
     const feMissCpi = hasL1L2Ic ? (avgL2IcMiss * CONFIG.latencies.l3Hit) / 1000.0 : 0;
     const tlbCpi = avgTierCpi.l2Itlb + avgTierCpi.l2Dtlb;
-    const uarchBound = crossCcxBouncing || lockContention || stlfBound || splitsBound;
+    const uarchBound = crossCcxBouncing || lockContention || stlfBound || splitsBound || nonBranchFlushBound;
     const uarchPeakCpi = Math.max(crossCcxCpi, stlfCpi);
 
     let primaryVerdict = hasPmu ? 'CoreExecutionBound' : 'Win32OnlyClear';
@@ -344,9 +367,13 @@
       primaryVerdict = 'FrontendCodeBound';
     } else if (crossCcxActive || (hasDcDemand && avgTierCpi.l3Hit >= avgTierCpi.dram && avgL3Hit >= 5.0)) {
       primaryVerdict = 'L3CapacityOrCrossCcx';
+    } else if (l2DcBound) {
+      primaryVerdict = 'MemoryLatencyBound';
     } else if ((hasItlb || hasDtlb) && ((hasItlb && avgL2Itlb >= 0.35) || (hasDtlb && avgL2Dtlb >= 0.50)) && (tlbCpi >= 0.04 || (!hasDcDemand && !hasBranches && !hasL1L2Ic))) {
       primaryVerdict = 'TlbTranslationBound';
-    } else if (opcacheThrash) {
+    } else if (badSpecBound && !nonBranchFlushBound) {
+      primaryVerdict = 'BranchMispredictBound';
+    } else if (opcacheThrash || microcodeBound) {
       primaryVerdict = 'FrontendCodeBound';
     } else if (uarchBound) {
       primaryVerdict = 'MicroArchContention';
@@ -428,9 +455,6 @@
     });
 
     // Tab 5 Advisor Attribution Upgrade: enrich matching findings with fresh Tab 7 ETW / Burst hotspots
-    const profCtx = (ov && ('profiler' in ov))
-      ? ov.profiler
-      : buildLiveProfilerContext(proc);
     if (profCtx) {
       enrichFindingsWithProfiler(findings, profCtx);
     }
@@ -560,7 +584,11 @@
     for (const f of findings) {
       let note = null;
 
-      if (f.id === 'branch_mispredict_bound' || f.id === 'branch_mispredicts') {
+      if (
+        f.id === 'branch_mispredict_bound' ||
+        f.id === 'branch_mispredicts' ||
+        f.id === 'confirmed_bad_speculation'
+      ) {
         if (branchTop) {
           note = `Top branch-mispredict burst contributor: ${formatFnName(branchTop)} (${branchTop.selfPct.toFixed(1)}%).`;
         } else if (onCpuTop) {
@@ -569,6 +597,8 @@
       } else if (
         f.id === 'dram_queueing_inflation' ||
         f.id === 'demand_dram_pointer_chase' ||
+        f.id === 'streaming_dram_bw_saturation' ||
+        f.id === 'l1d_capacity_spill_l2' ||
         f.id === 'primary_dram_latency' ||
         f.id === 'primary_l3_capacity'
       ) {
@@ -593,13 +623,18 @@
         } else if (onCpuTop) {
           note = `Top On-CPU hotspot: ${formatFnName(onCpuTop)} (${onCpuTop.selfPct.toFixed(1)}% self).`;
         }
-      } else if (f.id === 'context_switch_storm') {
+      } else if (
+        f.id === 'context_switch_storm' ||
+        f.id === 'uncorrelated_frame_pacing_collapse'
+      ) {
         if (offCpuTop) {
           note = `Top Off-CPU sleep stack: ${offCpuTop.displayName || offCpuTop.name} (${offCpuTop.blockedPct.toFixed(1)}% blocked, woken ${Math.round(offCpuTop.topWakerPct)}% by ${offCpuTop.topWakerName}).`;
         }
       } else if (
         f.id === 'icache_capacity_pressure' ||
         f.id === 'opcache_thrashing' ||
+        f.id === 'confirmed_microcode_expansion' ||
+        f.id === 'single_thread_serial_bottleneck' ||
         f.id === 'serialized_lock_contention' ||
         f.id === 'cross_ccx_cache_bouncing' ||
         f.id === 'stlf_interlocks' ||

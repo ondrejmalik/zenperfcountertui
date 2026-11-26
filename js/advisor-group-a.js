@@ -2,11 +2,15 @@
 (() => {
   'use strict';
   const Z = window.Zen2Top || (window.Zen2Top = {});
-  const { CONFIG, fmtMiB } = Z;
+  const { CONFIG, fmtMiB, formatThreadEntry, getFullTopologyMask, formatAffinityHex } = Z;
+
+  const EXPLICIT_LOCK_WAIT_RE = /(?:RtlEnterCriticalSection|AcquireSRWLock\w*|NtWaitForAlertByThreadId|NtWaitForKeyedEvent|std::mutex|WaitOnAddress)/i;
 
   function evaluateGroupARules(ctx) {
     const {
-      proc, hasItlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
+      proc, minSamples = CONFIG.advisor.minSamples, profCtx,
+      threadRollingWindow = [], presentRollingWindow = [],
+      hasItlb, avgC0, avgPfRate, avgTierCpi, avgCoreC0, avgSys, avgL2Itlb,
       avgGpu3dPct, avgCoreDpc, avgCoreIrq, avgCoreIrqRate,
       avgHardPageReads, avgAvailPhysPct, avgCommitPct,
       avgCtxSw, avgSyncWaitPct, topWaitReason,
@@ -356,7 +360,9 @@
     }
 
     // --- GROUP A RULE 11: Frametime Spike Correlator (INFO / MD) ---
+    let spikeCorrelatorTriggered = false;
     if (proc && spikeCorrelation && spikeCorrelation.totalSpikes >= 5 && spikeCorrelation.dominantSharePct >= 60.0 && spikeCorrelation.dominantCulprit) {
+      spikeCorrelatorTriggered = true;
       const sc = spikeCorrelation;
       const sev = (sc.dominantSharePct >= 75.0 || sc.avgSpikeMs >= 25.0) ? 'MD' : 'INFO';
       const conf = (sc.dominantSharePct >= 75.0 || sc.totalSpikes >= 8) ? 'HIGH' : 'MED';
@@ -383,7 +389,261 @@
       });
     }
 
-    return { gpuBound, hottestCpuC0, hottestCpuTag, largePageFailureTriggered, jitResidualTriggered };
+    // Aggregate per-thread CPU% across the rolling 10-sample window for Rules 12 & 13
+    const threadWinSlice = Array.isArray(threadRollingWindow) ? threadRollingWindow.slice(-minSamples) : [];
+    const rollingThreadMap = new Map();
+    if (threadWinSlice.length > 0) {
+      for (const sampleThreads of threadWinSlice) {
+        if (!Array.isArray(sampleThreads)) continue;
+        for (const t of sampleThreads) {
+          if (!t || t.tid === undefined || t.tid === null) continue;
+          let acc = rollingThreadMap.get(t.tid);
+          if (!acc) {
+            acc = {
+              tid: t.tid,
+              cpuSum: 0,
+              description: t.description || '',
+              startAddress: t.startAddress ?? null,
+              affinityMask: t.affinityMask,
+              currentCpu: t.currentCpu
+            };
+            rollingThreadMap.set(t.tid, acc);
+          }
+          acc.cpuSum += Math.max(0, Number(t.cpuPct) || 0);
+          if (t.description) acc.description = t.description;
+          if (t.startAddress !== undefined && t.startAddress !== null) acc.startAddress = t.startAddress;
+          if (t.affinityMask !== undefined) acc.affinityMask = t.affinityMask;
+          if (t.currentCpu !== undefined) acc.currentCpu = t.currentCpu;
+        }
+      }
+    }
+    const rollingThreadsSorted = [...rollingThreadMap.values()]
+      .map(a => ({ ...a, avgCpuPct: a.cpuSum / Math.max(1, threadWinSlice.length) }))
+      .sort((a, b) => b.avgCpuPct - a.avgCpuPct);
+
+    // --- GROUP A RULE 12: Single-Thread Serial Bottleneck - Exact Thread Pinpoint (Zero-PMC) ---
+    if (proc && !gpuBound && avgC0 < 50.0 && threadWinSlice.length >= minSamples && rollingThreadsSorted.length >= 1) {
+      const topThread = rollingThreadsSorted[0];
+      const secondThread = rollingThreadsSorted.length >= 2 ? rollingThreadsSorted[1] : null;
+      const secondCpuPct = secondThread ? secondThread.avgCpuPct : 0.0;
+      if (topThread.avgCpuPct >= 92.0 && secondCpuPct < 65.0) {
+        const entryPoint = formatThreadEntry(topThread, proc.modules || []);
+        pushFinding({
+          id: 'single_thread_serial_bottleneck',
+          category: 'CoreExecutionBound',
+          severity: topThread.avgCpuPct >= 95.0 ? 'HI' : 'MD',
+          scope: '[Code / OS]',
+          confidence: 'HIGH',
+          impact: topThread.avgCpuPct >= 95.0 ? 0.44 : 0.28,
+          title: `Single-thread serial bottleneck: TID ${topThread.tid} (${entryPoint}) at ${topThread.avgCpuPct.toFixed(1)}%`,
+          keyMetric: `TID ${topThread.tid} ${topThread.avgCpuPct.toFixed(1)}% | #2 ${secondCpuPct.toFixed(0)}% | C0 ${avgC0.toFixed(0)}%`,
+          estGain: {
+            kind: 'qualitative',
+            label: 'Amdahl serial cap',
+            detail: 'Qualitative: throughput is gated by one pegged thread while other cores sit idle; adding worker threads will not help'
+          },
+          why: `Across the ${threadWinSlice.length}-sample rolling window, ${proc.name} thread TID ${topThread.tid} (${entryPoint}) averaged ${topThread.avgCpuPct.toFixed(1)}% (>=92%) of a logical core while the next busiest thread averaged only ${secondCpuPct.toFixed(1)}% (<65%), overall CPU C0 averaged ${avgC0.toFixed(1)}% (<50%), and the GPU is not saturated.`,
+          action: `Do not increase worker-pool thread counts (Amdahl serial limit). Press Enter to jump to Tab 6 on TID ${topThread.tid} and press a -> [4] to clear its SMT sibling, then open Tab 7 scoped to TID ${topThread.tid} ('t') to profile its hot call stack.`,
+          cascade: `Protects the critical-path thread's ROB/L1/L2 resources and focuses optimization directly on the serial bottleneck.`,
+          quickJumpTab: 6,
+          targetTid: topThread.tid
+        });
+      }
+    }
+
+    // --- GROUP A RULE 13: Over-Constrained Thread Affinity Mask (Zero-PMC) ---
+    if (proc && Array.isArray(proc.threads) && proc.threads.length >= 2) {
+      const fullMask = getFullTopologyMask(CONFIG.logicalCpus);
+      const rollingCpuByTid = new Map(rollingThreadsSorted.map(t => [t.tid, t.avgCpuPct]));
+      const heavyRestricted = proc.threads
+        .map(t => {
+          const mask = (t.affinityMask !== undefined && t.affinityMask !== null)
+            ? ((Number(t.affinityMask) >>> 0) & fullMask)
+            : fullMask;
+          const cpuPct = rollingCpuByTid.has(t.tid) ? rollingCpuByTid.get(t.tid) : (Number(t.cpuPct) || 0);
+          return { ...t, mask, cpuPct };
+        })
+        .filter(t => t.cpuPct >= 45.0 && t.mask !== 0 && t.mask !== fullMask);
+
+      if (heavyRestricted.length >= 2) {
+        const unionMask = heavyRestricted.reduce((acc, t) => (acc | t.mask) >>> 0, 0);
+        let coveredPhysCores = 0;
+        const idleOutsideCores = [];
+        for (const pc of CONFIG.physicalCores) {
+          const coreMask = pc.siblings.reduce((m, c) => (m | (1 << c)) >>> 0, 0);
+          if ((unionMask & coreMask) !== 0) {
+            coveredPhysCores += 1;
+          } else {
+            const coreIdle = pc.siblings.length > 0 && pc.siblings.every(c => (avgCoreC0[c] || 0) < 20.0);
+            if (coreIdle) idleOutsideCores.push(pc);
+          }
+        }
+
+        if (coveredPhysCores < heavyRestricted.length && idleOutsideCores.length >= 1) {
+          const unionHex = formatAffinityHex(unionMask);
+          const tidSummary = heavyRestricted.slice(0, 4)
+            .map(t => `TID ${t.tid} (${formatAffinityHex(t.mask)}, ${t.cpuPct.toFixed(0)}%)`)
+            .join(', ');
+          const extraCnt = heavyRestricted.length > 4 ? ` +${heavyRestricted.length - 4} more` : '';
+          const idleList = idleOutsideCores.map(c => `P${c.id}`).join(', ');
+          const isSevere = coveredPhysCores <= 1 || (heavyRestricted.length - coveredPhysCores) >= 2;
+
+          pushFinding({
+            id: 'overconstrained_thread_affinity',
+            category: 'OsKernelChurn',
+            severity: isSevere ? 'HI' : 'MD',
+            scope: '[OS / TUI]',
+            confidence: 'HIGH',
+            impact: isSevere ? 0.40 : 0.24,
+            title: `Over-constrained thread affinity (${heavyRestricted.length} heavy threads on ${coveredPhysCores} core${coveredPhysCores === 1 ? '' : 's'}, mask ${unionHex})`,
+            keyMetric: `${heavyRestricted.length}T -> ${coveredPhysCores}P (${unionHex}) | ${idleList} idle`,
+            estGain: {
+              kind: 'qualitative',
+              label: 'Stops core starvation',
+              detail: 'Qualitative: releases artificially pinned heavy threads onto idle physical cores outside their affinity mask'
+            },
+            why: `${heavyRestricted.length} active threads (>=45% CPU) in ${proc.name} carry restricted affinity masks (${tidSummary}${extraCnt}) whose union ${unionHex} spans only ${coveredPhysCores} physical core(s), while ${idleOutsideCores.length} physical core(s) outside that mask (${idleList}) average <20% C0.`,
+            action: `Press Enter to inspect Tab 6 and widen thread masks ('a') or press 'R' (Revert All) to undo session edits. If you did not set affinity here, check external affinity managers (e.g. Process Lasso) or launcher affinity flags.`,
+            cascade: `Eliminates artificial scheduler queueing and SMT sibling crowding by spreading heavy threads onto idle physical cores.`,
+            quickJumpTab: 6,
+            targetTid: heavyRestricted[0].tid
+          });
+        }
+      }
+    }
+
+    // --- GROUP A RULE 14: Over-Reserved Locked 2 MiB Huge Pages Under RAM Pressure (Zero-PMC) ---
+    if (proc && proc.arenas && Array.isArray(proc.arenas.hugeArenas)) {
+      const totalHugeBlk = proc.arenas.hugeArenas.length * 32;
+      const usedHugeBlk = proc.arenas.hugeArenas.reduce((a, g) => a + g.inuse.reduce((x, y) => x + y, 0), 0);
+      const freeHugeBlk = Math.max(0, totalHugeBlk - usedHugeBlk);
+      const freePct = totalHugeBlk > 0 ? (freeHugeBlk / totalHugeBlk) * 100.0 : 0.0;
+      const freeHugeMiB = freeHugeBlk * 32;
+
+      if (totalHugeBlk > 0 && freePct >= 40.0 && freeHugeMiB >= 1024 && (avgAvailPhysPct < 15.0 || avgCommitPct >= 88.0)) {
+        const usedHugeMiB = usedHugeBlk * 32;
+        const usedGiB = usedHugeMiB / 1024.0;
+        const totalGiB = (totalHugeBlk * 32) / 1024.0;
+        const recommendedHugePages = Math.ceil(usedGiB) + 1;
+        const isCritical = avgAvailPhysPct < 8.0 || avgCommitPct >= 92.0;
+
+        pushFinding({
+          id: 'over_reserved_huge_pages',
+          category: 'OsKernelChurn',
+          severity: isCritical ? 'HI' : 'MD',
+          scope: '[OS / TUI]',
+          confidence: 'HIGH',
+          impact: isCritical ? 0.45 : 0.25,
+          title: `Over-reserved locked 2 MiB huge pages under RAM pressure (${fmtMiB(freeHugeMiB)} unused)`,
+          keyMetric: `${freePct.toFixed(0)}% free (${fmtMiB(freeHugeMiB)}) | RAM ${avgAvailPhysPct.toFixed(1)}% avail`,
+          estGain: {
+            kind: 'qualitative',
+            label: 'Reclaims locked RAM',
+            detail: 'Qualitative: reclaims unused non-pageable 2 MiB huge pages before physical RAM exhaustion triggers disk paging'
+          },
+          why: `${proc.name} holds ${totalGiB.toFixed(0)} GiB of non-pageable locked MEM_LARGE_PAGES huge arenas, yet ${freeHugeBlk}/${totalHugeBlk} 32 MiB blocks (${fmtMiB(freeHugeMiB)}, ${freePct.toFixed(1)}% >= 40%) are unused while system available physical RAM is ${avgAvailPhysPct.toFixed(1)}% (commit ${avgCommitPct.toFixed(1)}%). Windows cannot page out locked huge arenas, increasing Rule 5 disk-paging risk.`,
+          action: `Trim MIMALLOC_RESERVE_HUGE_OS_PAGES=${recommendedHugePages} (ceil(${usedGiB.toFixed(2)} GiB used) + 1 GiB headroom) to reclaim unused locked physical RAM without spilling active allocations to 4 KiB OS arenas.`,
+          cascade: `Returns locked physical RAM to Windows' pageable working set and prevents hard page-fault freezes while preserving 2 MiB dTLB coverage.`,
+          quickJumpTab: 4
+        });
+      }
+    }
+
+    // --- GROUP A RULE 15: Explicit Mutex / SRWLock Wait-Chain Bottleneck via Off-CPU ETW (Zero-PMC) ---
+    const offCpuTop = profCtx ? profCtx.offCpuTop : null;
+    if (proc && !gpuBound && avgC0 < 85.0 && offCpuTop) {
+      const blockedPct = Number(offCpuTop.blockedPct) || 0;
+      const wakes = Number(offCpuTop.wakes) || 0;
+      const waitStackText = [
+        offCpuTop.name,
+        offCpuTop.displayName,
+        offCpuTop.displayStack,
+        offCpuTop.stackSummary,
+        offCpuTop.signature
+      ].filter(Boolean).join(' ');
+
+      if (blockedPct >= 20.0 && wakes >= 100 && EXPLICIT_LOCK_WAIT_RE.test(waitStackText)) {
+        const lockSite = offCpuTop.displayStack || offCpuTop.displayName || offCpuTop.name;
+        const wakerName = offCpuTop.topWakerName || 'Unknown';
+        const wakerPct = Number(offCpuTop.topWakerPct) || 0;
+        const isHi = blockedPct >= 40.0;
+
+        pushFinding({
+          id: 'explicit_lock_wait_chain',
+          category: 'OsKernelChurn',
+          severity: isHi ? 'HI' : 'MD',
+          scope: '[Code / OS]',
+          confidence: 'HIGH',
+          impact: isHi ? 0.42 : 0.23,
+          title: `Sleeping lock contention on ${lockSite} (${blockedPct.toFixed(1)}% off-CPU, waker ${wakerName})`,
+          keyMetric: `${blockedPct.toFixed(1)}% blocked (${wakes} wakes) | waker ${wakerName} (${Math.round(wakerPct)}%)`,
+          estGain: {
+            kind: 'qualitative',
+            label: 'Lock wait-chain',
+            detail: 'Qualitative: eliminates sleeping OS mutex/SRWLock serialization invisible to hardware spinlock PMCs'
+          },
+          why: `Off-CPU ETW CSwitch + ReadyThread pairing shows ${blockedPct.toFixed(1)}% (>=20%, ${wakes} wakes) of ${proc.name} wait time blocked inside explicit lock acquisition (${lockSite}) while CPU C0 averages ${avgC0.toFixed(1)}% (<85%) and GPU is not saturated. ${Math.round(wakerPct)}% of wakes come from ${wakerName} releasing the lock (invisible to hardware Rule 13 spinning LOCK PMCs).`,
+          action: `Press Enter to inspect Tab 7 Off-CPU wait chains for ${lockSite} and reduce critical-section hold time in ${wakerName}, shard contended mutexes/SRWLocks, or switch to lock-free / reader-writer patterns.`,
+          cascade: `Unblocks waiting worker threads, increases effective core utilization, and cuts synchronization tail latency.`,
+          quickJumpTab: 7,
+          profilerSource: 'etw_offcpu'
+        });
+      }
+    }
+
+    // --- GROUP A RULE 16: Sustained Uncorrelated Frame-Pacing Collapse (Zero-PMC) ---
+    if (proc && !spikeCorrelatorTriggered && presentStats) {
+      const curFrames = Number(presentStats.frameCount) || 0;
+      const curMedianMs = Number(presentStats.medianMs) || 0;
+      const presentWinSlice = Array.isArray(presentRollingWindow) ? presentRollingWindow.slice(-minSamples) : [];
+      const isCollapsedPacing = s => Boolean(
+        s &&
+        (Number(s.frameCount) || 0) >= 120 &&
+        (Number(s.medianMs) || 0) > 0 &&
+        (Number(s.medianMs) || 0) <= 33.3 &&
+        (Number(s.low1Ms) || 0) >= Math.max(16.7, (Number(s.medianMs) || 0) * 2.2)
+      );
+
+      if (curFrames >= 120 && curMedianMs > 0 && curMedianMs <= 33.3 && presentWinSlice.length >= minSamples) {
+        const collapsedCount = presentWinSlice.filter(isCollapsedPacing).length;
+        const persistFrac = collapsedCount / presentWinSlice.length;
+        if (persistFrac >= 0.60) {
+          const avgFps = Number.isFinite(presentStats.fps)
+            ? presentStats.fps
+            : (1000.0 / Math.max(0.01, Number(presentStats.avgMs) || curMedianMs));
+          const low1Ms = Number(presentStats.low1Ms) || 0;
+          const low1Fps = Number.isFinite(presentStats.low1Fps)
+            ? presentStats.low1Fps
+            : (1000.0 / Math.max(0.01, low1Ms));
+          const low01Ms = Number.isFinite(presentStats.low01Ms) ? presentStats.low01Ms : null;
+          const ratio = low1Ms / Math.max(0.01, curMedianMs);
+          const persistPct = persistFrac * 100.0;
+          const isHi = ratio >= 3.0 || low1Ms >= 33.3;
+
+          pushFinding({
+            id: 'uncorrelated_frame_pacing_collapse',
+            category: 'OsKernelChurn',
+            severity: isHi ? 'HI' : 'MD',
+            scope: '[Code / OS]',
+            confidence: 'HIGH',
+            impact: isHi ? 0.38 : 0.21,
+            title: `Sustained uncorrelated frame-pacing collapse (${avgFps.toFixed(0)} Avg vs ${low1Fps.toFixed(0)} FPS 1% Low)`,
+            keyMetric: `1% Low ${low1Ms.toFixed(1)} ms (${ratio.toFixed(1)}x med) | ${Math.round(persistPct)}% win`,
+            estGain: {
+              kind: 'qualitative',
+              label: '1% / 0.1% lows',
+              detail: 'Qualitative: isolates persistent tail frame hitches not explained by Disk/DPC/PF/DRAM bursts'
+            },
+            why: `Present ETW shows active rendering (median ${curMedianMs.toFixed(1)} ms, ${avgFps.toFixed(1)} Avg FPS, ${curFrames} frames) with a persistent 1% Low collapse to ${low1Ms.toFixed(1)} ms (${low1Fps.toFixed(1)} FPS, ${ratio.toFixed(1)}x median${low01Ms !== null ? `, 0.1% Low ${low01Ms.toFixed(1)} ms` : ''}) across ${collapsedCount}/${presentWinSlice.length} (${Math.round(persistPct)}% >= 60%) of the rolling 10-sample window, with no dominant Disk/DPC/PF/DRAM burst correlation from Rule 11.`,
+            action: `Average-IPC or RAM timing tweaks will not fix uncorrelated tail hitches. Inspect Tab 6 frame pacing alongside Tab 7 (Off-CPU waits, shader compilation spikes, or GC pauses) to isolate the hitch source.`,
+            cascade: `Targets the true root cause of 1% and 0.1% low frame-time stutters instead of tuning steady-state average IPC.`,
+            quickJumpTab: 6
+          });
+        }
+      }
+    }
+
+    return { gpuBound, hottestCpuC0, hottestCpuTag, largePageFailureTriggered, jitResidualTriggered, spikeCorrelatorTriggered };
   }
 
   Object.assign(Z, { evaluateGroupARules });
