@@ -1,7 +1,7 @@
 ## What and why
 
 <!-- Describe what this changes and why. Link the claimed ready issue ("Fixes #123").
-     Over 600 net reviewed LOC (hard cap): MUST link a `spec-approved` issue ("Spec: #456"). -->
+     Over 1600 net reviewed LOC (hard cap): MUST link a `spec-approved` issue ("Spec: #456"). -->
 
 Fixes #
 
@@ -31,11 +31,11 @@ Fixes #
 
 ## Size justification
 
-<!-- Required ONLY when net reviewed LOC is 501-600 (soft cap exceeded, under 600 hard cap).
+<!-- Required ONLY when net reviewed LOC is 1201-1600 (soft cap exceeded, under 1600 hard cap).
      Give a concrete, technical reason why splitting this PR would leave half-wired or un-testable code.
-     Leave "N/A (<= 500 net LOC)" if <= 500 net LOC. -->
+     Leave "N/A (<= 1200 net LOC)" if <= 1200 net LOC. -->
 
-N/A (<= 500 net LOC)
+N/A (<= 1200 net LOC)
 
 ## Tested
 

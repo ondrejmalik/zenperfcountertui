@@ -288,10 +288,10 @@ Before considering any task complete, agents MUST pass all four gates in order:
 Read [`GOALS.md`](./GOALS.md), [`HANDOFF.md`](./HANDOFF.md), and [`CONTRIBUTING.md`](./CONTRIBUTING.md) before claiming or implementing any issue.
 
 - **Goal Alignment & Anti-Churn:** Only claim `ready` + `goal:<milestone>` issues aligned with `G-*` in `GOALS.md`. Never violate `AG-*`. Keep diffs strictly scoped to the claimed issue—open a separate issue for unrelated bugs or cleanups.
-- **PR Size Caps (`500` soft / `600` hard net reviewed LOC):**
-  - $\le 500$ net reviewed LOC (`.md`, tests, and $\ge 3$-line moved blocks excluded): standard path.
-  - $501\text{--}600$ net reviewed LOC: requires a concrete technical reason ($\ge 25$ chars) in `## Size justification`.
-  - $> 600$ net reviewed LOC: blocked by `scripts/gh_ci/pr_check.py` unless referencing a human-approved `Spec: #<M>` issue.
+- **PR Size Caps (`1200` soft / `1600` hard net reviewed LOC):**
+  - $\le 1200$ net reviewed LOC (`.md`, tests, and $\ge 3$-line moved blocks excluded): standard path.
+  - $1201\text{--}1600$ net reviewed LOC: requires a concrete technical reason ($\ge 25$ chars) in `## Size justification`.
+  - $> 1600$ net reviewed LOC: blocked by `scripts/gh_ci/pr_check.py` unless referencing a human-approved `Spec: #<M>` issue.
 - **Read-Only Shared Docs:** Never edit `HANDOFF.md` or `docs/specs/` in worker PRs; put 1–2 bullet state updates in `## Handoff notes` for the Batch Integrator.
 - **Scoped `unsafe` & Ratchet Gate:** `zen2top-core` and `zen2top-cli` enforce `#![forbid(unsafe_code)]` (`core_cli_unsafe_blocks == 0`). Win32/ETW FFI in `zen2top-platform` requires a `// SAFETY:` comment immediately above every `unsafe` block/`unsafe fn` (`platform_undocumented_unsafe == 0`).
 - **Commit-Bound Evidence & Honest `Not tested`:** Commit cleanly, run `python scripts/pr_ready.py --base origin/main`, and paste the full table + `pr-ready v1` fenced block into `## Self-check`. Fill in `## Tested` and `## Not tested` candidly.

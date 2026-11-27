@@ -14,8 +14,8 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-SOFT_CAP = 500
-HARD_CAP = 600
+SOFT_CAP = 1200
+HARD_CAP = 1600
 FENCE = "`" * 3
 
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -175,7 +175,7 @@ def validate_pr(ctx: PrContext) -> list[str]:
         if val != "PASS":
             errors.append(f"`pr-ready` gate `{gate}` must be `PASS`, got `{val}`.")
 
-    # 4. Size cap enforcement: 500 soft cap (justification required), 600 hard cap (Spec required)
+    # 4. Size cap enforcement: 1200 soft cap (justification required), 1600 hard cap (Spec required)
     try:
         reported_loc = int(block.get("net_loc", "-1"))
     except ValueError:

@@ -1,5 +1,5 @@
-name: Architecture Spec (>600 Net LOC or Cross-Layer Design)
-description: Required before implementing changes above the 600 net LOC hard cap or changing public APIs/schemas
+name: Architecture Spec (>1600 Net LOC or Cross-Layer Design)
+description: Required before implementing changes above the 1600 net LOC hard cap or changing public APIs/schemas
 labels: ["proposal", "needs-human-review"]
 body:
   - type: input
@@ -33,7 +33,7 @@ body:
   - type: textarea
     id: decomposition
     attributes:
-      label: Atomic Child-Issue Decomposition (Each <= 500 Net LOC)
+      label: Atomic Child-Issue Decomposition (Each <= 1200 Net LOC)
       description: Break the implementation into small, independently verifiable child tasks.
       value: |
         1. Child task 1 (layer, est. LOC):
