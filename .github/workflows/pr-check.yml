@@ -2,11 +2,10 @@ name: pr-check
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: pr-check-${{ github.event.pull_request.number }}
@@ -24,25 +23,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compute changed files and net reviewed LOC, then run fail-closed pr_check.py
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PYTHONPATH: "."
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from scripts.pr_ready import net_reviewed_lines, changed_files
-          base = os.environ["BASE_SHA"]
-          files = changed_files(base)
-          net_loc, _ = net_reviewed_lines(base, files)
-          with open("/tmp/pr_files.json", "w", encoding="utf-8") as f:
-              json.dump(files, f)
-          with open("/tmp/pr_net_loc.txt", "w", encoding="utf-8") as f:
-              f.write(str(net_loc))
-          PY
-          NET_LOC=$(cat /tmp/pr_net_loc.txt)
-          python3 scripts/gh_ci/pr_check.py \
-            --event-json "$GITHUB_EVENT_PATH" \
-            --files-json /tmp/pr_files.json \
-            --actual-net-loc "$NET_LOC"
+      - name: Check exact PR diff and commit-bound evidence
+        run: python3 scripts/gh_ci/pr_check.py

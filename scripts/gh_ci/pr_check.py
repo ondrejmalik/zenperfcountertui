@@ -14,14 +14,16 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-SOFT_CAP = 1200
-HARD_CAP = 1600
+if __package__:
+    from .diff_size import HARD_CAP, SOFT_CAP, WAIVER, DiffSize, git, measure_diff, size_tier
+else:
+    from diff_size import HARD_CAP, SOFT_CAP, WAIVER, DiffSize, git, measure_diff, size_tier
 FENCE = "`" * 3
 
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 SPEC_LINK_RE = re.compile(r"\bSpec:\s*#\d+\b", re.IGNORECASE)
-FIXES_LINK_RE = re.compile(r"\b(?:Fixes|Closes|Resolves)\s+#\d+\b", re.IGNORECASE)
+FIXES_LINK_RE = re.compile(r"\b(?:Fixes|Closes|Resolves|Part of)\s+#\d+\b", re.IGNORECASE)
 GOAL_ID_RE = re.compile(r"\b(?:G-\d+|off-goal)\b", re.IGNORECASE)
 AI_MARK_RE = re.compile(r"🤖\s*Agent:\s*(?!<model>)(?!<Role>).{12,}")
 PLACEHOLDER_RE = re.compile(
@@ -35,7 +37,6 @@ REQUIRED_PR_READY_KEYS = (
     "base",
     "dirty",
     "env",
-    "net_loc",
     "size_tier",
     "lockfile",
     "hygiene",
@@ -66,7 +67,8 @@ class PrContext:
     head_sha: str
     changed_files: list[str]
     labels: set[str]
-    actual_net_loc: int | None = None
+    diff: DiffSize
+    allow_legacy_evidence: bool = False
 
 
 def strip_comments(text: str) -> str:
@@ -148,7 +150,7 @@ def validate_pr(ctx: PrContext) -> list[str]:
     if not AI_MARK_RE.search(ai_sec):
         errors.append("`## AI use` must end with a concrete `🤖 Agent: <Role> | <model> via <tool>: <summary>` line.")
 
-    # 3. Commit-bound pr-ready v1 evidence block
+    # 3. Commit-bound pr-ready evidence block
     self_check = sections.get("self-check", "")
     block = extract_fenced_kv(self_check, "pr-ready")
     if block is None:
@@ -159,13 +161,14 @@ def validate_pr(ctx: PrContext) -> list[str]:
         if not block.get(key):
             errors.append(f"`pr-ready` block missing required key `{key}` (fail-closed).")
 
-    if block.get("format") != "pr-ready v1":
-        errors.append(f"`pr-ready` format must be `pr-ready v1`, got `{block.get('format')}`.")
+    evidence_format = block.get("format")
+    if evidence_format not in {"pr-ready v1", "pr-ready v2"}:
+        errors.append(f"Unknown `pr-ready` evidence format: {evidence_format!r}.")
 
     commit_val = block.get("commit", "")
     if "(dirty)" in commit_val or block.get("dirty") != "false":
         errors.append("`pr-ready` evidence was generated on a dirty working tree; commit first and re-run.")
-    elif not ctx.head_sha.startswith(commit_val.split()[0]) or len(commit_val.split()[0]) < 7:
+    elif not re.fullmatch(r"[0-9a-f]{7,40}", commit_val) or not ctx.head_sha.startswith(commit_val):
         errors.append(
             f"`pr-ready` commit `{commit_val}` does not match PR head SHA `{ctx.head_sha}`."
         )
@@ -175,31 +178,42 @@ def validate_pr(ctx: PrContext) -> list[str]:
         if val != "PASS":
             errors.append(f"`pr-ready` gate `{gate}` must be `PASS`, got `{val}`.")
 
-    # 4. Size cap enforcement: 1200 soft cap (justification required), 1600 hard cap (Spec required)
-    try:
-        reported_loc = int(block.get("net_loc", "-1"))
-    except ValueError:
-        reported_loc = -1
-        errors.append("`pr-ready` `net_loc` must be an integer.")
+    # Keep evidence from in-flight v1 PRs valid. Its LOC used a different
+    # definition, so only the independently measured production size gates it.
+    if evidence_format == "pr-ready v2":
+        for key, actual in (("net_prod_loc", ctx.diff.production), ("non_prod_loc", ctx.diff.other)):
+            value = block.get(key, "")
+            if not value.isascii() or not value.isdecimal():
+                errors.append(f"`pr-ready` `{key}` must be a non-negative integer.")
+            elif key == "net_prod_loc" and int(value) != actual:
+                errors.append(
+                    f"`pr-ready` reported {key}={value}, but CI measured {actual}; "
+                    "refresh the base and re-run `scripts/pr_ready.py`."
+                )
+        if block.get("size_tier") != size_tier(ctx.diff.production):
+            errors.append("`pr-ready` size tier does not match the measured production size.")
+        attestation = sections.get("diff budget and anti-golfing check", "")
+        if not re.search(r"(?im)^- \[[xX]\] No compression macros", attestation):
+            errors.append("Complete the anti-golfing attestation in the PR template.")
+    elif evidence_format == "pr-ready v1":
+        if not ctx.allow_legacy_evidence:
+            errors.append("Refresh evidence with `scripts/pr_ready.py` on this head (pr-ready v2).")
+        elif not block.get("net_loc", "").isdecimal():
+            errors.append("Legacy `pr-ready` evidence requires an integer `net_loc`.")
 
-    effective_loc = ctx.actual_net_loc if ctx.actual_net_loc is not None else reported_loc
-    if ctx.actual_net_loc is not None and reported_loc >= 0 and abs(ctx.actual_net_loc - reported_loc) > 25:
-        errors.append(
-            f"`pr-ready` reported net_loc={reported_loc}, but CI measured {ctx.actual_net_loc}; re-run `scripts/pr_ready.py`."
-        )
-
-    if effective_loc > HARD_CAP:
-        if not SPEC_LINK_RE.search(ctx.body):
-            errors.append(
-                f"PR has {effective_loc} net reviewed LOC, exceeding the {HARD_CAP} LOC hard cap without `Spec: #<issue>`."
-            )
-    elif effective_loc > SOFT_CAP:
+    production = ctx.diff.production
+    if production > SOFT_CAP:
         just_sec = sections.get("size justification", "")
-        if not is_meaningful_prose(just_sec, min_chars=25) or "n/a" in just_sec.lower():
+        if not is_meaningful_prose(just_sec, min_chars=25) or just_sec.lower().startswith("n/a"):
             errors.append(
-                f"PR has {effective_loc} net reviewed LOC (exceeds {SOFT_CAP} soft cap, within {HARD_CAP} hard cap). "
-                "Provide a concrete technical reason (>=25 chars) in `## Size justification`."
+                f"PR has {production} net production Rust LOC (exceeds {SOFT_CAP} soft cap). "
+                "Explain why a clean split is impractical in `## Size justification` (>=25 chars)."
             )
+    if production > HARD_CAP and WAIVER not in ctx.labels:
+        errors.append(
+            f"PR has {production} net production Rust LOC, exceeding the {HARD_CAP} hard cap "
+            f"without `{WAIVER}`."
+        )
 
     # 5. Optional B A A B benchmark block validation (fail-closed when present)
     baab_block = extract_fenced_kv(ctx.body, "baab")
@@ -222,8 +236,6 @@ def validate_pr(ctx: PrContext) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event-json", type=Path, default=None, help="GitHub event payload JSON path")
-    parser.add_argument("--files-json", type=Path, default=None, help="JSON list of changed file paths")
-    parser.add_argument("--actual-net-loc", type=int, default=None)
     args = parser.parse_args()
 
     event_path = args.event_json or (
@@ -239,16 +251,34 @@ def main() -> int:
         print("pr_check: event is not a pull_request; skipping.")
         return 0
 
-    changed_files: list[str] = []
-    if args.files_json and args.files_json.exists():
-        changed_files = json.loads(args.files_json.read_text(encoding="utf-8"))
+    diff = measure_diff(pr["base"]["sha"], pr["head"]["sha"])
+    summary = [
+        f"**Net production Rust LOC:** {diff.production} ({size_tier(diff.production)})",
+        f"**Other changed LOC (informational):** {diff.other}",
+    ]
+    if diff.production > SOFT_CAP:
+        print(f"::warning::Production diff exceeds {SOFT_CAP} LOC. Review the split rationale.")
+    for warning in diff.warnings:
+        print(f"::warning::{warning}")
+        summary.append(f"- **Anti-golfing review:** {warning}")
+    print("\n".join(summary))
+    if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(summary_path).open("a", encoding="utf-8") as out:
+            out.write("\n\n".join(summary) + "\n")
 
+    body = pr.get("body") or ""
+    allow_legacy = (
+        "format: pr-ready v1" in body
+        and "scripts/pr_ready.py" not in diff.files
+        and "format: pr-ready v1" in git("show", f"{pr['head']['sha']}:scripts/pr_ready.py")
+    )
     ctx = PrContext(
-        body=pr.get("body") or "",
+        body=body,
         head_sha=pr["head"]["sha"],
-        changed_files=changed_files,
+        changed_files=list(diff.files),
         labels={lbl["name"] for lbl in pr.get("labels", [])},
-        actual_net_loc=args.actual_net_loc,
+        diff=diff,
+        allow_legacy_evidence=allow_legacy,
     )
     errors = validate_pr(ctx)
     if errors:

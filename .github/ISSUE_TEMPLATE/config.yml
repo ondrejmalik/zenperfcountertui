@@ -4,5 +4,5 @@ contact_links:
     url: ../blob/main/GOALS.md
     about: Read GOALS.md before filing an issue to verify goal alignment and avoid Anti-Goals.
   - name: zen2top Engineering Constitution
-    url: ../blob/main/AGENTS.md
-    about: Read AGENTS.md for full AMD Zen 2 PMU, Advisor, and TUI engineering specifications.
+    url: https://github.com/ondrejmalik/zenperfcountertui/blob/main/docs/ARCHITECTURE_RULES.md
+    about: Read the architecture reference for full AMD Zen 2 PMU, Advisor, and TUI engineering specifications.

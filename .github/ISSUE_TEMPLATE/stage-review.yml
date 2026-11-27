@@ -1,0 +1,46 @@
+name: Stage Completion Human Review
+description: Review the Architect's audit before promoting the next milestone
+title: "[Stage Review] "
+labels: ["human-review", "stage-gate"]
+body:
+  - type: input
+    id: scope
+    attributes:
+      label: Stage, Roadmap issue, and audited commit range
+      placeholder: "v0.1-foundation, #12, <baseline>..<audited SHA>"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Shipped scope and goal coverage
+      description: List merged PRs, acceptance evidence, and any explicitly retired scope.
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: Full stage code audit
+      description: Include findings with file and line, layer invariants, Rust readability, failure paths, test fidelity, and performance or ratchet changes.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification results
+      description: List exact commands, outcomes, unavailable hardware or coverage, and why any failure remains.
+    validations:
+      required: true
+  - type: textarea
+    id: next_stage_proposal
+    attributes:
+      label: Proposed next stage
+      description: High-level outline for approval. The Architect creates its delivery issues after approval.
+    validations:
+      required: true
+  - type: checkboxes
+    id: human_gate
+    attributes:
+      label: Maintainer approval
+      options:
+        - label: Audit accepted and next stage approved. Record approval with /approve-stage or close as completed.

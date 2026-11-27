@@ -1,5 +1,5 @@
 name: Implementation Task
-description: Atomic work item (<=1200 net LOC) aligned with an active goal in GOALS.md
+description: A testable slice of an active milestone goal
 labels: ["needs-triage"]
 body:
   - type: input
@@ -28,7 +28,24 @@ body:
     id: summary
     attributes:
       label: Problem & Scope
-      description: Concrete description of the single behavior or capability to implement (reference exact AGENTS.md section).
+      description: Concrete description of the single behavior or capability to implement (reference the relevant docs/ARCHITECTURE_RULES.md section).
+    validations:
+      required: true
+
+  - type: textarea
+    id: touch_scope
+    attributes:
+      label: Touch Scope
+      description: List each exact repository-relative path or directory as its own bullet in backticks. Include tests.
+      placeholder: "- `crates/zen2top-core/src/packs.rs`"
+    validations:
+      required: true
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: Depends On
+      description: List issues whose delivery must merge first, or write none.
     validations:
       required: true
 
@@ -61,15 +78,10 @@ body:
     validations:
       required: true
 
-  - type: dropdown
+  - type: input
     id: size_estimate
     attributes:
-      label: Estimated Net Reviewed Size
-      description: Soft cap is 1200 net LOC (1201-1600 requires explicit justification). Over 1600 requires a Spec issue first.
-      options:
-        - "XS/S (<200 net LOC)"
-        - "M (200-1200 net LOC)"
-        - "L (1201-1600 net LOC - justification required)"
-        - "XL (>1600 net LOC - MUST decompose via Spec issue first)"
+      label: Estimated net production Rust LOC
+      description: Most slices target 150–450 production LOC across one to three production files.
     validations:
       required: true

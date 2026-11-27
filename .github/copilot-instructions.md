@@ -1,4 +1,1 @@
-Follow `AGENTS.md`, `GOALS.md`, and `HANDOFF.md` strictly as the authoritative rules for this repository.
-Respect `scripts/layers.json` (`zen2top-core` <- `zen2top-platform` <- `zen2top-cli`), keep PRs under 1200 net reviewed LOC (1201-1600 requires concrete `## Size justification`; >1600 requires approved `Spec: #<issue>`).
-Never edit `HANDOFF.md` in worker PRs. Never add `unsafe` in `zen2top-core` or `zen2top-cli`, and always place a `// SAFETY:` comment above every `unsafe` block/`unsafe fn` in `zen2top-platform`.
-Always run `python scripts/pr_ready.py --base origin/main` on a clean commit and fill in both `## Tested` and `## Not tested`.
+Read and follow the repository root `AGENTS.md`. For “Work on this” or a request without a specific task, run its default worker loop on the active GitHub Roadmap. Split large work into testable slices and keep readable Rust.

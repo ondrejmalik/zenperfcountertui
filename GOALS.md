@@ -1,14 +1,14 @@
 # Project Goals, Non-Goals & Anti-Goals (`GOALS.md`)
 
-> **Governance rule:** Every implementation issue and PR must advance an active **Goal (`G-*`)**, must not implement a deferred **Non-Goal (`NG-*`)** without milestone promotion, and must **never** violate an **Anti-Goal (`AG-*`)**. Automated triage closes or blocks work that violates an Anti-Goal. Changes to `GOALS.md` require human `.github/CODEOWNERS` approval.
+> **Governance rule:** Every implementation issue and PR must advance an active **Goal (`G-*`)**, must not implement a deferred **Non-Goal (`NG-*`)** without milestone promotion, and must **never** violate an **Anti-Goal (`AG-*`)**. The Architect excludes work that violates an Anti-Goal. Changes to `GOALS.md` require human `.github/CODEOWNERS` approval.
 
 ## Active Milestone: `v0.1-foundation`
 
 - **Target Exit Criteria:** All `G-01`..`G-06` items below are merged into `main`, green in `python scripts/ci.py all`, and verified by deterministic unit tests + headless `--no-pmu` JSON v1 smoke tests.
 - **Active Milestone Label:** `goal:v0.1-foundation`
-- **Engineering Constitution:** See [`AGENTS.md`](./AGENTS.md) for the full `zen2top` microarchitectural, metric, Advisor, and UI specification.
+- **Engineering Constitution:** See the [architecture rules](docs/ARCHITECTURE_RULES.md) for the full `zen2top` microarchitectural, metric, Advisor, and UI specification.
 
-## Active Goals (`G-*` — Eligible for Autonomous Auto-Merge under `goal:v0.1-foundation`)
+## Active Goals (`G-*` — Tracked under `goal:v0.1-foundation`)
 
 - **`G-01` — Config Schema, Zen 2 PMU Packs & Zero-Split 6-Slot Bin-Packer (`core`):** Implement `config.toml` defaults/parsing, the 12 atomic Zen 2 Core PMC packs (24 slots), 6 quick presets, and the First-Fit Decreasing 6-slot bin-packer (`ExactRetiring` auto-pad, empty-set rejection) with exhaustive 4,095-subset unit tests in `crates/zen2top-core`.
 - **`G-02` — CSV Parser, Exclusive CPI Stack & Retiring % Metrics (`core`):** Implement `report_core.csv` / `report_l3.csv` parsing (affinity filtering, CCX0/1 split, per-core `inst/aperf` IPC & `mperf` C0%), Exclusive CPI Stack (Flush vs. MLP clamped $\ge 0$), 6-wide Zen 2 Retiring % (exact `0x4300C1` & `~` estimated), and ring buffers in `crates/zen2top-core`.
@@ -40,8 +40,8 @@
 - **`AG-03` — Layer Collapse or Core Leakage:** `zen2top-cli` (`product`) must depend strictly on `zen2top-platform` (`platform`), never directly on `zen2top-core` (`core`); no shipped crate may depend on `tool` scripts.
 - **`AG-04` — Unverified Hot-Path Regressions:** Never merge a `B A A B` benchmark verdict of `slower` without isolating the cold path and obtaining human `perf-override-approved`.
 - **`AG-05` — Unbounded Scope Creep:** Never bundle unrelated refactors, renames, formatting churn, or dependency upgrades into an issue PR.
-- **`AG-06` — UI Clutter Violations (`AGENTS.md` §5.1):** Never nest bordered cards, use pill/color soup, prefix main-view metrics with raw PMC hex codes, exceed 2 top / 1 bottom chrome lines, default CCX strip ON, or pad disabled packs with `--` rows.
-- **`AG-07` — Math & Hardware Dishonesty (`AGENTS.md` §5.2):** Never hardcode per-app/game/engine lookup tables, normalize CPI stack to 100%, stack IPC bars, store averages-of-averages in baselines, breach the `0.25` CPI floor, feed `l2icExcl` into an L2 I-Cache miss rule, emit orphan verdicts, fire Advisor before `< 10` samples + active load, or suggest OS tweaks for `[Code / Build]` ceilings.
-- **`AG-08` — Unsafe Runtime Pollution (`AGENTS.md` §5.3):** Never spawn PowerShell, call `SuspendThread`, walk target NT heap locks, run `AMDuProfPcm.exe` and `AMDuProfCLI.exe` concurrently, silently evict PMC holders without user confirmation (or evict at all in `--headless`), or terminate critical Windows OS processes.
+- **`AG-06` — UI Clutter Violations (`docs/ARCHITECTURE_RULES.md` §5.1):** Never nest bordered cards, use pill/color soup, prefix main-view metrics with raw PMC hex codes, exceed 2 top / 1 bottom chrome lines, default CCX strip ON, or pad disabled packs with `--` rows.
+- **`AG-07` — Math & Hardware Dishonesty (`docs/ARCHITECTURE_RULES.md` §5.2):** Never hardcode per-app/game/engine lookup tables, normalize CPI stack to 100%, stack IPC bars, store averages-of-averages in baselines, breach the `0.25` CPI floor, feed `l2icExcl` into an L2 I-Cache miss rule, emit orphan verdicts, fire Advisor before `< 10` samples + active load, or suggest OS tweaks for `[Code / Build]` ceilings.
+- **`AG-08` — Unsafe Runtime Pollution (`docs/ARCHITECTURE_RULES.md` §5.3):** Never spawn PowerShell, call `SuspendThread`, walk target NT heap locks, run `AMDuProfPcm.exe` and `AMDuProfCLI.exe` concurrently, silently evict PMC holders without user confirmation (or evict at all in `--headless`), or terminate critical Windows OS processes.
 - **`AG-09` — Resource Leaks & Unverified `unsafe`:** Never leak Win32 `HANDLE`s or leave orphaned ETW sessions running; never add `unsafe` to `zen2top-core` or `zen2top-cli` (`#![forbid(unsafe_code)]`), and never add undocumented `unsafe` (missing `// SAFETY:`) in `zen2top-platform`.
 - **`AG-10` — Fragile Crashes on Denied/Missing OS Surfaces:** Never panic on `ERROR_ACCESS_DENIED`, missing AMDuProf, missing PDBs, or pre-22H2 Win11 APIs (`ProcessPowerThrottling`). Always degrade gracefully.

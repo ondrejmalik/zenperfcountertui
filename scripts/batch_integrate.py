@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Autonomous Batch Integrator: tests ready-to-merge goal-aligned PRs together, ejects culprits, and auto-merges.
-
-Also checks whether all open non-tracker issues for the active `goal:*` label have reached 0 and pings
-the open Roadmap Tracker issue so the Planner / maintainer can promote the next milestone.
-
-Usage:
-    python scripts/batch_integrate.py --goal-label goal:v0.1-foundation --dry-run
-    python scripts/batch_integrate.py --goal-label goal:v0.1-foundation --auto-merge
-"""
+"""Preview integration of peer-verified PRs. The Architect owns merges and stage gates."""
 from __future__ import annotations
 
 import argparse
@@ -25,6 +17,11 @@ if os.name == "nt":
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKING_LABELS = {
     "needs-human-review",
+    "needs-human",
+    "needs-review",
+    "changes-requested",
+    "review-in-progress",
+    "fix-in-progress",
     "perf-override-needed",
     "off-goal",
     "blocked",
@@ -33,6 +30,10 @@ BLOCKING_LABELS = {
 }
 PROTECTED_GLOBS = (
     "GOALS.md",
+    "AGENTS.md",
+    "docs/ARCHITECT_PROMPT.md",
+    "docs/ARCHITECTURE_RULES.md",
+    "scripts/pr_ready.py",
     ".github/*",
     ".github/**",
     "Jenkinsfile",
@@ -75,7 +76,7 @@ def touches_protected(files: list[str]) -> list[str]:
 def fetch_eligible_prs(goal_label: str) -> list[dict]:
     raw = run([
         "gh", "pr", "list", "--state", "open",
-        "--label", "ready-to-merge",
+        "--label", "agent-verified",
         "--label", goal_label,
         "--json", "number,title,headRefOid,labels,files,statusCheckRollup,body",
     ]).stdout
@@ -90,7 +91,7 @@ def fetch_eligible_prs(goal_label: str) -> list[dict]:
             print(f"Skipping PR #{pr['number']}: touches protected/Tier-2 path(s); requires human review.")
             continue
         checks = pr.get("statusCheckRollup", [])
-        if any(c.get("conclusion") not in ("SUCCESS", "SKIPPED", "NEUTRAL", None) for c in checks):
+        if not checks or any(c.get("conclusion") not in ("SUCCESS", "SKIPPED", "NEUTRAL") for c in checks):
             continue
         eligible.append(pr)
     return sorted(eligible, key=lambda p: p["number"])
@@ -100,7 +101,10 @@ def test_subset(prs: list[dict], base_ref: str = "origin/main") -> tuple[bool, s
     run(["git", "checkout", "-B", "agent-batch-integration", base_ref])
     for pr in prs:
         num = pr["number"]
-        run(["git", "fetch", "origin", f"pull/{num}/head:refs/batch/pr-{num}"])
+        run(["git", "fetch", "origin", f"+pull/{num}/head:refs/batch/pr-{num}"])
+        actual_head = run(["git", "rev-parse", f"refs/batch/pr-{num}"]).stdout.strip()
+        if actual_head != pr["headRefOid"]:
+            return False, f"PR #{num} changed after selection."
         merge = run(["git", "merge", "--no-ff", "--no-edit", f"refs/batch/pr-{num}"], check=False)
         if merge.returncode != 0:
             run(["git", "merge", "--abort"], check=False)
@@ -112,108 +116,47 @@ def test_subset(prs: list[dict], base_ref: str = "origin/main") -> tuple[bool, s
     return True, "ok"
 
 
-def eject_pr(pr_number: int, reason: str, dry_run: bool) -> None:
-    msg = (
-        "🤖 Agent: BatchIntegrator | Automated ejection from integration batch.\n\n"
-        f"Reason:\n```\n{reason[:1500]}\n```\n"
-        "Removed `ready-to-merge`; merge `origin/main`, resolve the issue, and re-run `scripts/pr_ready.py`."
-    )
-    if dry_run:
-        print(f"[DRY-RUN] Would eject PR #{pr_number}: {reason.splitlines()[0]}")
-        return
-    run(["gh", "pr", "comment", str(pr_number), "--body", msg], check=False)
-    run(["gh", "pr", "edit", str(pr_number), "--remove-label", "ready-to-merge"], check=False)
-
-
-def isolate_passing_subset(prs: list[dict], dry_run: bool) -> list[dict]:
+def isolate_passing_subset(prs: list[dict]) -> list[dict]:
     if not prs:
         return []
     ok, log = test_subset(prs)
     if ok:
         return prs
     if len(prs) == 1:
-        eject_pr(prs[0]["number"], log, dry_run=dry_run)
+        print(f"PR #{prs[0]['number']} did not integrate: {log}")
         return []
     mid = len(prs) // 2
-    left = isolate_passing_subset(prs[:mid], dry_run=dry_run)
-    right = isolate_passing_subset(prs[mid:], dry_run=dry_run)
+    left = isolate_passing_subset(prs[:mid])
+    right = isolate_passing_subset(prs[mid:])
     combined = left + right
     if combined and len(combined) < len(prs):
         ok2, log2 = test_subset(combined)
         if ok2:
             return combined
-        for pr in right:
-            eject_pr(
-                pr["number"],
-                f"Cross-PR batch conflict with {[p['number'] for p in left]}:\n{log2}",
-                dry_run=dry_run,
-            )
+        print(f"Right-side PRs conflict with {[p['number'] for p in left]}: {log2}")
         return left
     return combined
-
-
-def check_milestone_complete(goal_label: str, dry_run: bool) -> None:
-    """Notify the open Roadmap Tracker issue if 0 open non-tracker issues remain for goal_label."""
-    raw = run([
-        "gh", "issue", "list", "--state", "open", "--label", goal_label,
-        "--json", "number,labels",
-    ]).stdout
-    issues = json.loads(raw or "[]")
-    remaining = [
-        i for i in issues
-        if "tracker" not in {lbl["name"] for lbl in i.get("labels", [])}
-    ]
-    if remaining:
-        print(f"batch_integrate: {len(remaining)} open issue(s) remain for {goal_label}.")
-        return
-
-    trackers_raw = run([
-        "gh", "issue", "list", "--state", "open", "--label", "tracker", "--json", "number,comments",
-    ]).stdout
-    trackers = json.loads(trackers_raw or "[]")
-    marker = f"<!-- milestone-complete:{goal_label} -->"
-    for trk in trackers:
-        if any(marker in (c.get("body") or "") for c in trk.get("comments", [])):
-            continue
-        num = str(trk["number"])
-        body = (
-            f"{marker}\n"
-            f"🤖 Agent: BatchIntegrator | All open issues for `{goal_label}` are now closed! "
-            "Ready for the Planner Agent / maintainer to promote `GOALS.md` to the next milestone and seed its queue."
-        )
-        if dry_run:
-            print(f"[DRY-RUN] Would notify tracker #{num} that {goal_label} is complete.")
-            continue
-        run(["gh", "issue", "comment", num, "--body", body], check=False)
-        run(["gh", "issue", "edit", num, "--add-label", "needs-human-review"], check=False)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--goal-label", required=True, help="Active goal label from GOALS.md (e.g. goal:v0.1-foundation)")
-    parser.add_argument("--auto-merge", action="store_true", help="Auto-merge verified goal-aligned PRs via squash")
-    parser.add_argument("--dry-run", action="store_true", help="Test batch locally without mutating GitHub")
+    parser.add_argument("--dry-run", action="store_true", required=True, help="Test the batch in a disposable checkout")
     args = parser.parse_args()
 
+    if run(["git", "status", "--porcelain"]).stdout.strip():
+        parser.error("Use a clean, disposable checkout for the integration branch.")
     run(["git", "fetch", "origin", "main"])
     candidates = fetch_eligible_prs(args.goal_label)
     if not candidates:
-        print(f"batch_integrate: no eligible ready-to-merge PRs for {args.goal_label}.")
-        check_milestone_complete(args.goal_label, dry_run=args.dry_run)
+        print(f"batch_integrate: no eligible agent-verified PRs for {args.goal_label}.")
         return 0
 
     print(f"batch_integrate: testing batch {[p['number'] for p in candidates]}...")
-    passing = isolate_passing_subset(candidates, dry_run=args.dry_run)
+    passing = isolate_passing_subset(candidates)
     print(f"batch_integrate: verified passing subset = {[p['number'] for p in passing]}")
 
-    if args.auto_merge and not args.dry_run:
-        for pr in passing:
-            num = pr["number"]
-            print(f"batch_integrate: auto-merging PR #{num} (goal={args.goal_label})...")
-            run(["gh", "pr", "merge", str(num), "--squash", "--auto"])
-
-    check_milestone_complete(args.goal_label, dry_run=args.dry_run)
-    return 0
+    return 0 if len(passing) == len(candidates) else 1
 
 
 if __name__ == "__main__":
