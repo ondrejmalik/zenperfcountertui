@@ -1,0 +1,49 @@
+name: Bug Report
+description: Reproducible defect, regression, crash, or Advisor/math oracle mismatch
+labels: ["bug", "needs-triage"]
+body:
+  - type: input
+    id: goal_id
+    attributes:
+      label: Related Goal or Subsystem
+      placeholder: "G-02 (goal:v0.1-foundation) or regression on main"
+    validations:
+      required: true
+
+  - type: input
+    id: commit_sha
+    attributes:
+      label: Commit SHA Observed On
+      placeholder: "e.g. a1b2c3d"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Suspected Layer
+      options:
+        - core
+        - platform
+        - product
+        - tool
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal Reproduction Command
+      description: Exact headless command or failing test that reproduces the defect deterministically.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs. Actual Behavior
+      value: |
+        **Expected:**
+        **Actual:**
+    validations:
+      required: true

@@ -1,0 +1,49 @@
+name: claim command
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '17 */12 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  claim:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (!github.event.issue.pull_request &&
+       (startsWith(github.event.comment.body, '/claim') ||
+        startsWith(github.event.comment.body, '/unclaim') ||
+        startsWith(github.event.comment.body, '🤖 Agent: /claim') ||
+        startsWith(github.event.comment.body, '🤖 Agent: /unclaim')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/council.txt
+            .github/trusted-reviewers.txt
+            scripts/gh_ci/claim_command.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Run claim or stale-claim release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ISSUE: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          AUTHOR_ID: ${{ github.event.comment.user.id }}
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          if [ "$EVENT" = "issue_comment" ]; then
+            python3 scripts/gh_ci/claim_command.py command
+          else
+            python3 scripts/gh_ci/claim_command.py release
+          fi

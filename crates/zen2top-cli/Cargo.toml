@@ -1,0 +1,17 @@
+[package]
+name = "zen2top-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native Windows 11 Rust TUI and headless profiler binary for AMD Zen 2"
+
+[[bin]]
+name = "zen2top"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+zen2top-platform = { path = "../zen2top-platform" }

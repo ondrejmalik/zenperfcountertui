@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project Goals, Non-Goals & Anti-Goals
+    url: ../blob/main/GOALS.md
+    about: Read GOALS.md before filing an issue to verify goal alignment and avoid Anti-Goals.
+  - name: zen2top Engineering Constitution
+    url: ../blob/main/AGENTS.md
+    about: Read AGENTS.md for full AMD Zen 2 PMU, Advisor, and TUI engineering specifications.

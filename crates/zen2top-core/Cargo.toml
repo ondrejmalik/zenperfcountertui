@@ -1,0 +1,13 @@
+[package]
+name = "zen2top-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure platform-independent Zen 2 PMU packs, metrics, baseline, and Advisor diagnostic engine for zen2top"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

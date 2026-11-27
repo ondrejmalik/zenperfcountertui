@@ -1,0 +1,42 @@
+name: Architecture Spec (>600 Net LOC or Cross-Layer Design)
+description: Required before implementing changes above the 600 net LOC hard cap or changing public APIs/schemas
+labels: ["proposal", "needs-human-review"]
+body:
+  - type: input
+    id: goal_id
+    attributes:
+      label: Goal Alignment (from GOALS.md)
+      placeholder: "G-05 (goal:v0.1-foundation)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals_check
+    attributes:
+      label: Goals, Non-Goals & Anti-Goals Audit
+      description: Confirm which G-* goal this advances and explicitly verify zero NG-* / AG-* violations.
+      value: |
+        - **Advances:** G-
+        - **Non-Goals Respected:** NG-01..NG-07
+        - **Anti-Goals Checked:** AG-01..AG-10
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed Architecture & Layer Boundaries
+      description: Crates/modules affected, API boundary types, failure modes, and performance impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: decomposition
+    attributes:
+      label: Atomic Child-Issue Decomposition (Each <= 500 Net LOC)
+      description: Break the implementation into small, independently verifiable child tasks.
+      value: |
+        1. Child task 1 (layer, est. LOC):
+        2. Child task 2 (layer, est. LOC):
+    validations:
+      required: true

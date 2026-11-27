@@ -1,0 +1,6 @@
+---
+description: Core repository governance, layer boundaries, and PR evidence rules for zen2top
+alwaysApply: true
+---
+Read and strictly obey `AGENTS.md`, `GOALS.md`, and `HANDOFF.md` at the repository root.
+Respect `scripts/layers.json` (`core` <- `platform` <- `product`), keep changes <= 500 net LOC (600 hard cap without approved Spec), do not edit `HANDOFF.md` in worker PRs, keep `zen2top-core`/`zen2top-cli` 100% safe Rust and document every `unsafe` in `zen2top-platform` with `// SAFETY:`, and run `python scripts/pr_ready.py --base origin/main` before opening any PR.

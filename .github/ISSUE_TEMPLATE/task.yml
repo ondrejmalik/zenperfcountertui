@@ -1,0 +1,75 @@
+name: Implementation Task
+description: Atomic work item (<=500 net LOC) aligned with an active goal in GOALS.md
+labels: ["needs-triage"]
+body:
+  - type: input
+    id: goal_id
+    attributes:
+      label: Goal Alignment (from GOALS.md)
+      description: Exact Goal ID (e.g., G-01) and active milestone label (e.g., goal:v0.1-foundation).
+      placeholder: "G-01 (goal:v0.1-foundation)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Target Architectural Layer
+      description: Must match scripts/layers.json. Split across issues if spanning multiple layers.
+      options:
+        - core
+        - platform
+        - product
+        - tool
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Problem & Scope
+      description: Concrete description of the single behavior or capability to implement (reference exact AGENTS.md section).
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Verifiable Acceptance Criteria
+      description: Checklist of observable outcomes that prove the task is complete.
+      value: |
+        - [ ] Behavior 1:
+        - [ ] Behavior 2:
+    validations:
+      required: true
+
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Explicit Non-Goals / Out of Scope for This Issue
+      description: Prevent scope creep by listing adjacent things the worker agent MUST NOT touch.
+      placeholder: "Do not edit Cargo.toml; do not touch unrelated crates or HANDOFF.md."
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification Command / Oracle
+      description: Exact test, headless command, or independent oracle that proves correctness.
+      placeholder: "python scripts/ci.py all"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size_estimate
+    attributes:
+      label: Estimated Net Reviewed Size
+      description: Soft cap is 500 net LOC (501-600 requires explicit justification). Over 600 requires a Spec issue first.
+      options:
+        - "XS/S (<200 net LOC)"
+        - "M (200-500 net LOC)"
+        - "L (501-600 net LOC - justification required)"
+        - "XL (>600 net LOC - MUST decompose via Spec issue first)"
+    validations:
+      required: true

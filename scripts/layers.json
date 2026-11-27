@@ -1,0 +1,15 @@
+{
+  "order": ["core", "platform", "product", "tool"],
+  "rules": {
+    "core": ["core"],
+    "platform": ["core", "platform"],
+    "product": ["platform", "product"],
+    "tool": ["core", "platform", "product", "tool"]
+  },
+  "packages": {
+    "zen2top-core": "core",
+    "zen2top-platform": "platform",
+    "zen2top-cli": "product"
+  },
+  "allowed_exceptions": []
+}

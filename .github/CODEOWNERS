@@ -1,0 +1,12 @@
+# Changes to goals, pipeline, toolchain, build/signing, and governance require human maintainer review.
+/GOALS.md                                @ondrejmalik
+/.github/                                @ondrejmalik
+/Jenkinsfile                             @ondrejmalik
+/rust-toolchain.toml                     @ondrejmalik
+/scripts/ci.py                           @ondrejmalik
+/scripts/gh_ci/                          @ondrejmalik
+/scripts/check_hygiene.py                @ondrejmalik
+/scripts/check_layers.py                 @ondrejmalik
+/scripts/layers.json                     @ondrejmalik
+/scripts/ratchet_gate.py                 @ondrejmalik
+/scripts/batch_integrate.py              @ondrejmalik

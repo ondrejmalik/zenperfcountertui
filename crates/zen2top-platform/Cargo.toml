@@ -1,0 +1,13 @@
+[package]
+name = "zen2top-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Windows 11 platform telemetry seam (PMU, Win32, ETW, allocator, symbols, calibration) for zen2top"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zen2top-core = { path = "../zen2top-core" }

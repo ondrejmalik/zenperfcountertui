@@ -33,44 +33,34 @@ Every design choice in this repository exists for a concrete microarchitectural 
   - **Win32 Telemetry Worker:** Polls native Win32 process/thread/memory/GPU/DPC/IRQ/IO/IFEO/allocator state using RAII `HANDLE` wrappers.
   - **ETW Consumer Worker(s):** Dedicated real-time `OpenTraceW` / `ProcessTrace` threads for `DXGI`/`DxgKrnl` frame pacing and optional kernel `SampledProfile`/`CSwitch`/`ReadyThread`/`StackWalk` profiling, guaranteed to call `ControlTraceW(EVENT_TRACE_CONTROL_STOP)` on drop, exit, or Ctrl+C.
 
-### Canonical Module Layout
+### Canonical Workspace & Module Layout
+`zen2top` uses a strict 3-crate Cargo workspace (`zen2top-core` -> `zen2top-platform` -> `zen2top-cli`) enforced mechanically by `scripts/layers.json` and `scripts/check_layers.py` (with `third_party/rminject` excluded from workspace checks until integrated via `zen2top-platform`):
+
 ```text
-src/
-├── main.rs              # CLI (clap), TUI vs headless dispatch, terminal RAII guard
-├── headless/mod.rs      # Non-interactive capture runner, --launch lifecycle, JSON report writer
-├── config/mod.rs        # Auto-generated config.toml (latencies, packs, thresholds)
-├── calibrate/mod.rs     # ~1s pointer-chasing + random-branch latency microbenchmark
-├── pmu/
-│   ├── mod.rs           # PmuBackend trait, PmuCoordinator, eviction handshake channel
-│   ├── contention.rs    # PMC/PCM occupant detection (ETW + Win32 handles) & confirmed eviction
-│   ├── packs.rs         # 12 atomic Core PMC packs, 6-slot bin-packer, quick presets
-│   ├── uprof.rs         # AMDuProfPcm streaming/interval worker
-│   ├── uprof_burst.rs   # On-demand AMDuProfCLI hardware-stall & IBS burst capture
-│   └── csv_parser.rs    # report_core.csv + report_l3.csv (affinity + CCX0/1 + per-CPU)
-├── win32/
-│   ├── handle.rs        # RAII SafeHandle wrapper (CloseHandle on Drop)
-│   ├── topology.rs      # GetLogicalProcessorInformationEx (physical cores & SMT pairs)
-│   ├── process.rs       # SystemProcessInformation, noisy neighbors, Priority/EcoQoS
-│   ├── threads.rs       # Per-thread CPU/CtxSw/WaitReason, names, live affinity editor
-│   ├── modules.rs       # EnumProcessModulesEx, QueryWorkingSetEx, IFEO HKLM read/write
-│   ├── va_map.rs        # VirtualQueryEx + QueryWorkingSetEx (Private RW / JIT RX-RWX / Mapped / Image)
-│   ├── gpu.rs           # Vendor-agnostic D3DKMTQueryStatistics (3D engine utilization)
-│   ├── sys_perf.rs      # SystemProcessorPerformanceInformation (per-CPU DPC/IRQ%)
-│   ├── memory.rs        # GetPerformanceInfo + PDH \Memory\Page Reads/sec (hard faults)
-│   ├── io.rs            # GetProcessIoCounters (Read/Write MB/s & IOPS)
-│   └── privileges.rs    # TokenPrivileges check for SeLockMemoryPrivilege
-├── etw/
-│   ├── present.rs       # DXGI + DxgKrnl frametime, 1%/0.1% lows, flip mode, spike correlator
-│   └── profiler.rs      # Live SampledProfile (On-CPU) + CSwitch/ReadyThread (Off-CPU) + StackWalk
-├── allocator/
-│   ├── mod.rs           # AllocatorInspector trait, generic PE/VA classifier, Layer 1 fallback
-│   ├── tier0.rs         # PE byte-pattern RVA resolver + _mi_stats_main / mi_arenas reader
-│   └── generic.rs       # Standalone mimalloc*.dll / jemalloc / tbbmalloc export/signature detector
-├── symbols/mod.rs       # 4-tier x64 resolver: PDB > PE Export > .zen2sym.json > PE .pdata
-├── metrics/mod.rs       # Exclusive CPI Stack, Retiring %, MPKI, ring buffers, CCX/SMT aggregation
-├── baseline/mod.rs      # Raw-cumulative JSON persistence, pack-aware Δ%, MUX DIFF checks
-├── diagnostics/mod.rs   # Pure DiagnosticEngine::evaluate, evidence gate, Amdahl Est. Gain
-└── ui/                  # 7-tab borderless ratatui views, Braille plots, modals, ? Help
+crates/
+├── zen2top-core/        # Layer: core (#![forbid(unsafe_code)], pure platform-independent Rust)
+│   └── src/
+│       ├── lib.rs           # HeadlessExitCode, schema_version: 1 report types, crate re-exports
+│       ├── config.rs        # config.toml schema & defaults (latencies, packs, thresholds)
+│       ├── packs.rs         # 12 atomic Core PMC packs, 6-slot FFD bin-packer, 6 quick presets
+│       ├── csv_parser.rs    # report_core.csv + report_l3.csv (affinity + CCX0/1 + per-CPU)
+│       ├── metrics.rs       # Exclusive CPI Stack, Retiring %, MPKI, ring buffers, CCX/SMT aggregation
+│       ├── baseline.rs      # Raw-cumulative JSON persistence, pack-aware Δ%, MUX DIFF checks
+│       └── diagnostics.rs   # Pure DiagnosticEngine::evaluate, evidence gate, Amdahl Est. Gain
+├── zen2top-platform/    # Layer: platform (re-exports `pub use zen2top_core as core;`, `// SAFETY:` on all unsafe)
+│   └── src/
+│       ├── lib.rs           # Platform seam facade & --no-pmu/mock snapshot runner
+│       ├── calibrate.rs     # ~1s pointer-chasing + random-branch latency microbenchmark
+│       ├── pmu/             # PmuBackend trait, PmuCoordinator, contention.rs, uprof.rs, uprof_burst.rs
+│       ├── win32/           # RAII SafeHandle, topology, process, threads, modules/IFEO, va_map, gpu, sys_perf, memory, io, privileges
+│       ├── etw/             # present.rs (DXGI/DxgKrnl) + profiler.rs (SampledProfile/CSwitch/StackWalk)
+│       ├── allocator/       # AllocatorInspector trait, tier0.rs, generic.rs, rminject eligibility
+│       └── symbols.rs       # 4-tier x64 resolver: PDB > PE Export > .zen2sym.json > PE .pdata
+└── zen2top-cli/         # Layer: product (#![forbid(unsafe_code)], depends ONLY on zen2top-platform; bin: `zen2top`)
+    └── src/
+        ├── main.rs          # CLI (clap), TUI vs headless dispatch, --print-presets, terminal RAII guard
+        ├── headless.rs      # Non-interactive capture runner, --launch lifecycle, JSON report writer
+        └── ui/              # 7-tab borderless ratatui views, Braille plots, modals, ? Help
 ```
 
 ---
@@ -290,3 +280,27 @@ Before considering any task complete, agents MUST pass all four gates in order:
 2. **`cargo clippy --all-targets` exits with zero warnings.**
 3. **Visual Anti-Clutter Audit:** Inspect any UI change against Section 5.1 (no nested cards, no hex prefixes, no pill soup, no `--` padding walls, clean 2-line top / 1-line bottom chrome).
 4. **Hardware-in-the-Loop Advisor Verification (`TESTING.md`):** Load `TESTING.md` now and execute the full synthetic micro-benchmark + real CLI software verification phase via `zen2top --headless` to empirically prove $\ge 95\%$ Advisor precision (near-zero false positives) and produce `TEST_REPORT.md`. Do not declare the project complete until `TESTING.md`'s reporting & exit criteria are satisfied.
+
+---
+
+## 8. Autonomous Governance, PR Workflow & Hard Gates
+
+Read [`GOALS.md`](./GOALS.md), [`HANDOFF.md`](./HANDOFF.md), and [`CONTRIBUTING.md`](./CONTRIBUTING.md) before claiming or implementing any issue.
+
+- **Goal Alignment & Anti-Churn:** Only claim `ready` + `goal:<milestone>` issues aligned with `G-*` in `GOALS.md`. Never violate `AG-*`. Keep diffs strictly scoped to the claimed issue—open a separate issue for unrelated bugs or cleanups.
+- **PR Size Caps (`500` soft / `600` hard net reviewed LOC):**
+  - $\le 500$ net reviewed LOC (`.md`, tests, and $\ge 3$-line moved blocks excluded): standard path.
+  - $501\text{--}600$ net reviewed LOC: requires a concrete technical reason ($\ge 25$ chars) in `## Size justification`.
+  - $> 600$ net reviewed LOC: blocked by `scripts/gh_ci/pr_check.py` unless referencing a human-approved `Spec: #<M>` issue.
+- **Read-Only Shared Docs:** Never edit `HANDOFF.md` or `docs/specs/` in worker PRs; put 1–2 bullet state updates in `## Handoff notes` for the Batch Integrator.
+- **Scoped `unsafe` & Ratchet Gate:** `zen2top-core` and `zen2top-cli` enforce `#![forbid(unsafe_code)]` (`core_cli_unsafe_blocks == 0`). Win32/ETW FFI in `zen2top-platform` requires a `// SAFETY:` comment immediately above every `unsafe` block/`unsafe fn` (`platform_undocumented_unsafe == 0`).
+- **Commit-Bound Evidence & Honest `Not tested`:** Commit cleanly, run `python scripts/pr_ready.py --base origin/main`, and paste the full table + `pr-ready v1` fenced block into `## Self-check`. Fill in `## Tested` and `## Not tested` candidly.
+- **Hot-Path Benchmarking:** Run `python scripts/bench_baab.py` (`B A A B` 8-pair / 16-block schedule) when modifying hot paths (CSV parsing, CPI/metric loops, ETW event ingestion, symbol lookup) and paste the `baab v1` block into the PR.
+- **Single-Mark Attribution (`🤖 Agent:`):** Start issue/PR comments and reviews with `🤖 Agent: <Role> | <model> via <tool>: ...` (or `🤖 Agent: /claim` / `/unclaim`), and end PR bodies in `## AI use`. Never add `Co-Authored-By:` for agents.
+- **Local CI Commands:**
+  ```sh
+  python scripts/ci.py all                      # Exact local mirror of GitHub Actions & Jenkins
+  python scripts/pr_ready.py --base origin/main # Pre-PR self-check + commit-bound pr-ready v1 block
+  python scripts/ratchet_gate.py                # Monotonic test floor + scoped unsafe/SAFETY + lint ceiling
+  python scripts/bench_baab.py --self-test      # B A A B statistical harness check
+  ```

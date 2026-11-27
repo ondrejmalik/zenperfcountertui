@@ -1,0 +1,100 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || (github.event_name == 'push' && 'main') || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ZEN2TOP_TELEMETRY_URL: "off"
+  ZEN2TOP_NO_AUDIO: "1"
+  ZEN2TOP_TEST_LOOPBACK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  verify-hygiene:
+    name: verify (hygiene, gate self-tests, layers, ratchet, bench)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check hygiene, gate unit tests, layers, ratchet, and B A A B self-test
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: |
+          python3 scripts/ci.py hygiene
+          python3 scripts/ci.py layers ${BASE:+--base "$BASE"}
+          python3 scripts/ci.py ratchet
+          python3 scripts/ci.py bench
+
+  verify-lint:
+    name: verify (format and clippy on Windows)
+    if: github.event_name != 'merge_group'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+      - name: Run zero-warning format and clippy checks
+        run: python scripts/ci.py lint
+
+  verify-test:
+    name: verify (unit, doc, and headless smoke on Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Rust test suite and headless CLI harness
+        shell: pwsh
+        run: |
+          python scripts/ci.py test
+          python scripts/ci.py headless
+
+  verify:
+    needs: [verify-hygiene, verify-lint, verify-test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every part of verify passed or was intentionally skipped on merge_group
+        env:
+          HYGIENE: ${{ needs.verify-hygiene.result }}
+          LINT: ${{ needs.verify-lint.result }}
+          TEST: ${{ needs.verify-test.result }}
+        run: |
+          echo "hygiene: $HYGIENE, lint: $LINT, test: $TEST"
+          for result in "$HYGIENE" "$LINT" "$TEST"; do
+            [ "$result" = success ] || [ "$result" = skipped ] || exit 1
+          done

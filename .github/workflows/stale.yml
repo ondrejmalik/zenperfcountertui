@@ -1,0 +1,31 @@
+name: stale
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  issues: read
+
+jobs:
+  stale-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-issue-stale: -1
+          days-before-issue-close: -1
+          days-before-pr-stale: 3
+          days-before-pr-close: 4
+          exempt-pr-labels: 'goal:v0.1-foundation,goal:v0.2-platform-win32-pmu,goal:v0.3-tui-live,goal:v0.4-etw-profiler-hil,keep-open,ready-to-merge,spec-approved,handoff-sync'
+          exempt-all-pr-milestones: false
+          stale-pr-label: 'stale'
+          stale-pr-message: >-
+            🤖 Agent: QueueManager | This PR is not linked to an active `goal:*` milestone or has been inactive for 3 days.
+            Update it, link an active goal issue from `GOALS.md`, or ask a maintainer for `keep-open` within 4 days before automatic closure.
+          close-pr-message: >-
+            🤖 Agent: QueueManager | Closing after 7 days without activity or active goal alignment. Reopen anytime with updated `pr-ready` evidence.
+          operations-per-run: 100

@@ -1,0 +1,76 @@
+name: milestone-check
+
+on:
+  issues:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      goal_label:
+        description: "Goal label to check (e.g., goal:v0.1-foundation)"
+        required: true
+        default: "goal:v0.1-foundation"
+
+permissions:
+  issues: write
+
+jobs:
+  check-milestone-done:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Notify Roadmap Tracker when open non-tracker issues for a goal label hit 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_GOAL: ${{ inputs.goal_label }}
+          LABELS_JSON: ${{ toJson(github.event.issue.labels) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          repo = os.environ["REPO"]
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              goal_labels = [os.environ["INPUT_GOAL"]]
+          else:
+              labels = [l["name"] for l in json.loads(os.environ.get("LABELS_JSON") or "[]")]
+              if "tracker" in labels:
+                  raise SystemExit(0)
+              goal_labels = [l for l in labels if l.startswith("goal:")]
+
+          if not goal_labels:
+              raise SystemExit(0)
+
+          trackers_raw = subprocess.run(
+              ["gh", "issue", "list", "-R", repo, "--state", "open", "--label", "tracker", "--json", "number,comments"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          trackers = json.loads(trackers_raw or "[]")
+
+          for goal in goal_labels:
+              raw = subprocess.run(
+                  ["gh", "issue", "list", "-R", repo, "--state", "open", "--label", goal, "--json", "number,labels"],
+                  capture_output=True, text=True, check=True,
+              ).stdout
+              open_issues = [
+                  i for i in json.loads(raw or "[]")
+                  if "tracker" not in {l["name"] for l in i.get("labels", [])}
+              ]
+              if open_issues:
+                  print(f"milestone-check: {len(open_issues)} open issue(s) remain for {goal}.")
+                  continue
+
+              marker = f"<!-- milestone-complete:{goal} -->"
+              for trk in trackers:
+                  if any(marker in (c.get("body") or "") for c in trk.get("comments", [])):
+                      continue
+                  num = str(trk["number"])
+                  body = (
+                      f"{marker}\n"
+                      f"🤖 Agent: MilestoneWatch | All open issues for `{goal}` are now closed! "
+                      "Ready for the Planner Agent / maintainer to promote `GOALS.md` to the next milestone and seed its queue."
+                  )
+                  subprocess.run(["gh", "issue", "comment", num, "-R", repo, "--body", body], check=False)
+                  subprocess.run(["gh", "issue", "edit", num, "-R", repo, "--add-label", "needs-human-review"], check=False)
+                  print(f"milestone-check: notified tracker #{num} that {goal} is complete.")
+          PY

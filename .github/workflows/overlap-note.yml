@@ -1,0 +1,31 @@
+name: overlap-note
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: overlap-note-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  overlap-note:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/gh_ci/overlap_note.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Detect overlapping issues and modified functions across open PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/gh_ci/overlap_note.py

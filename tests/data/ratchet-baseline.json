@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "min_metrics": {
+    "test_functions": 8
+  },
+  "max_metrics": {
+    "core_cli_unsafe_blocks": 0,
+    "platform_undocumented_unsafe": 0,
+    "lint_suppressions": 0
+  }
+}

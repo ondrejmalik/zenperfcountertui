@@ -1,0 +1,10 @@
+#!/bin/sh
+for py in python3 python py; do
+    if "$py" -c "import sys; sys.exit(sys.version_info < (3, 10))" >/dev/null 2>&1; then
+        updates=$(cat)
+        printf '%s' "$updates" | "$py" scripts/check_hygiene.py --pre-push
+        exit $?
+    fi
+done
+echo "pre-push: no working Python 3.10+ found" >&2
+exit 1

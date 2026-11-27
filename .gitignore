@@ -1,0 +1,25 @@
+# Rust / Cargo build outputs
+/target/
+**/*.rs.bk
+
+# Local agent scratch, benchmark arms, and runtime artifacts
+/.local/
+/baselines/
+/benchmarks/
+/config.toml
+/TEST_REPORT.md
+/dist/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / Editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
