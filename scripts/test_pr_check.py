@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.check_layers import negative_control as layers_negative_control  # noqa: E402
+from scripts.gh_ci import claim_command, diff_size  # noqa: E402
+from scripts.gh_ci.diff_size import DiffSize, size_tier  # noqa: E402
 from scripts.gh_ci.overlap_note import extract_modified_functions  # noqa: E402
 from scripts.gh_ci.pr_check import FENCE, PrContext, validate_pr  # noqa: E402
 from scripts.gh_ci.pr_labels import parse_checked_kinds  # noqa: E402
@@ -23,8 +29,8 @@ def make_valid_body(
     commit: str = HEAD,
     dirty: str = "false",
     net_loc: int = 240,
-    size_tier: str = "standard",
-    size_just: str = "N/A (<= 1200 net LOC)",
+    size_just: str = "N/A (600 production Rust LOC or below)",
+    other_loc: int = 18,
     not_tested: str = "Live AMDuProf hardware counters were not run on this runner.",
     extra: str = "",
 ) -> str:
@@ -35,6 +41,9 @@ Implements deterministic Zen 2 pack bin-packing validation. Fixes #42.
 ## Goal alignment
 - Goal ID: G-01 (goal:v0.1-foundation)
 - Anti-Goals checked: AG-01..AG-10
+
+## Diff budget and anti-golfing check
+- [x] No compression macros were introduced to meet a line target.
 
 ## Size justification
 {size_just}
@@ -47,15 +56,16 @@ Ran `python scripts/pr_ready.py` (48 passed, 0 failed, 0 skipped).
 
 ## Self-check
 {FENCE}pr-ready
-format: pr-ready v1
+format: pr-ready v2
 commit: {commit}
 base: abcdef1234567890abcdef1234567890abcdef12
 dirty: {dirty}
 env: windows-amd64-py3.13-cpu12
 files_changed: 3
-net_loc: {net_loc}
+net_prod_loc: {net_loc}
+non_prod_loc: {other_loc}
 moved_loc: 0
-size_tier: {size_tier}
+size_tier: {size_tier(net_loc)}
 lockfile: PASS
 hygiene: PASS
 layers: PASS
@@ -80,7 +90,7 @@ class PrCheckTests(unittest.TestCase):
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels={"goal:v0.1-foundation"},
-            actual_net_loc=240,
+            diff=DiffSize(240, 18, 0, (), ()),
         )
         self.assertEqual(validate_pr(ctx), [])
 
@@ -90,6 +100,7 @@ class PrCheckTests(unittest.TestCase):
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
+            diff=DiffSize(240, 18, 0, (), ()),
         )
         errs = validate_pr(ctx)
         self.assertTrue(any("does not match PR head SHA" in e for e in errs))
@@ -100,6 +111,7 @@ class PrCheckTests(unittest.TestCase):
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
+            diff=DiffSize(240, 18, 0, (), ()),
         )
         errs = validate_pr(ctx)
         self.assertTrue(any("dirty working tree" in e for e in errs))
@@ -110,54 +122,53 @@ class PrCheckTests(unittest.TestCase):
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
+            diff=DiffSize(240, 18, 0, (), ()),
         )
         errs = validate_pr(ctx)
         self.assertTrue(any("Not tested" in e for e in errs))
 
-    def test_soft_cap_1201_to_1600_requires_concrete_justification(self) -> None:
-        bad = PrContext(
-            body=make_valid_body(net_loc=1201, size_tier="justification-required", size_just="N/A"),
-            head_sha=HEAD,
-            changed_files=["crates/zen2top-core/src/packs.rs"],
-            labels=set(),
-            actual_net_loc=1201,
+    def test_production_thresholds_and_large_test_diff(self) -> None:
+        rationale = "The externally visible entry point and its validation must ship together."
+        cases = (
+            (600, "N/A", set(), None),
+            (601, "N/A", set(), "600 soft cap"),
+            (601, rationale, set(), None),
+            (900, rationale, set(), None),
+            (901, rationale, set(), "900 hard cap"),
+            (901, rationale, {"size/architect-waiver"}, None),
         )
-        self.assertTrue(any("1200 soft cap" in e for e in validate_pr(bad)))
+        for loc, why, labels, error in cases:
+            with self.subTest(loc=loc, labels=labels, why=why):
+                ctx = PrContext(
+                    make_valid_body(net_loc=loc, size_just=why, other_loc=4000),
+                    HEAD, [], labels, DiffSize(loc, 4000, 0, (), ()),
+                )
+                errors = validate_pr(ctx)
+                if error:
+                    self.assertTrue(any(error in finding for finding in errors), errors)
+                else:
+                    self.assertEqual(errors, [])
 
-        good = PrContext(
-            body=make_valid_body(
-                net_loc=1201,
-                size_tier="justification-required",
-                size_just="Splitting the FFD bin-packer from its invariant validator would leave half-wired pack state.",
-            ),
-            head_sha=HEAD,
-            changed_files=["crates/zen2top-core/src/packs.rs"],
-            labels=set(),
-            actual_net_loc=1201,
-        )
-        self.assertEqual(validate_pr(good), [])
+    def test_partial_delivery_link(self) -> None:
+        body = make_valid_body().replace("Fixes #42", "Part of #42")
+        self.assertEqual(validate_pr(PrContext(body, HEAD, [], set(), DiffSize(240, 18, 0, (), ()))), [])
 
-    def test_hard_cap_over_1600_requires_spec_link(self) -> None:
-        bad = PrContext(
-            body=make_valid_body(net_loc=1601, size_tier="spec-required"),
-            head_sha=HEAD,
-            changed_files=["crates/zen2top-core/src/packs.rs"],
-            labels=set(),
-            actual_net_loc=1601,
-        )
-        self.assertTrue(any("1600 LOC hard cap" in e for e in validate_pr(bad)))
+    def test_legacy_evidence_uses_live_production_size(self) -> None:
+        body = make_valid_body().replace("pr-ready v2", "pr-ready v1").replace("net_prod_loc: 240", "net_loc: 490")
+        standard = PrContext(body, HEAD, [], set(), DiffSize(320, 3000, 0, (), ()))
+        self.assertTrue(any("pr-ready v2" in e for e in validate_pr(standard)))
+        standard.allow_legacy_evidence = True
+        self.assertEqual(validate_pr(standard), [])
+        standard.diff = DiffSize(950, 0, 0, (), ())
+        self.assertTrue(any("900 hard cap" in e for e in validate_pr(standard)))
 
-        good = PrContext(
-            body=make_valid_body(net_loc=1601, size_tier="spec-required", extra="\nSpec: #10\n"),
-            head_sha=HEAD,
-            changed_files=["crates/zen2top-core/src/packs.rs"],
-            labels=set(),
-            actual_net_loc=1601,
-        )
-        self.assertEqual(validate_pr(good), [])
+    def test_production_count_is_checked_against_commit_diff(self) -> None:
+        ctx = PrContext(make_valid_body(), HEAD, [], set(), DiffSize(241, 18, 0, (), ()))
+        self.assertTrue(any("CI measured 241" in e for e in validate_pr(ctx)))
 
     def test_forbids_worker_edits_to_handoff_md(self) -> None:
-        ctx = PrContext(body=make_valid_body(), head_sha=HEAD, changed_files=["HANDOFF.md"], labels=set())
+        ctx = PrContext(body=make_valid_body(), head_sha=HEAD, changed_files=["HANDOFF.md"], labels=set(),
+                        diff=DiffSize(240, 18, 0, (), ()))
         self.assertTrue(any("HANDOFF.md" in e for e in validate_pr(ctx)))
 
     def test_rejects_slower_baab_without_override_label(self) -> None:
@@ -167,6 +178,7 @@ class PrCheckTests(unittest.TestCase):
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/csv_parser.rs"],
             labels=set(),
+            diff=DiffSize(240, 18, 0, (), ()),
         )
         self.assertTrue(any("perf-override-approved" in e for e in validate_pr(ctx)))
 
@@ -201,6 +213,105 @@ class GovernanceHelpersTests(unittest.TestCase):
         body = "- [ ] bug: crash\n- [x] feature: new pack\n- [X] perf: fast parser\n"
         self.assertEqual(parse_checked_kinds(body), ["feature", "perf"])
 
+
+
+class DiffSizeTests(unittest.TestCase):
+    def test_moves_count_only_contiguous_blocks(self) -> None:
+        block = ["first();", "second();", "third();"]
+        self.assertEqual(diff_size.moved_line_count(block, block), 6)
+        self.assertEqual(diff_size.moved_line_count(block, [block[0], None, *block[1:]]), 0)
+
+    def test_git_diff_classifies_paths_and_checks_added_source(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", "--literal-pathspecs", *args], cwd=root,
+                    capture_output=True, check=True, encoding="utf-8",
+                ).stdout
+
+            git("init", "-q")
+            git("config", "user.name", "Gate Test")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            git("commit", "-qm", "base", "--allow-empty")
+            source = {
+                "crates/core/src/lib.rs": (
+                    'const EXAMPLE: &str = r#"macro_rules! fake; foo; bar;"#;\n'
+                    '/* macro_rules! also_fake; a; b; */\n'
+                    'macro_rules! real { () => {} }\n'
+                    'fn work() { first(); second(); }\n'
+                    'fn array() { let a = [0; 4]; }\n'
+                ),
+                "crates/core/src/internal/tests/fixtures.rs": "// fixture\n" * 611,
+                "crates/core/tests/suite.rs": "// test\n" * 1200,
+                "prototype/src/demo.rs": "// prototype\n",
+                "docs/design.md": "# Design\n",
+                "Cargo.lock": "# Lock\n",
+            }
+            for name, contents in source.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents, encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "head")
+            with patch.object(diff_size, "git", side_effect=git):
+                diff = diff_size.measure_diff("HEAD^")
+            self.assertEqual((diff.production, diff.other), (5, 1814))
+            self.assertEqual(len(diff.warnings), 2)
+            self.assertIn("lib.rs:3: inspect new macro_rules!", diff.warnings[0])
+            self.assertIn("lib.rs:4: inspect multiple semicolons", diff.warnings[1])
+
+
+class ClaimQueueTests(unittest.TestCase):
+    def test_claim_only_matches_the_correct_queue_and_item(self) -> None:
+        body = "## 1. Verify\n| #123 | #8 |\n## 2. Fix\n| #12 | #8 |\n## 3. Implement\n| #8 |"
+        self.assertTrue(claim_command.queue_contains(body, "review", "123"))
+        self.assertFalse(claim_command.queue_contains(body, "review", "12"))
+        self.assertTrue(claim_command.queue_contains(body, "fix", "12"))
+        self.assertTrue(claim_command.queue_contains(body, "implement", "8"))
+
+
+    def test_two_sessions_sharing_a_login_cannot_both_claim_a_pr(self) -> None:
+        labels = [{"name": "needs-review"}]
+        comments = []
+
+        def fake_api(repo: str, endpoint: str) -> dict:
+            if endpoint == "issues/123":
+                return {"state": "open", "labels": labels, "pull_request": {}}
+            self.assertEqual(endpoint, "pulls/123")
+            return {"draft": False}
+
+        def fake_pages(repo: str, endpoint: str) -> list[dict]:
+            if endpoint.startswith("issues?"):
+                return [{"body": "**Stage Gate:** `active`\n## 1. Verify\n| #123 | #8 |"}]
+            return comments
+
+        def fake_gh(*args: str) -> str:
+            if args[-1] == "labels[]=review-in-progress":
+                labels.append({"name": "review-in-progress"})
+            elif args[-1].startswith("body="):
+                comments.append({"user": {"login": "github-actions[bot]"}, "body": args[-1][5:]})
+            return ""
+
+        env = dict(REPO="owner/repo", ISSUE="123", AUTHOR="shared", ASSOCIATION="OWNER", MODE="active")
+        with patch.dict(os.environ, env), patch.object(claim_command, "api", side_effect=fake_api), \
+             patch.object(claim_command, "pages", side_effect=fake_pages), \
+             patch.object(claim_command, "gh", side_effect=fake_gh):
+            os.environ["BODY"] = "/claim-review first-token"
+            self.assertEqual(claim_command.main(), 0)
+            os.environ["BODY"] = "/claim-review second-token"
+            self.assertEqual(claim_command.main(), 0)
+        self.assertEqual(len(labels), 2)
+        self.assertIn("Claim granted for `first-token`", comments[0]["body"])
+        self.assertIn("Claim denied for `second-token`", comments[1]["body"])
+
+    def test_touch_scope_detects_path_and_directory_collisions(self) -> None:
+        scope = claim_command.touch_scope("### Touch Scope\n- `crates/core/src/`\n\n### Depends On\n- `other.rs`")
+        self.assertEqual(scope, {"crates/core/src/"})
+        self.assertTrue(claim_command.overlaps(scope, {"crates/core/src/lib.rs"}))
+        self.assertFalse(claim_command.overlaps(scope, {"crates/core/src2/lib.rs"}))
 
 if __name__ == "__main__":
     unittest.main()

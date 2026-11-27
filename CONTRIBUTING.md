@@ -1,32 +1,33 @@
-# Contributing to `zen2top` (Humans & Autonomous Agents)
+# Contributing to zen2top
 
-Read [`AGENTS.md`](./AGENTS.md) (engineering specification), [`GOALS.md`](./GOALS.md) (active milestone goals, non-goals, anti-goals), and [`HANDOFF.md`](./HANDOFF.md) (current live state) before starting work.
+Read [AGENTS.md](AGENTS.md) for contributor operations, [GOALS.md](GOALS.md) for milestone scope, and the [architecture reference](docs/ARCHITECTURE_RULES.md) for engineering requirements.
 
-## Fast Local Setup
+## Local setup
 
-```powershell
+```sh
 git config core.hooksPath .githooks
 python scripts/ci.py all
+python scripts/pr_ready.py --base origin/main
 ```
 
-`rust-toolchain.toml` pins `stable` (`rustfmt`, `clippy`) so local checks, local Jenkins (`zen2top-ci`), and GitHub Actions (`windows-latest`) match 1:1.
+Use Rust from `rust-toolchain.toml`, Python 3.10 or newer, and Windows for native lint, tests, and headless checks. Claim queue items through GitHub CLI or a connected GitHub tool with write access. One fresh contributor session can work on an item without a shared runtime. Use a separate checkout when reviewing or fixing another branch.
 
-## Autonomous 4-Role Workflow
+## Scope and size
 
-1. **Planner Agent:** Audits `needs-triage` issues against `GOALS.md`, rejects `AG-*` violations, decomposes `> 1200` net LOC work into single-layer atomic child issues, and applies `goal:<milestone>` + `ready`.
-2. **Worker Agent:**
-   - Finds an unclaimed `ready` + `goal:<milestone>` issue:
-     ```sh
-     gh issue list --search 'is:open no:assignee label:ready -label:"in progress" -label:blocked -label:tracker -label:proposal -label:"not claimable" -linked:pr'
-     ```
-   - Checks for overlapping PRs (`gh pr list --state open --search "<issue-or-symbol>"`).
-   - Comments `🤖 Agent: /claim` on the issue and opens a draft PR (`Fixes #<N>`) promptly.
-   - Keeps net reviewed LOC $\le 1200$ (1201–1600 requires concrete `## Size justification`; $> 1600$ requires `Spec: #<M>`).
-   - Never edits `HANDOFF.md` or `docs/specs/` directly (put state updates in `## Handoff notes`).
-   - Commits cleanly, runs `python scripts/pr_ready.py --base origin/main`, and pastes the entire table + `pr-ready v1` block into `## Self-check`.
-3. **Two-Pass Verifier Quorum (Pass A + Pass B):** Two fresh-context reviews (code/spec/goal audit + independent scratch execution of `python scripts/ci.py all`) apply `ready-to-merge` upon dual `VERDICT: PASS`.
-4. **Batch Integrator:** Runs `python scripts/batch_integrate.py --goal-label goal:<milestone> --auto-merge` to test eligible `ready-to-merge` PRs together, bisect/eject breaking PRs, auto-merge verified non-`CODEOWNERS` subsets, sync `HANDOFF.md`, and flag the Roadmap Tracker when a milestone reaches `0` open issues.
+Architect issues describe one observable outcome, exact Touch Scope, merged dependencies, an independent test oracle, and out-of-scope work. Most implementation issues should target 150–450 production Rust LOC across one to three files. A smaller fix fits as written. Split clean, testable slices when work grows.
 
-## Tier-2 Mandatory Human Gates (Never Auto-Merged)
+The size gate measures added plus removed production Rust lines from merge base to PR head, with matching moved blocks excluded. It counts `crates/*/src/**/*.rs`, excluding test, fixture, and snapshot directories and conventional test filenames. Inline `#[cfg(test)]` code is included under the path-based rule. Other changed text lines, including integration tests, docs, and the lockfile, are informational for sizing. Review all changed files, regardless of how they count.
 
-Any PR touching `.github/CODEOWNERS` paths, changing `Cargo.toml` dependencies, breaking public/JSON schemas, exceeding 1600 net LOC without `spec-approved`, marked `off-goal`, regressing `B A A B` benchmarks (`slower` without `perf-override-approved`), or tripping the Circuit Breaker (`blocked`) requires human maintainer approval.
+| Net production Rust LOC | Size gate |
+| --- | --- |
+| 0–600 | Standard |
+| 601–900 | Concrete split rationale in `## Size justification` and informational `size/large` label |
+| Over 900 | Split rationale and an Architect-issued `size/architect-waiver` |
+
+Review warnings identify new Rust macros and compressed statements for inspection. Legitimate macros still need to be readable and justified by the code. Keep boundary, failure, and regression tests whenever the change calls for them.
+
+## Review and integration
+
+The [Architect prompt](docs/ARCHITECT_PROMPT.md) owns live reconciliation, merges, and stage review. The Architect checks peer evidence against the exact head; labels alone never authorize a merge. Human review applies to CODEOWNERS and governance paths, dependency or breaking schema changes, performance overrides, and stage promotion. The repository’s process treats owner comments or completed closures designated for stage approval as human actions. Agents must leave those actions to the owner, even when using the same GitHub account.
+
+`scripts/batch_integrate.py --goal-label <goal:label> --dry-run` optionally tests combined PRs in a disposable checkout. The script has no GitHub write path.

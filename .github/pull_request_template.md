@@ -1,9 +1,11 @@
 ## What and why
 
-<!-- Describe what this changes and why. Link the claimed ready issue ("Fixes #123").
-     Over 1600 net reviewed LOC (hard cap): MUST link a `spec-approved` issue ("Spec: #456"). -->
+<!-- Describe what this changes and why. Use Closes #123 for full delivery or
+     Part of #123 for a slice. Mark needs-split and describe the remaining work. -->
 
-Fixes #
+Closes #
+
+Implementation session:
 
 ## Goal alignment
 
@@ -29,13 +31,19 @@ Fixes #
 
 <!-- core, platform, product, or tool (scripts/layers.json). -->
 
+## Diff budget and anti-golfing check
+
+- Net production Rust LOC:
+- Other changed LOC (test, fixture, docs and other paths):
+- [ ] No compression macros, obfuscated helpers, or dense statements were introduced to meet a line target.
+- [ ] Changes stay within the issue’s Touch Scope.
+
 ## Size justification
 
-<!-- Required ONLY when net reviewed LOC is 1201-1600 (soft cap exceeded, under 1600 hard cap).
-     Give a concrete, technical reason why splitting this PR would leave half-wired or un-testable code.
-     Leave "N/A (<= 1200 net LOC)" if <= 1200 net LOC. -->
+<!-- Above 600 production LOC, explain why a clean, independently testable split is impractical.
+     Above 900 also requires an Architect-issued size/architect-waiver label. -->
 
-N/A (<= 1200 net LOC)
+N/A (600 production Rust LOC or below)
 
 ## Tested
 
@@ -67,7 +75,7 @@ N/A (<= 1200 net LOC)
 ## Handoff notes
 
 <!-- Do NOT edit HANDOFF.md directly. If this PR changes architecture status, gotchas, or unblocks
-     follow-up work, add 1-2 crisp bullets here for the Batch Integrator to fold into HANDOFF.md. -->
+     follow-up work, add 1-2 crisp bullets here for the Architect to fold into HANDOFF.md. -->
 
 - None.
 

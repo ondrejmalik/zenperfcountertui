@@ -18,9 +18,12 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+if __package__:
+    from .gh_ci.diff_size import HARD_CAP, SOFT_CAP, measure_diff, size_tier
+else:
+    from gh_ci.diff_size import HARD_CAP, SOFT_CAP, measure_diff, size_tier
+
 ROOT = Path(__file__).resolve().parents[1]
-SOFT_LINE_LIMIT = 1200
-HARD_LINE_LIMIT = 1600
 FENCE = "`" * 3
 LOCK_PAIRS = {
     "Cargo.lock": ("Cargo.toml",),
@@ -69,90 +72,12 @@ def is_working_tree_dirty() -> bool:
     return bool(git("status", "--porcelain").strip())
 
 
-def reviewed(path: str) -> bool:
-    return not path.endswith(".md") and not TEST_PATH.search(path)
-
-
-def changed_files(base: str) -> list[str]:
-    merge_base = git("merge-base", base, "HEAD").strip()
-    tracked = set(filter(None, git("diff", "--name-only", "-z", merge_base).split("\0")))
-    untracked = set(filter(None, git("ls-files", "--others", "--exclude-standard", "-z").split("\0")))
-    return sorted(tracked | untracked)
-
-
-def moved_line_count(diff_text: str, window: int = 3) -> int:
-    removed: list[str] = []
-    added: list[str] = []
-    for line in diff_text.splitlines():
-        if line.startswith("---") or line.startswith("+++"):
-            continue
-        if line.startswith("-"):
-            s = "".join(line[1:].split())
-            if len(s) >= 3:
-                removed.append(s)
-        elif line.startswith("+"):
-            s = "".join(line[1:].split())
-            if len(s) >= 3:
-                added.append(s)
-    used_add = [False] * len(added)
-    moved = 0
-    i = 0
-    while i <= len(removed) - window:
-        best_len = 0
-        best_j = -1
-        for j in range(len(added) - window + 1):
-            if used_add[j]:
-                continue
-            k = 0
-            while (
-                i + k < len(removed)
-                and j + k < len(added)
-                and not used_add[j + k]
-                and removed[i + k] == added[j + k]
-            ):
-                k += 1
-            if k >= window and k > best_len:
-                best_len, best_j = k, j
-        if best_len >= window:
-            for k in range(best_len):
-                used_add[best_j + k] = True
-            moved += best_len * 2
-            i += best_len
-        else:
-            i += 1
-    return moved
-
-
-def net_reviewed_lines(base: str, files: list[str]) -> tuple[int, int]:
-    merge_base = git("merge-base", base, "HEAD").strip()
-    rev_files = [f for f in files if reviewed(f)]
-    if not rev_files:
-        return 0, 0
-    diff_text = git("diff", "-U0", "--no-renames", "--no-color", merge_base, "--", *rev_files)
-    raw = sum(
-        1
-        for line in diff_text.splitlines()
-        if (line.startswith("+") and not line.startswith("+++"))
-        or (line.startswith("-") and not line.startswith("---"))
-    )
-    moved = moved_line_count(diff_text)
-    return max(0, raw - moved), moved
-
-
-def check_lockfiles(files: list[str]) -> str | None:
+def check_lockfiles(files: tuple[str, ...]) -> str | None:
     for lock, manifests in LOCK_PAIRS.items():
         locked = [f for f in files if f.endswith(lock)]
         if locked and not any(f.endswith(m) for f in files for m in manifests):
             return f"{', '.join(locked)} changed without a matching manifest ({', '.join(manifests)})"
     return None
-
-
-def size_tier(net_loc: int) -> str:
-    if net_loc <= SOFT_LINE_LIMIT:
-        return "standard"
-    if net_loc <= HARD_LINE_LIMIT:
-        return "justification-required"
-    return "spec-required"
 
 
 def run_step(cmd: list[str]) -> tuple[str, float, str]:
@@ -173,9 +98,9 @@ def main() -> int:
     head_sha = git("rev-parse", "HEAD").strip()
     base_sha = git("merge-base", base, "HEAD").strip()
     dirty = is_working_tree_dirty()
-    files = changed_files(base)
-    net_loc, moved_loc = net_reviewed_lines(base, files)
-    tier = size_tier(net_loc)
+    diff = measure_diff(base_sha, head_sha)
+    files = diff.files
+    tier = size_tier(diff.production)
     lock_err = check_lockfiles(files)
 
     steps: list[tuple[str, str, list[str] | None]] = [
@@ -226,28 +151,31 @@ def main() -> int:
 
     size_note = ""
     if tier == "justification-required":
-        size_note = f" (SOFT CAP >{SOFT_LINE_LIMIT}: concrete `## Size justification` required)"
-    elif tier == "spec-required":
-        size_note = f" (HARD CAP >{HARD_LINE_LIMIT}: approved `Spec: #<issue>` required)"
+        size_note = f" (SOFT CAP >{SOFT_CAP}: concrete `## Size justification` required)"
+    elif tier == "architect-waiver-required":
+        size_note = f" (HARD CAP >{HARD_CAP}: `size/architect-waiver` and size justification required)"
 
     print("### Self-check (`scripts/pr_ready.py`)")
-    print(
-        f"- **Changed files:** {len(files)} (`{net_loc}` net reviewed LOC, `{moved_loc}` moved lines excluded){size_note}"
-    )
+    print(f"- **Changed files:** {len(files)}")
+    print(f"- **Net production Rust LOC:** {diff.production} ({diff.moved} moved lines excluded){size_note}")
+    print(f"- **Other changed LOC (informational):** {diff.other}")
+    for warning in diff.warnings:
+        print(f"- **Anti-golfing review:** {warning}")
     print("\n| Gate | Verdict | Duration | Detail |")
     print("| :--- | :--- | :--- | :--- |")
     for r in rows:
         print(r)
 
     print(f"\n{FENCE}pr-ready")
-    print("format: pr-ready v1")
+    print("format: pr-ready v2")
     print(f"commit: {head_sha}{' (dirty)' if dirty else ''}")
     print(f"base: {base_sha}")
     print(f"dirty: {'true' if dirty else 'false'}")
     print(f"env: {env_fingerprint()}")
     print(f"files_changed: {len(files)}")
-    print(f"net_loc: {net_loc}")
-    print(f"moved_loc: {moved_loc}")
+    print(f"net_prod_loc: {diff.production}")
+    print(f"non_prod_loc: {diff.other}")
+    print(f"moved_loc: {diff.moved}")
     print(f"size_tier: {tier}")
     print(f"lockfile: {verdicts.get('lockfile', 'SKIP')}")
     print(f"hygiene: {verdicts.get('hygiene', 'SKIP')}")
@@ -262,7 +190,7 @@ def main() -> int:
 
     if dirty:
         print("\nWARNING: Working tree is dirty. Commit all changes and re-run before opening PR.", file=sys.stderr)
-    return 1 if failed else 0
+    return 1 if failed or dirty else 0
 
 
 if __name__ == "__main__":

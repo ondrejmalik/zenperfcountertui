@@ -20,7 +20,7 @@ jobs:
           days-before-issue-close: -1
           days-before-pr-stale: 3
           days-before-pr-close: 4
-          exempt-pr-labels: 'goal:v0.1-foundation,goal:v0.2-platform-win32-pmu,goal:v0.3-tui-live,goal:v0.4-etw-profiler-hil,keep-open,ready-to-merge,spec-approved,handoff-sync'
+          exempt-pr-labels: 'goal:v0.1-foundation,goal:v0.2-platform-win32-pmu,goal:v0.3-tui-live,goal:v0.4-etw-profiler-hil,keep-open,needs-review,review-in-progress,agent-verified,changes-requested,fix-in-progress,needs-human,needs-human-review,spec-approved,handoff-sync'
           exempt-all-pr-milestones: false
           stale-pr-label: 'stale'
           stale-pr-message: >-

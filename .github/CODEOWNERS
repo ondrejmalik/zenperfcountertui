@@ -10,3 +10,9 @@
 /scripts/layers.json                     @ondrejmalik
 /scripts/ratchet_gate.py                 @ondrejmalik
 /scripts/batch_integrate.py              @ondrejmalik
+/AGENTS.md                               @ondrejmalik
+/docs/ARCHITECT_PROMPT.md                 @ondrejmalik
+/docs/ARCHITECTURE_RULES.md                @ondrejmalik
+/scripts/pr_ready.py                      @ondrejmalik
+/CONTRIBUTING.md                         @ondrejmalik
+/docs/ROADMAP_TEMPLATE.md                @ondrejmalik
