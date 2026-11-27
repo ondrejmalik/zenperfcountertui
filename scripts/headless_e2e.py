@@ -77,7 +77,59 @@ def main() -> int:
         print(f"headless_e2e: invalid headless report meta: {meta}", file=sys.stderr)
         return 1
 
-    print("headless_e2e: PASS (--print-presets + --headless --no-pmu schema_version=1 in isolated scratch env).")
+    headless = [str(binary), "--headless", "--no-pmu"]
+    for arguments in (["--interval", "3"], ["--preset", "bogus"], ["--packs", "branches,"]):
+        rc, _, err = run_and_capture(headless + arguments)
+        if rc != 1 or arguments[0] not in err:
+            raise SystemExit(f"headless_e2e: invalid arguments {arguments} returned {rc}: {err}")
+
+    if os.name == "nt":
+        rc, out, err = run_and_capture(headless + ["--target", "4294967295"])
+        if rc != 2 or json.loads(out)["meta"]["evidence_gate_reason"] != "target_unavailable":
+            raise SystemExit(f"headless_e2e: missing target returned {rc}: {err}")
+
+        rc, out, err = run_and_capture(headless + ["--target", str(os.getpid())])
+        if rc != 0 or json.loads(out)["target"]["pid"] != os.getpid():
+            raise SystemExit(f"headless_e2e: attach by PID returned {rc}: {err}")
+
+    rc, _, err = run_and_capture(headless + ["--baseline", "missing.json"])
+    if rc != 1 or "missing.json" not in err:
+        raise SystemExit(f"headless_e2e: unreadable baseline returned {rc}: {err}")
+
+    child = [sys.executable, "--duration", "2", "--", "-c"]
+    command = headless + [
+        "--preset", "tlb-only", "--interval", "2", "--json-report", "reports/capture.json",
+        "--save-baseline", "reports/saved.json", "--include-profiler", "--launch",
+        *child, "import pathlib, sys, time; pathlib.Path('child.txt').write_text(sys.argv[1]); time.sleep(60)",
+        "trailing argument with spaces",
+    ]
+    with isolated_run(command, prefix="ZEN2TOP") as (sup, scratch):
+        out, err = sup.proc.communicate(timeout=15)
+        if sup.proc.returncode != 0 or out:
+            raise SystemExit(f"headless_e2e: file capture returned {sup.proc.returncode}: {err}")
+        report = json.loads((scratch / "reports/capture.json").read_text(encoding="utf-8"))
+        if not {"meta", "target", "summary", "win32_etw", "advisor", "profiler"} <= report.keys():
+            raise SystemExit(f"headless_e2e: incomplete JSON v1 report: {report.keys()}")
+        if report["meta"]["interval_sec"] != 2 or report["meta"]["sample_count"] != 0:
+            raise SystemExit(f"headless_e2e: unexpected capture metadata: {report['meta']}")
+        if not report["target"]["pid"] or report["target"]["exited_early"]:
+            raise SystemExit(f"headless_e2e: unexpected launched target: {report['target']}")
+        if (scratch / "child.txt").read_text() != "trailing argument with spaces":
+            raise SystemExit("headless_e2e: child did not receive its trailing argument")
+        baseline_path = scratch / "reports/saved.json"
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+        if baseline["counters"] != report["summary"]["raw_cumulative_counters"]:
+            raise SystemExit("headless_e2e: saved baseline did not preserve raw counters")
+
+        rc, out, err = run_and_capture(headless + ["--preset", "full", "--baseline", str(baseline_path)])
+        if rc != 0 or not json.loads(out).get("baseline_diff", {}).get("mux_diff_warning"):
+            raise SystemExit(f"headless_e2e: baseline comparison returned {rc}: {err or out}")
+
+    rc, out, err = run_and_capture(headless + ["--launch", *child, "raise SystemExit(0)"])
+    if rc != 2 or not json.loads(out)["target"]["exited_early"]:
+        raise SystemExit(f"headless_e2e: early child exit returned {rc}: {err}")
+
+    print("headless_e2e: PASS (presets, JSON v1, invalid args, target lifecycle, baseline save and diff).")
     return 0
 
 

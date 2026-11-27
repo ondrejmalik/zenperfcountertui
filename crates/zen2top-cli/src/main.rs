@@ -1,114 +1,141 @@
 #![forbid(unsafe_code)]
 
-use std::fs;
+mod headless;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
-use zen2top_platform::core::HeadlessExitCode;
-use zen2top_platform::{list_presets, run_headless_smoke, HeadlessSessionOptions};
+use anyhow::Context;
+use clap::{error::ErrorKind, Parser};
+use zen2top_platform::core::{
+    packs::{resolve_packs_csv, resolve_preset, MetricPack},
+    HeadlessExitCode,
+};
 
-/// Native Windows 11 Rust TUI & headless profiler for AMD Zen 2 hardware performance counters.
+/// Native Windows 11 profiler for AMD Zen 2 hardware performance counters.
 #[derive(Debug, Parser)]
 #[command(name = "zen2top", version, about)]
 struct Cli {
-    /// Print all canonical PMU presets, slot counts, and mux groups as JSON and exit.
+    /// List the canonical PMU presets as JSON.
     #[arg(long)]
     print_presets: bool,
-
-    /// Run non-interactive machine-readable capture without initializing terminal raw mode.
+    /// Write a machine-readable capture report.
     #[arg(long)]
     headless: bool,
-
-    /// Disable hardware PMU collection and run OS/bootstrap telemetry only.
+    /// Disable hardware PMU collection.
     #[arg(long)]
     no_pmu: bool,
-
-    /// PMU preset slug (e.g., full, kitchen-sink, balanced, tlb-only, mem-ccx-lab, micro-arch).
-    #[arg(long, default_value = "balanced")]
+    /// Attach to a running process by executable name or PID.
+    #[arg(long, conflicts_with = "launch")]
+    target: Option<String>,
+    /// Launch a child process to capture.
+    #[arg(long, requires = "headless")]
+    launch: Option<PathBuf>,
+    /// Arguments to pass to the launched process after --.
+    #[arg(last = true, requires = "launch")]
+    launch_args: Vec<std::ffi::OsString>,
+    /// Measure host latencies and save the calibration.
+    #[arg(long, conflicts_with = "headless")]
+    calibrate: bool,
+    /// Prompt interactively before evicting a PMC occupant.
+    #[arg(long, conflicts_with = "headless")]
+    unlock_pmc: bool,
+    /// Zen 2 PMU preset slug.
+    #[arg(long, default_value = "balanced", value_parser = parse_preset)]
     preset: String,
-
-    /// Capture duration in seconds for `--headless` mode.
+    /// Comma-separated metric packs overriding the preset.
+    #[arg(long, value_parser = parse_packs)]
+    packs: Option<PackSelection>,
+    /// Sampling interval in seconds (1, 2, or 5).
+    #[arg(long, value_parser = parse_interval)]
+    interval: Option<u64>,
+    /// Compare the capture with a saved baseline.
+    #[arg(long)]
+    baseline: Option<PathBuf>,
+    /// Save raw cumulative counters and capture metadata as a baseline.
+    #[arg(long)]
+    save_baseline: Option<PathBuf>,
+    /// Load a .zen2sym.json symbol sidecar.
+    #[arg(long)]
+    symbols: Option<PathBuf>,
+    /// Read configuration from a TOML file.
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Capture duration in seconds.
     #[arg(long, default_value_t = 15)]
     duration: u64,
-
-    /// Output file path for `--headless` JSON report (`-` or omitted writes to stdout).
+    /// Seconds to wait for a launched child before capture.
+    #[arg(long, requires = "launch")]
+    warmup: Option<u64>,
+    /// Write JSON to this path. Omit or use - for stdout.
     #[arg(long)]
     json_report: Option<PathBuf>,
+    /// Include the available function profiling data.
+    #[arg(long)]
+    include_profiler: bool,
 }
 
-fn run(cli: Cli) -> Result<HeadlessExitCode, anyhow::Error> {
+fn parse_preset(input: &str) -> anyhow::Result<String> {
+    Ok(resolve_preset(input)
+        .with_context(|| format!("unknown preset {input:?}"))?
+        .slug()
+        .to_owned())
+}
+
+fn parse_interval(input: &str) -> anyhow::Result<u64> {
+    let seconds = input.parse()?;
+    anyhow::ensure!(matches!(seconds, 1 | 2 | 5), "expected 1, 2, or 5");
+    Ok(seconds)
+}
+
+fn run(cli: Cli) -> anyhow::Result<HeadlessExitCode> {
     if cli.print_presets {
-        let presets = list_presets();
-        println!("{}", serde_json::to_string_pretty(&presets)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&zen2top_platform::list_presets())?
+        );
         return Ok(HeadlessExitCode::Ok);
     }
-
+    if cli.calibrate {
+        anyhow::bail!("Host latency calibration is scheduled for v0.2-platform-win32-pmu.");
+    }
+    if cli.unlock_pmc {
+        anyhow::bail!("Interactive PMC eviction is scheduled for v0.2-platform-win32-pmu.");
+    }
     if cli.headless {
-        let report = run_headless_smoke(&HeadlessSessionOptions {
-            preset: cli.preset,
-            no_pmu: cli.no_pmu,
-            duration_sec: cli.duration,
-        })?;
-        let rendered = serde_json::to_string_pretty(&report)?;
-        match cli.json_report {
-            Some(path) if path.as_os_str() != "-" => {
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        fs::create_dir_all(parent)?;
-                    }
-                }
-                fs::write(path, format!("{rendered}\n"))?;
-            }
-            _ => println!("{rendered}"),
-        }
-        return Ok(HeadlessExitCode::Ok);
+        return headless::run(cli);
     }
-
-    anyhow::bail!(
-        "Interactive TUI mode is scheduled for v0.3-tui-live. Use --print-presets or --headless --no-pmu."
-    );
+    anyhow::bail!("Interactive TUI mode is scheduled for v0.3-tui-live. Use --print-presets or --headless --no-pmu.");
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli) {
-        Ok(code) => ExitCode::from(code.as_i32() as u8),
-        Err(err) => {
-            eprintln!("zen2top: {err}");
-            ExitCode::from(HeadlessExitCode::RuntimeError.as_i32() as u8)
+    let code = match Cli::try_parse() {
+        Ok(cli) => run(cli).unwrap_or_else(|err| {
+            eprintln!("zen2top: {err:#}");
+            HeadlessExitCode::RuntimeError
+        }),
+        Err(error) => {
+            let code = match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => HeadlessExitCode::Ok,
+                _ => HeadlessExitCode::RuntimeError,
+            };
+            if let Err(write_error) = error.print() {
+                eprintln!("zen2top: {write_error}");
+                return ExitCode::FAILURE;
+            }
+            code
         }
-    }
+    };
+    ExitCode::from(code.as_i32() as u8)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "cli_tests.rs"]
+mod tests;
 
-    #[test]
-    fn cli_parses_headless_flags() {
-        let cli = Cli::try_parse_from([
-            "zen2top",
-            "--headless",
-            "--no-pmu",
-            "--preset",
-            "tlb-only",
-            "--duration",
-            "1",
-            "--json-report",
-            "-",
-        ])
-        .expect("CLI flags should parse");
-        assert!(cli.headless);
-        assert!(cli.no_pmu);
-        assert_eq!(cli.preset, "tlb-only");
-        assert_eq!(cli.duration, 1);
-    }
+#[derive(Clone, Debug)]
+struct PackSelection(Vec<MetricPack>);
 
-    #[test]
-    fn cli_print_presets_returns_ok() {
-        let cli = Cli::try_parse_from(["zen2top", "--print-presets"]).expect("should parse");
-        let code = run(cli).expect("--print-presets should succeed");
-        assert_eq!(code, HeadlessExitCode::Ok);
-    }
+fn parse_packs(input: &str) -> anyhow::Result<PackSelection> {
+    resolve_packs_csv(input).map(PackSelection)
 }
