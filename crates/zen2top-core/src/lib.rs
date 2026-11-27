@@ -41,22 +41,48 @@ pub struct PresetSummary {
     pub display_name: String,
     pub core_pmc_slots: u8,
     pub mux_groups: u8,
-    #[serde(default)]
-    pub packs: Vec<packs::MetricPack>,
 }
 
 /// Returns the 6 canonical quick presets defined in `AGENTS.md` §3.2.
 pub fn canonical_presets() -> Vec<PresetSummary> {
-    packs::PresetId::ALL
-        .into_iter()
-        .map(|preset| PresetSummary {
-            slug: preset.slug().to_string(),
-            display_name: preset.display_name().to_string(),
-            core_pmc_slots: preset.core_pmc_slots(),
-            mux_groups: preset.mux_groups(),
-            packs: preset.packs().to_vec(),
-        })
-        .collect()
+    vec![
+        PresetSummary {
+            slug: "full".to_string(),
+            display_name: "Full".to_string(),
+            core_pmc_slots: 18,
+            mux_groups: 3,
+        },
+        PresetSummary {
+            slug: "kitchen-sink".to_string(),
+            display_name: "Kitchen Sink".to_string(),
+            core_pmc_slots: 24,
+            mux_groups: 4,
+        },
+        PresetSummary {
+            slug: "balanced".to_string(),
+            display_name: "Balanced Daily".to_string(),
+            core_pmc_slots: 12,
+            mux_groups: 2,
+        },
+        PresetSummary {
+            slug: "tlb-only".to_string(),
+            display_name: "TLB-Only".to_string(),
+            core_pmc_slots: 6,
+            mux_groups: 1,
+        },
+        PresetSummary {
+            slug: "mem-ccx-lab".to_string(),
+            display_name: "Mem + CCX Lab".to_string(),
+            core_pmc_slots: 6,
+            mux_groups: 1,
+        },
+        PresetSummary {
+            slug: "micro-arch".to_string(),
+            display_name: "Micro-Arch".to_string(),
+            core_pmc_slots: 6,
+            mux_groups: 1,
+        },
+    ]
 }
 
 /// Minimal `config.toml` bootstrap settings (expanded by `G-01`).

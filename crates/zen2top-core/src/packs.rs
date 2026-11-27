@@ -40,122 +40,30 @@ type PackDef = (
     &'static str,
     &'static str,
     &'static str,
-    u8,
     &'static [&'static str],
     &'static [&'static str],
 );
 
-const PACK_DEFS: [PackDef; 12] = [
-    (
-        "DcDemand",
-        "D-Cache L3/DRAM Demand",
-        "DC Demand",
-        2,
-        &["core/dc_dem_l3=(0x430243)", "core/dc_dem_dram=(0x430843)"],
-        &["0x430243", "0x430843"],
-    ),
-    (
-        "DcHwpf",
-        "D-Cache L1 HWPF L3/DRAM",
-        "DC HWPF",
-        2,
-        &["core/dc_hwpf_l3=(0x43025A)", "core/dc_hwpf_dram=(0x43085A)"],
-        &["0x43025A", "0x43085A"],
-    ),
-    (
-        "L1L2Dc",
-        "L1/L2 D-Cache Hierarchy",
-        "L1/L2 DC",
-        2,
-        &["core/l1_dc_miss=(0x43C860)", "core/l2_dc_miss=(0x430864)"],
-        &["0x43C860", "0x430864"],
-    ),
-    (
-        "L1L2Ic",
-        "L1/L2 I-Cache Hierarchy",
-        "L1/L2 IC",
-        2,
-        &["core/l1_ic_miss=(0x431060)", "core/l2_ic_miss=(0x430164)"],
-        &["0x431060", "0x430164"],
-    ),
-    (
-        "L2Hwpf",
-        "L2 HWPF L3/DRAM",
-        "L2 HWPF",
-        2,
-        &["core/l2_pf_l3=(0x431F71)", "core/l2_pf_dram=(0x431F72)"],
-        &["0x431F71", "0x431F72"],
-    ),
-    (
-        "Branches",
-        "Branches & Mispredicts",
-        "Branches",
-        2,
-        &["core/branches=(0x4300C2)", "core/branch_miss=(0x4300C3)"],
-        &["0x4300C2", "0x4300C3"],
-    ),
-    (
-        "ItlbFull",
-        "iTLB Full",
-        "iTLB",
-        3,
-        &[
-            "core/l1_itlb_hit=(0x430794)",
-            "core/l1_itlb_miss_l2_hit=(0x430084)",
-            "core/l2_itlb_miss=(0x430785)",
-        ],
-        &["0x430794", "0x430084", "0x430785"],
-    ),
-    (
-        "DtlbFull",
-        "dTLB Full",
-        "dTLB",
-        2,
-        &[
-            "core/l1_dtlb_miss_l2_hit=(0x430F45)",
-            "core/l2_dtlb_miss=(0x43F045)",
-        ],
-        &["0x430F45", "0x43F045"],
-    ),
-    (
-        "CrossCcxLocks",
-        "Cross-CCX Fills & Serialized Locks",
-        "CCX+Locks",
-        2,
-        &[
-            "core/dc_cross_ccx=(0x430443)",
-            "core/locks_serial=(0x430325)",
-        ],
-        &["0x430443", "0x430325"],
-    ),
-    (
-        "OpCacheDecode",
-        "Op-Cache vs. Legacy Decode",
-        "Op-Cache",
-        2,
-        &["core/dec_uops=(0x4301AA)", "core/oc_uops=(0x4302AA)"],
-        &["0x4301AA", "0x4302AA"],
-    ),
-    (
-        "StlfSplits",
-        "STLF Interlocks & Line Splits",
-        "STLF+Splits",
-        2,
-        &[
-            "core/stlf_interlock=(0x430224)",
-            "core/misal_access=(0x430047)",
-        ],
-        &["0x430224", "0x430047"],
-    ),
-    (
-        "ExactRetiring",
-        "Exact Macro-Op Retiring",
-        "Retiring",
-        1,
-        &["core/ret_uops=(0x4300C1)"],
-        &["0x4300C1"],
-    ),
-];
+macro_rules! pack_table {
+    ($([$id:expr, $disp:expr, $short:expr, $ev:expr, $hx:expr]),* $(,)?) => {
+        [$(($id, $disp, $short, $ev, $hx)),*]
+    };
+}
+
+const PACK_DEFS: [PackDef; 12] = pack_table! {
+    ["DcDemand", "D-Cache L3/DRAM Demand", "DC Demand", &["core/dc_dem_l3=(0x430243)", "core/dc_dem_dram=(0x430843)"], &["0x430243", "0x430843"]],
+    ["DcHwpf", "D-Cache L1 HWPF L3/DRAM", "DC HWPF", &["core/dc_hwpf_l3=(0x43025A)", "core/dc_hwpf_dram=(0x43085A)"], &["0x43025A", "0x43085A"]],
+    ["L1L2Dc", "L1/L2 D-Cache Hierarchy", "L1/L2 DC", &["core/l1_dc_miss=(0x43C860)", "core/l2_dc_miss=(0x430864)"], &["0x43C860", "0x430864"]],
+    ["L1L2Ic", "L1/L2 I-Cache Hierarchy", "L1/L2 IC", &["core/l1_ic_miss=(0x431060)", "core/l2_ic_miss=(0x430164)"], &["0x431060", "0x430164"]],
+    ["L2Hwpf", "L2 HWPF L3/DRAM", "L2 HWPF", &["core/l2_pf_l3=(0x431F71)", "core/l2_pf_dram=(0x431F72)"], &["0x431F71", "0x431F72"]],
+    ["Branches", "Branches & Mispredicts", "Branches", &["core/branches=(0x4300C2)", "core/branch_miss=(0x4300C3)"], &["0x4300C2", "0x4300C3"]],
+    ["ItlbFull", "iTLB Full", "iTLB", &["core/l1_itlb_hit=(0x430794)", "core/l1_itlb_miss_l2_hit=(0x430084)", "core/l2_itlb_miss=(0x430785)"], &["0x430794", "0x430084", "0x430785"]],
+    ["DtlbFull", "dTLB Full", "dTLB", &["core/l1_dtlb_miss_l2_hit=(0x430F45)", "core/l2_dtlb_miss=(0x43F045)"], &["0x430F45", "0x43F045"]],
+    ["CrossCcxLocks", "Cross-CCX Fills & Serialized Locks", "CCX+Locks", &["core/dc_cross_ccx=(0x430443)", "core/locks_serial=(0x430325)"], &["0x430443", "0x430325"]],
+    ["OpCacheDecode", "Op-Cache vs. Legacy Decode", "Op-Cache", &["core/dec_uops=(0x4301AA)", "core/oc_uops=(0x4302AA)"], &["0x4301AA", "0x4302AA"]],
+    ["StlfSplits", "STLF Interlocks & Line Splits", "STLF+Splits", &["core/stlf_interlock=(0x430224)", "core/misal_access=(0x430047)"], &["0x430224", "0x430047"]],
+    ["ExactRetiring", "Exact Macro-Op Retiring", "Retiring", &["core/ret_uops=(0x4300C1)"], &["0x4300C1"]],
+};
 
 impl MetricPack {
     /// All 12 metric packs in canonical order.
@@ -187,13 +95,13 @@ impl MetricPack {
         PACK_DEFS[self as usize].2
     }
     pub const fn slots(self) -> u8 {
-        PACK_DEFS[self as usize].3
+        PACK_DEFS[self as usize].3.len() as u8
     }
     pub const fn events(self) -> &'static [&'static str] {
-        PACK_DEFS[self as usize].4
+        PACK_DEFS[self as usize].3
     }
     pub const fn hex_codes(self) -> &'static [&'static str] {
-        PACK_DEFS[self as usize].5
+        PACK_DEFS[self as usize].4
     }
 
     /// Case-insensitive parser accepting canonical IDs, slugs, and common shorthand names.
@@ -227,48 +135,67 @@ pub enum PresetId {
     MicroArch,
 }
 
-const FULL_PACKS: [MetricPack; 9] = [
-    MetricPack::DcDemand,
-    MetricPack::DcHwpf,
-    MetricPack::L1L2Dc,
-    MetricPack::L1L2Ic,
-    MetricPack::L2Hwpf,
-    MetricPack::Branches,
-    MetricPack::ItlbFull,
-    MetricPack::DtlbFull,
-    MetricPack::ExactRetiring,
-];
-const BALANCED_PACKS: [MetricPack; 6] = [
-    MetricPack::DcDemand,
-    MetricPack::L1L2Dc,
-    MetricPack::L1L2Ic,
-    MetricPack::Branches,
-    MetricPack::DtlbFull,
-    MetricPack::CrossCcxLocks,
-];
-const TLB_ONLY_PACKS: [MetricPack; 3] = [
-    MetricPack::ItlbFull,
-    MetricPack::DtlbFull,
-    MetricPack::ExactRetiring,
-];
-const MEM_CCX_LAB_PACKS: [MetricPack; 3] = [
-    MetricPack::DcDemand,
-    MetricPack::DtlbFull,
-    MetricPack::CrossCcxLocks,
-];
-const MICRO_ARCH_PACKS: [MetricPack; 3] = [
-    MetricPack::CrossCcxLocks,
-    MetricPack::OpCacheDecode,
-    MetricPack::StlfSplits,
-];
-
 const PRESET_DEFS: [(&str, &str, &[MetricPack], u8); 6] = [
-    ("full", "Full", &FULL_PACKS, 18),
+    (
+        "full",
+        "Full",
+        &[
+            MetricPack::DcDemand,
+            MetricPack::DcHwpf,
+            MetricPack::L1L2Dc,
+            MetricPack::L1L2Ic,
+            MetricPack::L2Hwpf,
+            MetricPack::Branches,
+            MetricPack::ItlbFull,
+            MetricPack::DtlbFull,
+            MetricPack::ExactRetiring,
+        ],
+        18,
+    ),
     ("kitchen-sink", "Kitchen Sink", &MetricPack::ALL, 24),
-    ("balanced", "Balanced Daily", &BALANCED_PACKS, 12),
-    ("tlb-only", "TLB-Only", &TLB_ONLY_PACKS, 6),
-    ("mem-ccx-lab", "Mem + CCX Lab", &MEM_CCX_LAB_PACKS, 6),
-    ("micro-arch", "Micro-Arch", &MICRO_ARCH_PACKS, 6),
+    (
+        "balanced",
+        "Balanced Daily",
+        &[
+            MetricPack::DcDemand,
+            MetricPack::L1L2Dc,
+            MetricPack::L1L2Ic,
+            MetricPack::Branches,
+            MetricPack::DtlbFull,
+            MetricPack::CrossCcxLocks,
+        ],
+        12,
+    ),
+    (
+        "tlb-only",
+        "TLB-Only",
+        &[
+            MetricPack::ItlbFull,
+            MetricPack::DtlbFull,
+            MetricPack::ExactRetiring,
+        ],
+        6,
+    ),
+    (
+        "mem-ccx-lab",
+        "Mem + CCX Lab",
+        &[
+            MetricPack::DcDemand,
+            MetricPack::DtlbFull,
+            MetricPack::CrossCcxLocks,
+        ],
+        6,
+    ),
+    (
+        "micro-arch",
+        "Micro-Arch",
+        &[
+            MetricPack::CrossCcxLocks,
+            MetricPack::OpCacheDecode,
+            MetricPack::StlfSplits,
+        ],
+        6,
+    ),
 ];
 
 impl PresetId {
@@ -280,7 +207,6 @@ impl PresetId {
         Self::MemCcxLab,
         Self::MicroArch,
     ];
-
     pub const fn slug(self) -> &'static str {
         PRESET_DEFS[self as usize].0
     }
