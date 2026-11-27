@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Zen2Config;
 use crate::packs::MetricPack;
 
+pub mod pmu_rules;
 pub mod win32_rules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -293,7 +294,9 @@ pub struct DiagnosticEngine;
 
 impl DiagnosticEngine {
     pub fn evaluate(input: &DiagnosticInput) -> DiagnosticReport {
-        Self::evaluate_with_rules(input, &[win32_rules::evaluate_win32_rules])
+        const DEFAULT_RULES: &[RuleEvaluator] =
+            &[pmu_rules::evaluate, win32_rules::evaluate_win32_rules];
+        Self::evaluate_with_rules(input, DEFAULT_RULES)
     }
 
     pub fn evaluate_with_rules(
@@ -668,6 +671,7 @@ fn attach_profiler_notes(input: &DiagnosticInput, findings: &mut [Finding]) {
             "win32.disk_io_stall" | "win32.frametime_spike_correlator" => off_cpu.or(on_cpu),
             id if id == "win32.jit_4k_itlb_residual"
                 || id.starts_with("pmu.")
+                || id.starts_with("uarch.")
                 || id.starts_with("anchor.")
                 || id.starts_with("exclusion.") =>
             {
