@@ -10,6 +10,7 @@ pub mod baseline;
 pub mod config;
 pub mod csv_parser;
 pub mod diagnostics;
+pub mod metrics;
 pub mod packs;
 
 use serde::{Deserialize, Serialize};
