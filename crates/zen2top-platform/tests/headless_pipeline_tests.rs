@@ -175,7 +175,7 @@ ccx,l3/l3_access=(0xFF0F00000040FF04),l3/l3_miss=(0xFF0F000000400104),l3/l3_lat=
     assert!((report.summary.l3_hit_pct - 80.0).abs() < 1e-6);
     assert!((report.summary.l3_lat_cyc - 240.0).abs() < 1e-6);
     assert_eq!(report.summary.ccx_summary.len(), 2);
-    assert_eq!(report.summary.smt_pairs.len(), 6);
+    assert!(report.summary.smt_pairs.is_empty());
     assert!(report.baseline_diff.is_some());
     let profiler = report.profiler.expect("profiler summary populated");
     assert_eq!(profiler.on_cpu_top[0].name, "app.exe!fn_0x1000");

@@ -3,29 +3,115 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
-macro_rules! sym_dto {
-    (tier $n:ident { $($(#[$m:meta])* $v:ident),+ }) => { #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)] pub enum $n { $($(#[$m])* $v),+ } };
-    (new $t:ident { $($x:tt)+ }) => { $t { $($x)+ } };
-    (span $($t:ty => $a:ident, $b:ident);+ $(;)?) => { $(impl Span for $t { fn span(&self) -> (u32, u32) { (self.$a, self.$b) } })+ };
-    ($($n:ident { $($(#[$m:meta])* $f:ident : $t:ty),+ $(,)? })+) => { $(#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)] #[serde(default)] pub struct $n { $($(#[$m])* pub $f: $t),+ })+ };
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub enum SymbolTier {
+    Pdb,
+    PeExport,
+    SidecarMap,
+    Pdata,
+    #[default]
+    Raw,
 }
 
-sym_dto! { tier SymbolTier { Pdb, PeExport, SidecarMap, Pdata, #[default] Raw } }
-sym_dto! {
-    RuntimeFunction { begin_address: u32, end_address: u32 }
-    SymbolRange { rva_start: u32, rva_end: u32, name: String, signature: Option<String>, file: Option<String>, line: Option<u32> }
-    ExportSymbol { rva_start: u32, rva_end: u32, name: String, ordinal: Option<u16> }
-    ModuleSymbols { name: String, base_addr: u64, size_bytes: u64, pdb_loaded: bool, pdb_symbols: Vec<SymbolRange>, exports: Vec<ExportSymbol>, pdata: Vec<RuntimeFunction> }
-    ResolvedSymbol { module: String, base_addr: u64, va: u64, rva: u32, fn_start_rva: u32, fn_end_rva: u32, name: String, display_name: String, signature: String, file_line: Option<String>, tier: SymbolTier, key: String }
-    SidecarSymbolEntry { module: String, #[serde(alias = "rvaStart", deserialize_with = "deserialize_rva")] rva_start: u32, #[serde(alias = "rvaEnd", deserialize_with = "deserialize_rva")] rva_end: u32, name: String, signature: Option<String> }
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuntimeFunction {
+    pub begin_address: u32,
+    pub end_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SymbolRange {
+    pub rva_start: u32,
+    pub rva_end: u32,
+    pub name: String,
+    pub signature: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportSymbol {
+    pub rva_start: u32,
+    pub rva_end: u32,
+    pub name: String,
+    pub ordinal: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModuleSymbols {
+    pub name: String,
+    pub base_addr: u64,
+    pub size_bytes: u64,
+    pub pdb_loaded: bool,
+    pub pdb_symbols: Vec<SymbolRange>,
+    pub exports: Vec<ExportSymbol>,
+    pub pdata: Vec<RuntimeFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResolvedSymbol {
+    pub module: String,
+    pub base_addr: u64,
+    pub va: u64,
+    pub rva: u32,
+    pub fn_start_rva: u32,
+    pub fn_end_rva: u32,
+    pub name: String,
+    pub display_name: String,
+    pub signature: String,
+    pub file_line: Option<String>,
+    pub tier: SymbolTier,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidecarSymbolEntry {
+    pub module: String,
+    #[serde(alias = "rvaStart", deserialize_with = "deserialize_rva")]
+    pub rva_start: u32,
+    #[serde(alias = "rvaEnd", deserialize_with = "deserialize_rva")]
+    pub rva_end: u32,
+    pub name: String,
+    pub signature: Option<String>,
 }
 
 trait Span {
     fn span(&self) -> (u32, u32);
 }
-sym_dto! { span SymbolRange => rva_start, rva_end; ExportSymbol => rva_start, rva_end; SidecarSymbolEntry => rva_start, rva_end; RuntimeFunction => begin_address, end_address; }
 
-fn lo(s: &str) -> String {
+impl Span for SymbolRange {
+    fn span(&self) -> (u32, u32) {
+        (self.rva_start, self.rva_end)
+    }
+}
+
+impl Span for ExportSymbol {
+    fn span(&self) -> (u32, u32) {
+        (self.rva_start, self.rva_end)
+    }
+}
+
+impl Span for SidecarSymbolEntry {
+    fn span(&self) -> (u32, u32) {
+        (self.rva_start, self.rva_end)
+    }
+}
+
+impl Span for RuntimeFunction {
+    fn span(&self) -> (u32, u32) {
+        (self.begin_address, self.end_address)
+    }
+}
+
+fn module_key(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
@@ -59,7 +145,7 @@ pub struct TieredSymbolResolver {
     sidecar: HashMap<String, Vec<SidecarSymbolEntry>>,
 }
 
-fn prep<T: Span>(v: &mut Vec<T>) {
+fn sort_ranges<T: Span>(v: &mut Vec<T>) {
     v.retain(|x| x.span().1 > x.span().0);
     v.sort_by_key(|x| x.span().0);
 }
@@ -69,21 +155,24 @@ impl TieredSymbolResolver {
         Self::default()
     }
     pub fn register_module(&mut self, mut m: ModuleSymbols) {
-        prep(&mut m.pdb_symbols);
-        prep(&mut m.exports);
-        prep(&mut m.pdata);
-        self.modules.insert(lo(&m.name), m);
+        sort_ranges(&mut m.pdb_symbols);
+        sort_ranges(&mut m.exports);
+        sort_ranges(&mut m.pdata);
+        self.modules.insert(module_key(&m.name), m);
     }
     pub fn unload_module(&mut self, name: &str) {
-        self.modules.remove(&lo(name));
+        self.modules.remove(&module_key(name));
     }
     pub fn load_sidecar_json(&mut self, json: &str) -> anyhow::Result<usize> {
         let es = parse_sidecar_json(json)?;
         let n = es.len();
         for e in es {
-            self.sidecar.entry(lo(&e.module)).or_default().push(e);
+            self.sidecar
+                .entry(module_key(&e.module))
+                .or_default()
+                .push(e);
         }
-        self.sidecar.values_mut().for_each(prep);
+        self.sidecar.values_mut().for_each(sort_ranges);
         Ok(n)
     }
     pub fn clear_sidecar(&mut self) {
@@ -99,50 +188,122 @@ fn find<T: Span>(s: &[T], rva: u32) -> Option<&T> {
         .find(|x| x.span().0 <= rva && rva < x.span().1)
 }
 
-type Hit = (SymbolTier, u32, u32, String, String, String, Option<String>);
+struct ResolvedRange {
+    tier: SymbolTier,
+    start: u32,
+    end: u32,
+    name: String,
+    display_name: String,
+    signature: String,
+    file_line: Option<String>,
+}
 
-fn pick(cm: &str, rva: u32, md: Option<&ModuleSymbols>, sd: &[SidecarSymbolEntry]) -> Hit {
+fn resolve_range(
+    module_name: &str,
+    rva: u32,
+    module_symbols: Option<&ModuleSymbols>,
+    sidecar: &[SidecarSymbolEntry],
+) -> ResolvedRange {
     use SymbolTier::*;
-    let ok = |t, s, e, n: String, sg, fl| (t, s, e, n.clone(), n, sg, fl);
-    let mp = md.filter(|m| m.pdb_loaded);
-    if let Some(h) = mp.and_then(|m| find(&m.pdb_symbols, rva)) {
-        let ln = h.line.unwrap_or(1) + (rva - h.rva_start) / 32;
-        let fl = h.file.as_deref().map(|f| format!("{f}:{ln}"));
-        let sg = h.signature.clone().unwrap_or_else(|| h.name.clone());
-        return ok(Pdb, h.rva_start, h.rva_end, h.name.clone(), sg, fl);
+    let named_range = |tier, start, end, name: String, signature, file_line| ResolvedRange {
+        tier,
+        start,
+        end,
+        display_name: name.clone(),
+        name,
+        signature,
+        file_line,
+    };
+    let pdb_module = module_symbols.filter(|m| m.pdb_loaded);
+    if let Some(h) = pdb_module.and_then(|m| find(&m.pdb_symbols, rva)) {
+        let line = h.line.unwrap_or(1) + (rva - h.rva_start) / 32;
+        let file_line = h.file.as_deref().map(|f| format!("{f}:{line}"));
+        let signature = h.signature.clone().unwrap_or_else(|| h.name.clone());
+        return named_range(
+            Pdb,
+            h.rva_start,
+            h.rva_end,
+            h.name.clone(),
+            signature,
+            file_line,
+        );
     }
-    if let Some(h) = md.and_then(|m| find(&m.exports, rva)) {
+    if let Some(h) = module_symbols.and_then(|m| find(&m.exports, rva)) {
         let ord = h.ordinal.map_or(String::new(), |o| format!(" (ord #{o})"));
-        let sg = format!("{cm}!{}{ord}", h.name);
-        return ok(PeExport, h.rva_start, h.rva_end, h.name.clone(), sg, None);
+        let signature = format!("{module_name}!{}{ord}", h.name);
+        return named_range(
+            PeExport,
+            h.rva_start,
+            h.rva_end,
+            h.name.clone(),
+            signature,
+            None,
+        );
     }
-    if let Some(h) = find(sd, rva) {
-        let def = format!("{cm}!{}", h.name);
-        let sg = h.signature.clone().unwrap_or(def);
-        return ok(SidecarMap, h.rva_start, h.rva_end, h.name.clone(), sg, None);
+    if let Some(h) = find(sidecar, rva) {
+        let def = format!("{module_name}!{}", h.name);
+        let signature = h.signature.clone().unwrap_or(def);
+        return named_range(
+            SidecarMap,
+            h.rva_start,
+            h.rva_end,
+            h.name.clone(),
+            signature,
+            None,
+        );
     }
-    if let Some(h) = md.and_then(|m| find(&m.pdata, rva)) {
+    if let Some(h) = module_symbols.and_then(|m| find(&m.pdata, rva)) {
         let (a, b) = (h.begin_address, h.end_address);
-        let (tag, full) = (format!("fn_0x{a:X}"), format!("{cm}!fn_0x{a:X}"));
-        let sg = format!("{full} [0x{a:X}..0x{b:X})");
-        return (Pdata, a, b, full, tag, sg, None);
+        let (tag, full) = (format!("fn_0x{a:X}"), format!("{module_name}!fn_0x{a:X}"));
+        let signature = format!("{full} [0x{a:X}..0x{b:X})");
+        return ResolvedRange {
+            tier: Pdata,
+            start: a,
+            end: b,
+            name: full,
+            display_name: tag,
+            signature,
+            file_line: None,
+        };
     }
     let tag = format!("0x{rva:X}");
-    let full = format!("{cm}!{tag}");
-    let sg = format!("{cm}+{tag} (no unwind .pdata)");
-    (Raw, rva, rva.saturating_add(1), full, tag, sg, None)
+    let full = format!("{module_name}!{tag}");
+    let signature = format!("{module_name}+{tag} (no unwind .pdata)");
+    ResolvedRange {
+        tier: Raw,
+        start: rva,
+        end: rva.saturating_add(1),
+        name: full,
+        display_name: tag,
+        signature,
+        file_line: None,
+    }
 }
 
 impl SymbolResolver for TieredSymbolResolver {
     fn resolve(&self, module: &str, rva: u32) -> ResolvedSymbol {
-        let (tr, mk) = (module.trim(), lo(module));
-        let md = self.modules.get(&mk);
-        let (cm, b) = md.map_or((tr, 0), |m| (m.name.as_str(), m.base_addr));
+        let (trimmed_module, module_key) = (module.trim(), module_key(module));
+        let module_symbols = self.modules.get(&module_key);
+        let (module_name, b) =
+            module_symbols.map_or((trimmed_module, 0), |m| (m.name.as_str(), m.base_addr));
         let va = if b > 0 { b + u64::from(rva) } else { 0 };
-        let sd = self.sidecar.get(&mk).map_or(&[][..], Vec::as_slice);
-        let (tier, s, e, n, d, sg, fl) = pick(cm, rva, md, sd);
-        let k = format!("{mk}!{d}");
-        sym_dto!(new ResolvedSymbol { module: cm.into(), base_addr: b, va, rva, fn_start_rva: s, fn_end_rva: e, name: n, display_name: d, signature: sg, file_line: fl, tier, key: k })
+        let sidecar = self.sidecar.get(&module_key).map_or(&[][..], Vec::as_slice);
+        let range = resolve_range(module_name, rva, module_symbols, sidecar);
+        let key = format!("{module_key}!{}", range.display_name);
+        ResolvedSymbol {
+            module: module_name.into(),
+            base_addr: b,
+            va,
+            rva,
+            fn_start_rva: range.start,
+            fn_end_rva: range.end,
+            name: range.name,
+            display_name: range.display_name,
+            signature: range.signature,
+            file_line: range.file_line,
+            tier: range.tier,
+            key,
+        }
     }
 
     fn resolve_va(&self, va: u64) -> ResolvedSymbol {
@@ -153,6 +314,14 @@ impl SymbolResolver for TieredSymbolResolver {
             }
         }
         let t = format!("0x{va:X}");
-        sym_dto!(new ResolvedSymbol { module: "unknown".into(), va, name: t.clone(), display_name: t.clone(), signature: t.clone(), key: format!("unknown!{t}"), ..Default::default() })
+        ResolvedSymbol {
+            module: "unknown".into(),
+            va,
+            name: t.clone(),
+            display_name: t.clone(),
+            signature: t.clone(),
+            key: format!("unknown!{t}"),
+            ..Default::default()
+        }
     }
 }
