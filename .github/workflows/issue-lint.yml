@@ -3,16 +3,12 @@ name: issue-lint
 on:
   issues:
     types: [opened, edited, reopened]
-  pull_request:
-    types: [closed]
 
 permissions:
   issues: write
-  pull-requests: read
 
 jobs:
   validate-issue:
-    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -27,7 +23,7 @@ jobs:
           python3 - <<'PY'
           import json, os, re, subprocess
           labels = {l["name"] for l in json.loads(os.environ.get("LABELS_JSON") or "[]")}
-          if labels & {"tracker", "proposal", "not claimable"}:
+          if labels & {"roadmap", "stage-gate", "tracker", "proposal", "not claimable"}:
               print("issue-lint: skipping meta/tracker/proposal issue.")
               raise SystemExit(0)
           body = os.environ.get("BODY") or ""
@@ -36,43 +32,11 @@ jobs:
           has_goal = bool(re.search(r"\bG-\d+\b", body))
           has_criteria = bool(re.search(r"- \[ \]", body)) or ("Expected:" in body and "Actual:" in body)
           if has_goal and has_criteria:
-              subprocess.run(["gh", "issue", "edit", issue, "-R", repo, "--add-label", "ready", "--remove-label", "needs-triage"], check=False)
+              subprocess.run(["gh", "issue", "edit", issue, "-R", repo, "--remove-label", "needs-triage"], check=False)
           else:
               subprocess.run(["gh", "issue", "edit", issue, "-R", repo, "--add-label", "needs-triage", "--remove-label", "ready"], check=False)
               subprocess.run([
                   "gh", "issue", "comment", issue, "-R", repo, "--body",
                   "🤖 Agent: IssueLint | Missing a `G-*` Goal ID from `GOALS.md` or verifiable acceptance criteria (`- [ ]` / Expected vs Actual). Kept in `needs-triage`."
               ], check=False)
-          PY
-
-  circuit-breaker:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Trip circuit breaker if linked issue now has >= 2 closed unmerged PRs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          python3 - <<'PY'
-          import json, os, re, subprocess
-          body = os.environ.get("PR_BODY") or ""
-          repo = os.environ["REPO"]
-          for issue in set(re.findall(r"\b(?:Fixes|Closes|Resolves)\s+#(\d+)\b", body, re.IGNORECASE)):
-              raw = subprocess.run(
-                  ["gh", "pr", "list", "-R", repo, "--state", "closed", "--search", f"#{issue}", "--json", "number,mergedAt"],
-                  capture_output=True, text=True, check=True,
-              ).stdout
-              unmerged = [p for p in json.loads(raw or "[]") if not p.get("mergedAt")]
-              if len(unmerged) >= 2:
-                  subprocess.run(
-                      ["gh", "issue", "edit", issue, "-R", repo, "--add-label", "blocked,needs-human-review", "--remove-label", "ready"],
-                      check=False,
-                  )
-                  subprocess.run([
-                      "gh", "issue", "comment", issue, "-R", repo, "--body",
-                      f"🤖 Agent: CircuitBreaker | Issue #{issue} has {len(unmerged)} closed unmerged PRs. Marked `blocked` + `needs-human-review` to stop autonomous retry loops."
-                  ], check=False)
           PY

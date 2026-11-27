@@ -1,6 +1,5 @@
 ---
-description: Core repository governance, layer boundaries, and PR evidence rules for zen2top
+description: Follow the shared zen2top agent protocol
 alwaysApply: true
 ---
-Read and strictly obey `AGENTS.md`, `GOALS.md`, and `HANDOFF.md` at the repository root.
-Respect `scripts/layers.json` (`core` <- `platform` <- `product`), keep changes <= 1200 net LOC (1600 hard cap without approved Spec), do not edit `HANDOFF.md` in worker PRs, keep `zen2top-core`/`zen2top-cli` 100% safe Rust and document every `unsafe` in `zen2top-platform` with `// SAFETY:`, and run `python scripts/pr_ready.py --base origin/main` before opening any PR.
+Read and follow the repository root `AGENTS.md`. For “Work on this” or a request without a specific task, run its default worker loop on the active GitHub Roadmap. Split large work into testable slices and keep readable Rust.
