@@ -7,6 +7,7 @@
 //! the pure evidence-gated `DiagnosticEngine`, and headless JSON v1 schemas.
 
 pub mod config;
+pub mod csv_parser;
 pub mod packs;
 
 use serde::{Deserialize, Serialize};
