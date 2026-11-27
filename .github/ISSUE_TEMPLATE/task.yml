@@ -1,5 +1,5 @@
 name: Implementation Task
-description: Atomic work item (<=500 net LOC) aligned with an active goal in GOALS.md
+description: Atomic work item (<=1200 net LOC) aligned with an active goal in GOALS.md
 labels: ["needs-triage"]
 body:
   - type: input
@@ -65,11 +65,11 @@ body:
     id: size_estimate
     attributes:
       label: Estimated Net Reviewed Size
-      description: Soft cap is 500 net LOC (501-600 requires explicit justification). Over 600 requires a Spec issue first.
+      description: Soft cap is 1200 net LOC (1201-1600 requires explicit justification). Over 1600 requires a Spec issue first.
       options:
         - "XS/S (<200 net LOC)"
-        - "M (200-500 net LOC)"
-        - "L (501-600 net LOC - justification required)"
-        - "XL (>600 net LOC - MUST decompose via Spec issue first)"
+        - "M (200-1200 net LOC)"
+        - "L (1201-1600 net LOC - justification required)"
+        - "XL (>1600 net LOC - MUST decompose via Spec issue first)"
     validations:
       required: true

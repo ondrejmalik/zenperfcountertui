@@ -24,7 +24,7 @@ def make_valid_body(
     dirty: str = "false",
     net_loc: int = 240,
     size_tier: str = "standard",
-    size_just: str = "N/A (<= 500 net LOC)",
+    size_just: str = "N/A (<= 1200 net LOC)",
     not_tested: str = "Live AMDuProf hardware counters were not run on this runner.",
     extra: str = "",
 ) -> str:
@@ -114,45 +114,45 @@ class PrCheckTests(unittest.TestCase):
         errs = validate_pr(ctx)
         self.assertTrue(any("Not tested" in e for e in errs))
 
-    def test_soft_cap_501_to_600_requires_concrete_justification(self) -> None:
+    def test_soft_cap_1201_to_1600_requires_concrete_justification(self) -> None:
         bad = PrContext(
-            body=make_valid_body(net_loc=540, size_tier="justification-required", size_just="N/A"),
+            body=make_valid_body(net_loc=1201, size_tier="justification-required", size_just="N/A"),
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
-            actual_net_loc=540,
+            actual_net_loc=1201,
         )
-        self.assertTrue(any("500 soft cap" in e for e in validate_pr(bad)))
+        self.assertTrue(any("1200 soft cap" in e for e in validate_pr(bad)))
 
         good = PrContext(
             body=make_valid_body(
-                net_loc=540,
+                net_loc=1201,
                 size_tier="justification-required",
                 size_just="Splitting the FFD bin-packer from its invariant validator would leave half-wired pack state.",
             ),
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
-            actual_net_loc=540,
+            actual_net_loc=1201,
         )
         self.assertEqual(validate_pr(good), [])
 
-    def test_hard_cap_over_600_requires_spec_link(self) -> None:
+    def test_hard_cap_over_1600_requires_spec_link(self) -> None:
         bad = PrContext(
-            body=make_valid_body(net_loc=650, size_tier="spec-required"),
+            body=make_valid_body(net_loc=1601, size_tier="spec-required"),
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
-            actual_net_loc=650,
+            actual_net_loc=1601,
         )
-        self.assertTrue(any("600 LOC hard cap" in e for e in validate_pr(bad)))
+        self.assertTrue(any("1600 LOC hard cap" in e for e in validate_pr(bad)))
 
         good = PrContext(
-            body=make_valid_body(net_loc=650, size_tier="spec-required", extra="\nSpec: #10\n"),
+            body=make_valid_body(net_loc=1601, size_tier="spec-required", extra="\nSpec: #10\n"),
             head_sha=HEAD,
             changed_files=["crates/zen2top-core/src/packs.rs"],
             labels=set(),
-            actual_net_loc=650,
+            actual_net_loc=1601,
         )
         self.assertEqual(validate_pr(good), [])
 

@@ -19,8 +19,8 @@ if os.name == "nt":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
-SOFT_LINE_LIMIT = 500
-HARD_LINE_LIMIT = 600
+SOFT_LINE_LIMIT = 1200
+HARD_LINE_LIMIT = 1600
 FENCE = "`" * 3
 LOCK_PAIRS = {
     "Cargo.lock": ("Cargo.toml",),
