@@ -6,6 +6,7 @@
 //! CSV parsing, Exclusive CPI Stack & Retiring % math, raw-cumulative baselines,
 //! the pure evidence-gated `DiagnosticEngine`, and headless JSON v1 schemas.
 
+pub mod baseline;
 pub mod config;
 pub mod csv_parser;
 pub mod packs;
