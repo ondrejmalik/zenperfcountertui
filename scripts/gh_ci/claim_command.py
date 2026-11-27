@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
 import subprocess
+import sys
 
 CLAIM_LABEL = {"implement": "in-progress", "review": "review-in-progress", "fix": "fix-in-progress"}
 QUEUE = {"implement": 3, "review": 1, "fix": 2}
@@ -19,9 +19,16 @@ SCOPE_SECTION = re.compile(r"(?im)^#{2,3} Touch Scope\s*\n(.*?)(?=^#|\Z)", re.DO
 
 
 def gh(*args: str) -> str:
-    return subprocess.run(
-        ["gh", *args], capture_output=True, check=True, encoding="utf-8", errors="replace",
-    ).stdout
+    try:
+        return subprocess.run(
+            ["gh", *args], capture_output=True, check=True, encoding="utf-8", errors="replace",
+        ).stdout
+    except subprocess.CalledProcessError as error:
+        for line in (error.stderr or "").splitlines():
+            # Legacy Actions commands can also appear in the middle of a line.
+            line = line.replace("##[", r"##\[")
+            print(f"claim_command: {line}", file=sys.stderr)
+        raise
 
 
 def api(repo: str, suffix: str) -> list | dict:
