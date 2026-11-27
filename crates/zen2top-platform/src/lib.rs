@@ -8,6 +8,7 @@ pub use zen2top_core as core;
 
 pub mod allocator;
 pub mod headless;
+pub mod headless_host;
 pub mod pmu;
 pub mod symbols;
 

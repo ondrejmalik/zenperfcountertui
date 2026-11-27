@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 
 if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -16,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.test_env import isolated_run  # noqa: E402
+from scripts.test_env import isolated_run, make_scratch_env  # noqa: E402
 
 
 def build_zen2top() -> Path:
@@ -47,6 +49,61 @@ def run_and_capture(cmd: list[str], timeout_s: float = 15.0) -> tuple[int, str, 
     with isolated_run(cmd, prefix="ZEN2TOP") as (sup, _scratch):
         out, err = sup.proc.communicate(timeout=timeout_s)
         return sup.proc.returncode, out, err
+
+
+def verify_unicode_target(headless: list[str], scratch: Path, env: dict[str, str]) -> None:
+    executable = scratch / "zen2top-é-測試.exe"
+    shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32/ping.exe", executable)
+    with subprocess.Popen(
+        [str(executable), "-n", "60", "127.0.0.1"],
+        cwd=scratch,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    ) as process:
+        try:
+            for selector in (executable.name, str(process.pid)):
+                rc, out, err = run_and_capture(headless + ["--target", selector])
+                if rc != 0:
+                    raise SystemExit(f"headless_e2e: Unicode target {selector} returned {rc}: {err}")
+                target = json.loads(out)["target"]
+                if target["name"] != executable.name or target["pid"] != process.pid:
+                    raise SystemExit(f"headless_e2e: incorrect Unicode target for {selector}: {target}")
+        finally:
+            process.terminate()
+
+
+def verify_output_aliases(headless: list[str], scratch: Path, env: dict[str, str]) -> None:
+    existing = scratch / "existing.json"
+    original = b"original output\n"
+    existing.write_bytes(original)
+    hardlink = scratch / "hardlink.json"
+    os.link(existing, hardlink)
+    aliases = [
+        ("existing.json", "./existing.json"),
+        ("existing.json", "hardlink.json"),
+        ("new/capture.json", "./new/capture.json"),
+    ]
+    if os.name == "nt":
+        aliases.append(("new/capture.json", "NEW/CAPTURE.JSON"))
+    for baseline, report in aliases:
+        result = subprocess.run(
+            headless + ["--save-baseline", baseline, "--json-report", report],
+            cwd=scratch,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+        )
+        if result.returncode != 1 or "resolve to the same file" not in result.stderr:
+            raise SystemExit(
+                f"headless_e2e: output collision {baseline} / {report} returned "
+                f"{result.returncode}: {result.stderr}"
+            )
+        if existing.read_bytes() != original or (scratch / "new").exists():
+            raise SystemExit("headless_e2e: output collision changed a destination")
 
 
 def main() -> int:
@@ -92,6 +149,12 @@ def main() -> int:
         if rc != 0 or json.loads(out)["target"]["pid"] != os.getpid():
             raise SystemExit(f"headless_e2e: attach by PID returned {rc}: {err}")
 
+    with tempfile.TemporaryDirectory(prefix="zen2top-e2e-") as temp_dir:
+        env, scratch = make_scratch_env(base_dir=Path(temp_dir))
+        verify_output_aliases(headless, scratch, env)
+        if os.name == "nt":
+            verify_unicode_target(headless, scratch, env)
+
     rc, _, err = run_and_capture(headless + ["--baseline", "missing.json"])
     if rc != 1 or "missing.json" not in err:
         raise SystemExit(f"headless_e2e: unreadable baseline returned {rc}: {err}")
@@ -129,7 +192,7 @@ def main() -> int:
     if rc != 2 or not json.loads(out)["target"]["exited_early"]:
         raise SystemExit(f"headless_e2e: early child exit returned {rc}: {err}")
 
-    print("headless_e2e: PASS (presets, JSON v1, invalid args, target lifecycle, baseline save and diff).")
+    print("headless_e2e: PASS (presets, JSON v1, invalid args, target lifecycle, Unicode lookup on Windows, output aliases, baseline save and diff).")
     return 0
 
 

@@ -14,6 +14,7 @@ use zen2top_platform::{
         config::parse_config,
         HeadlessExitCode,
     },
+    headless_host::{find_target, outputs_alias},
     pmu::contention::PmcContentionReport,
     run_no_pmu_capture,
     symbols::parse_sidecar_json,
@@ -23,6 +24,11 @@ use zen2top_platform::{
 use super::Cli;
 
 pub(super) fn run(cli: Cli) -> anyhow::Result<HeadlessExitCode> {
+    let report_path = cli
+        .json_report
+        .as_deref()
+        .filter(|path| path.as_os_str() != "-");
+    let baseline_path = cli.save_baseline.as_deref();
     let mut req = CaptureRequest {
         config: cli
             .config
@@ -93,12 +99,7 @@ pub(super) fn run(cli: Cli) -> anyhow::Result<HeadlessExitCode> {
             child.stop()?;
         }
     }
-    write_capture(
-        &req,
-        cli.json_report.as_deref(),
-        cli.save_baseline.as_deref(),
-        &mut io::stdout().lock(),
-    )
+    write_capture(&req, report_path, baseline_path, &mut io::stdout().lock())
 }
 
 fn write_capture(
@@ -108,6 +109,12 @@ fn write_capture(
     stdout: &mut impl Write,
 ) -> anyhow::Result<HeadlessExitCode> {
     let (code, report) = run_no_pmu_capture(req)?;
+    if let (Some(report_path), Some(baseline_path)) = (report_path, baseline_path) {
+        anyhow::ensure!(
+            !outputs_alias(report_path, baseline_path)?,
+            "--json-report and --save-baseline resolve to the same file"
+        );
+    }
     if code == HeadlessExitCode::Ok {
         if let Some(path) = baseline_path {
             let baseline = BaselineSnapshot {
@@ -128,8 +135,8 @@ fn write_capture(
     }
     let json = serde_json::to_string_pretty(&report)?;
     match report_path {
-        Some(path) if path.as_os_str() != "-" => write_file(path, &json)?,
-        _ => writeln!(stdout, "{json}")?,
+        Some(path) => write_file(path, &json)?,
+        None => writeln!(stdout, "{json}")?,
     }
     if let Some(PmcContentionReport { remediation, .. }) = &report.meta.pmc_contention {
         eprintln!("zen2top: {remediation}");
@@ -146,36 +153,6 @@ fn write_file(path: &Path, json: &str) -> anyhow::Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     fs::write(path, format!("{json}\n")).with_context(|| format!("write {}", path.display()))
-}
-
-#[cfg(windows)]
-fn find_target(target: &str) -> anyhow::Result<Option<(String, u32)>> {
-    let pid = target.parse::<u32>().ok();
-    let output = Command::new("tasklist.exe")
-        .args(["/FO", "CSV", "/NH"])
-        .output()
-        .context("list running processes with tasklist.exe")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "tasklist.exe failed ({})",
-        output.status
-    );
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| {
-            let (name, fields) = line.strip_prefix('"')?.split_once("\",\"")?;
-            let process_id = fields.split('"').next()?.parse().ok()?;
-            let matches = pid.map_or_else(
-                || name.eq_ignore_ascii_case(target),
-                |pid| pid == process_id,
-            );
-            matches.then(|| (name.to_owned(), process_id))
-        }))
-}
-
-#[cfg(not(windows))]
-fn find_target(_target: &str) -> anyhow::Result<Option<(String, u32)>> {
-    anyhow::bail!("Process lookup requires Windows.")
 }
 
 struct CaptureChild(Child);
