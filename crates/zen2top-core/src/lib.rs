@@ -6,6 +6,9 @@
 //! CSV parsing, Exclusive CPI Stack & Retiring % math, raw-cumulative baselines,
 //! the pure evidence-gated `DiagnosticEngine`, and headless JSON v1 schemas.
 
+pub mod config;
+pub mod packs;
+
 use serde::{Deserialize, Serialize};
 
 /// Current schema version for `--headless --json-report` output.
