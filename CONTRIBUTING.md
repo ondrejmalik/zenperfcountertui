@@ -13,7 +13,7 @@ python scripts/ci.py all
 
 ## Autonomous 4-Role Workflow
 
-1. **Planner Agent:** Audits `needs-triage` issues against `GOALS.md`, rejects `AG-*` violations, decomposes `> 500` net LOC work into single-layer atomic child issues, and applies `goal:<milestone>` + `ready`.
+1. **Planner Agent:** Audits `needs-triage` issues against `GOALS.md`, rejects `AG-*` violations, decomposes `> 1200` net LOC work into single-layer atomic child issues, and applies `goal:<milestone>` + `ready`.
 2. **Worker Agent:**
    - Finds an unclaimed `ready` + `goal:<milestone>` issue:
      ```sh
@@ -21,7 +21,7 @@ python scripts/ci.py all
      ```
    - Checks for overlapping PRs (`gh pr list --state open --search "<issue-or-symbol>"`).
    - Comments `🤖 Agent: /claim` on the issue and opens a draft PR (`Fixes #<N>`) promptly.
-   - Keeps net reviewed LOC $\le 500$ (501–600 requires concrete `## Size justification`; $> 600$ requires `Spec: #<M>`).
+   - Keeps net reviewed LOC $\le 1200$ (1201–1600 requires concrete `## Size justification`; $> 1600$ requires `Spec: #<M>`).
    - Never edits `HANDOFF.md` or `docs/specs/` directly (put state updates in `## Handoff notes`).
    - Commits cleanly, runs `python scripts/pr_ready.py --base origin/main`, and pastes the entire table + `pr-ready v1` block into `## Self-check`.
 3. **Two-Pass Verifier Quorum (Pass A + Pass B):** Two fresh-context reviews (code/spec/goal audit + independent scratch execution of `python scripts/ci.py all`) apply `ready-to-merge` upon dual `VERDICT: PASS`.
@@ -29,4 +29,4 @@ python scripts/ci.py all
 
 ## Tier-2 Mandatory Human Gates (Never Auto-Merged)
 
-Any PR touching `.github/CODEOWNERS` paths, changing `Cargo.toml` dependencies, breaking public/JSON schemas, exceeding 600 net LOC without `spec-approved`, marked `off-goal`, regressing `B A A B` benchmarks (`slower` without `perf-override-approved`), or tripping the Circuit Breaker (`blocked`) requires human maintainer approval.
+Any PR touching `.github/CODEOWNERS` paths, changing `Cargo.toml` dependencies, breaking public/JSON schemas, exceeding 1600 net LOC without `spec-approved`, marked `off-goal`, regressing `B A A B` benchmarks (`slower` without `perf-override-approved`), or tripping the Circuit Breaker (`blocked`) requires human maintainer approval.
