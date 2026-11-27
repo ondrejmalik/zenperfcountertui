@@ -6,7 +6,14 @@
 
 pub use zen2top_core as core;
 
+pub mod allocator;
+pub mod headless;
 pub mod pmu;
+pub mod symbols;
+
+pub use headless::{
+    run_headless_capture, run_no_pmu_capture, CaptureRequest, HeadlessCaptureReport,
+};
 
 use crate::core::{HeadlessMeta, HeadlessReport, PresetSummary, HEADLESS_SCHEMA_VERSION};
 
