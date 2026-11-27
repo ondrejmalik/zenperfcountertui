@@ -6,6 +6,8 @@
 
 pub use zen2top_core as core;
 
+pub mod pmu;
+
 use crate::core::{HeadlessMeta, HeadlessReport, PresetSummary, HEADLESS_SCHEMA_VERSION};
 
 /// Options for a non-interactive headless capture session.
