@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::Zen2Config;
 use crate::packs::MetricPack;
 
+pub mod win32_rules;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub enum Severity {
     Hi,
@@ -291,7 +293,7 @@ pub struct DiagnosticEngine;
 
 impl DiagnosticEngine {
     pub fn evaluate(input: &DiagnosticInput) -> DiagnosticReport {
-        Self::evaluate_with_rules(input, &[])
+        Self::evaluate_with_rules(input, &[win32_rules::evaluate_win32_rules])
     }
 
     pub fn evaluate_with_rules(
@@ -384,6 +386,7 @@ impl DiagnosticEngine {
                 .then_with(|| a.severity.cmp(&b.severity))
                 .then_with(|| b.impact.total_cmp(&a.impact))
         });
+        attach_profiler_notes(input, &mut findings);
         DiagnosticReport {
             ready: true,
             evidence_gate_passed: true,
@@ -577,5 +580,41 @@ fn build_primary_anchor(
         jump_tab,
         observed_metrics: vec![("IPC".into(), format!("{:.2}", input.ipc)), ("Actual CPI".into(), format!("{:.2}", input.actual_cpi))],
         profiler_note: input.top_on_cpu_fn.clone(),
+    }
+}
+
+fn attach_profiler_notes(input: &DiagnosticInput, findings: &mut [Finding]) {
+    let on_cpu = input
+        .top_on_cpu_fn
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let off_cpu = input
+        .top_off_cpu_wait
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if on_cpu.is_none() && off_cpu.is_none() {
+        return;
+    }
+    for f in findings {
+        if f.profiler_note.is_some() {
+            continue;
+        }
+        let note = match f.rule_id.as_str() {
+            "win32.ctx_sw_lock_storm" | "win32.hard_page_faults" => off_cpu,
+            "win32.disk_io_stall" | "win32.frametime_spike_correlator" => off_cpu.or(on_cpu),
+            id if id == "win32.jit_4k_itlb_residual"
+                || id.starts_with("pmu.")
+                || id.starts_with("anchor.")
+                || id.starts_with("exclusion.") =>
+            {
+                on_cpu
+            }
+            _ => None,
+        };
+        if let Some(text) = note {
+            f.profiler_note = Some(text.to_string());
+        }
     }
 }
