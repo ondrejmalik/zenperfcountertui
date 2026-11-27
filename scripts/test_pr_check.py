@@ -2,6 +2,8 @@
 """Unit tests and negative controls for PR, layer, overlap, and ratchet governance scripts."""
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 import os
 import subprocess
@@ -265,6 +267,22 @@ class DiffSizeTests(unittest.TestCase):
 
 
 class ClaimQueueTests(unittest.TestCase):
+    def test_gh_logs_each_error_line_and_propagates_failure(self) -> None:
+        error = subprocess.CalledProcessError(
+            1, ["gh", "api"],
+            stderr="gh: Resource not accessible (HTTP 403)\n::error::Remote detail\n##[error]Remote detail\n",
+        )
+        stderr = StringIO()
+        with patch.object(claim_command.subprocess, "run", side_effect=error), redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                claim_command.gh("api", "repos/owner/repo/issues/123/labels")
+        self.assertIs(raised.exception, error)
+        self.assertEqual(stderr.getvalue().splitlines(), [
+            "claim_command: gh: Resource not accessible (HTTP 403)",
+            "claim_command: ::error::Remote detail",
+            r"claim_command: ##\[error]Remote detail",
+        ])
+
     def test_claim_only_matches_the_correct_queue_and_item(self) -> None:
         body = "## 1. Verify\n| #123 | #8 |\n## 2. Fix\n| #12 | #8 |\n## 3. Implement\n| #8 |"
         self.assertTrue(claim_command.queue_contains(body, "review", "123"))
