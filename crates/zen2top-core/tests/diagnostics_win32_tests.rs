@@ -312,3 +312,89 @@ fn edge_cases_pack_gating_zero_ram_defaults_and_uncorrelated_spikes() {
         .iter()
         .any(|f| f.rule_id == "win32.disk_io_stall"));
 }
+
+#[test]
+fn no_pmu_active_win32_findings_never_emit_clear_verdict() {
+    // High-severity Win32 finding under --no-pmu selects matching Win32 bottleneck verdict.
+    let mut hi_mem = base_win32_input();
+    hi_mem.hard_page_faults_per_sec = 25.0;
+    hi_mem.avail_phys_pct = 4.2;
+    hi_mem.commit_pct = 91.0;
+    let r_mem = DiagnosticEngine::evaluate(&hi_mem);
+    assert!(r_mem.ready && r_mem.evidence_gate_passed);
+    assert_ne!(r_mem.verdict_id, "win32_only_clear");
+    assert_eq!(r_mem.verdict_id, "win32_hard_page_faults");
+    assert!(!r_mem.verdict_label.contains("Clear"));
+    assert!(!r_mem
+        .winning_stall_line
+        .contains("No Win32 OS bottleneck detected"));
+    assert!(r_mem.proof.contains("25.0") && r_mem.proof.contains("4.2%"));
+
+    // Medium-severity Win32 finding under --no-pmu also overrides win32_only_clear.
+    let mut md_flip = base_win32_input();
+    md_flip.composed_flip_pct = Some(88.0);
+    let r_flip = DiagnosticEngine::evaluate(&md_flip);
+    assert_ne!(r_flip.verdict_id, "win32_only_clear");
+    assert_eq!(r_flip.verdict_id, "win32_composed_flip");
+    assert!(!r_flip
+        .winning_stall_line
+        .contains("No Win32 OS bottleneck detected"));
+    assert!(r_flip.proof.contains("88.0%"));
+
+    // Highest severity/impact finding determines the verdict when multiple Win32 rules fire.
+    let mut multi = base_win32_input();
+    multi.composed_flip_pct = Some(90.0);
+    multi.core_c0_pct = vec![70.0];
+    multi.core_dpc_pct = vec![7.0];
+    multi.core_irq_pct = vec![2.5];
+    let r_multi = DiagnosticEngine::evaluate(&multi);
+    assert_eq!(r_multi.verdict_id, "win32_dpc_irq_collision");
+    assert!(r_multi.proof.contains("CPU0") && r_multi.proof.contains("9.5%"));
+
+    // Info-only findings (e.g. uncorrelated frametime spikes) still allow win32_only_clear.
+    let mut info_only = base_win32_input();
+    info_only.frametime_spikes = 6;
+    let r_info = DiagnosticEngine::evaluate(&info_only);
+    assert_eq!(r_info.verdict_id, "win32_only_clear");
+
+    // GPU-bound continues to take precedence over other Win32 findings under --no-pmu.
+    let mut gpu_and_qos = base_win32_input();
+    gpu_and_qos.gpu_3d_pct = Some(98.0);
+    gpu_and_qos.core_c0_pct = vec![65.0, 20.0];
+    gpu_and_qos.priority_class = "BELOW_NORMAL".into();
+    let r_gpu = DiagnosticEngine::evaluate(&gpu_and_qos);
+    assert_eq!(r_gpu.verdict_id, "gpu_bound");
+}
+
+#[test]
+fn hard_page_faults_pop_guard_ignores_target_fields_when_ram_pcts_unpopulated() {
+    let mut target_only = base_win32_input();
+    target_only.target_present = true;
+    target_only.target_ws_mib = 2048.0;
+    target_only.soft_page_faults_per_sec = 4500.0;
+    target_only.avail_phys_pct = 0.0;
+    target_only.commit_pct = 0.0;
+    target_only.hard_page_faults_per_sec = 0.0;
+    let r_clean = DiagnosticEngine::evaluate(&target_only);
+    assert!(!r_clean
+        .findings
+        .iter()
+        .any(|f| f.rule_id == "win32.hard_page_faults"));
+    assert!(!r_clean
+        .verified_healthy
+        .iter()
+        .any(|h| h.rule_id == "win32.hard_page_faults"));
+    assert_eq!(r_clean.verdict_id, "win32_only_clear");
+
+    // Genuine 0.0% free physical RAM with populated commit_pct > 0.0 must still fire Hi.
+    let mut real_exhaustion = target_only;
+    real_exhaustion.commit_pct = 98.5;
+    let r_real = DiagnosticEngine::evaluate(&real_exhaustion);
+    let pf = r_real
+        .findings
+        .iter()
+        .find(|f| f.rule_id == "win32.hard_page_faults")
+        .expect("populated commit_pct with 0% avail RAM should fire");
+    assert_eq!(pf.severity, Severity::Hi);
+    assert_eq!(r_real.verdict_id, "win32_hard_page_faults");
+}

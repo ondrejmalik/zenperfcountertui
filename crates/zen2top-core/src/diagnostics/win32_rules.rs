@@ -263,12 +263,8 @@ fn eval_mem_io_locks(cx: &mut Cx<'_>) {
         inp.avail_phys_pct,
         inp.commit_pct,
     );
-    let pop = av > 0.0
-        || cm > 0.0
-        || inp.target_ws_mib > 0.0
-        || inp.soft_page_faults_per_sec > 0.0
-        || inp.target_present;
-    if hf >= 20.0 || (pop && av < 5.0) {
+    let ram_pop = (av.is_finite() && av > 0.0) || (cm.is_finite() && cm > 0.0);
+    if (hf.is_finite() && hf >= 20.0) || (ram_pop && av.is_finite() && av < 5.0) {
         let mut act = METAS[4].9.to_string();
         if inp.target_huge_mib > 0.0 {
             act.push_str(&format!(" Warning: {:.0} MiB of non-pageable locked huge pages is reducing available RAM for other processes.", inp.target_huge_mib));
@@ -280,7 +276,7 @@ fn eval_mem_io_locks(cx: &mut Cx<'_>) {
             ("Commit", format!("{cm:.1}%")),
         ];
         cx.emit(4, (Severity::Hi, None, hf.max(50.0)), t, Some(act), obs);
-    } else if pop || hf > 0.0 {
+    } else if ram_pop || (hf.is_finite() && hf > 0.0) {
         let s = format!("{hf:.1} hard faults/s, {av:.1}% RAM free");
         cx.ok(4, "Hard faults <20/s", s);
     }
