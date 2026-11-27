@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::Zen2Config;
 use crate::packs::MetricPack;
 
+pub mod pmu_rules;
+pub mod win32_rules;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub enum Severity {
     Hi,
@@ -291,7 +294,9 @@ pub struct DiagnosticEngine;
 
 impl DiagnosticEngine {
     pub fn evaluate(input: &DiagnosticInput) -> DiagnosticReport {
-        Self::evaluate_with_rules(input, &[])
+        const DEFAULT_RULES: &[RuleEvaluator] =
+            &[pmu_rules::evaluate, win32_rules::evaluate_win32_rules];
+        Self::evaluate_with_rules(input, DEFAULT_RULES)
     }
 
     pub fn evaluate_with_rules(
@@ -384,6 +389,7 @@ impl DiagnosticEngine {
                 .then_with(|| a.severity.cmp(&b.severity))
                 .then_with(|| b.impact.total_cmp(&a.impact))
         });
+        attach_profiler_notes(input, &mut findings);
         DiagnosticReport {
             ready: true,
             evidence_gate_passed: true,
@@ -427,6 +433,22 @@ fn compute_inactive_rules(input: &DiagnosticInput) -> Vec<String> {
     out
 }
 
+fn win32_verdict_id(rule_id: &str) -> &'static str {
+    match rule_id {
+        "win32.gpu_bound" => "gpu_bound",
+        "win32.dpc_irq_collision" => "win32_dpc_irq_collision",
+        "win32.noisy_neighbor" => "win32_noisy_neighbor",
+        "win32.priority_ecoqos" => "win32_priority_ecoqos",
+        "win32.hard_page_faults" => "win32_hard_page_faults",
+        "win32.ctx_sw_lock_storm" => "win32_ctx_sw_lock_storm",
+        "win32.composed_flip" => "win32_composed_flip",
+        "win32.jit_4k_itlb_residual" => "win32_jit_4k_itlb_residual",
+        "win32.disk_io_stall" => "win32_disk_io_stall",
+        "win32.frametime_spike_correlator" => "win32_frametime_spikes",
+        _ => "win32_os_bottleneck",
+    }
+}
+
 fn verdict_meta(verdict_id: &str) -> (&'static str, ActionScope, &'static str, u8, &'static str) {
     match verdict_id {
         "gpu_bound" => ("GPU-Bound (CPU Headroom Available)", ActionScope::OsTui, "GPU Saturation", 1, "Lower render resolution/upscaling or shader quality; CPU tuning will not lift average FPS while GPU 3D >= 97%."),
@@ -440,6 +462,16 @@ fn verdict_meta(verdict_id: &str) -> (&'static str, ActionScope, &'static str, u
         "smt_contention_bound" => ("SMT Contention Bound", ActionScope::OsTui, "SMT Contention", 6, "Clear hot thread affinity off occupied SMT sibling pairs onto idle physical cores."),
         "data_dependency_ilp_bound" => ("Data-Dependency / ILP-Bound", ActionScope::CodeBuild, "Core Execution / ILP", 7, "Break serial dependency chains: unroll accumulators, use contiguous arrays, enable PGO/LTO/AVX2. OS tweaks will not fix serial dependency latency."),
         "core_execution_bound" => ("Core Execution Bound", ActionScope::CodeBuild, "Core Execution", 7, "Inspect hot loops in Tab 7 for AVX2 vectorization, instruction mix, and PGO opportunities."),
+        "win32_dpc_irq_collision" => ("Win32 DPC/IRQ Collision (No-PMU)", ActionScope::OsTui, "Interrupts & DPC", 6, "Move driver MSI-X affinity off hot workload cores or pin workload away from CPU0."),
+        "win32_noisy_neighbor" => ("Win32 Background CPU Contention (No-PMU)", ActionScope::OsTui, "Background Contention", 6, "Pause or lower priority of competing background processes."),
+        "win32_priority_ecoqos" => ("Win32 Priority / EcoQoS Throttling (No-PMU)", ActionScope::OsTui, "Scheduling & QoS", 6, "Disable Efficiency Mode (EcoQoS) and restore Normal or Above Normal priority."),
+        "win32_hard_page_faults" => ("Win32 Memory Pressure / Hard Page Faults (No-PMU)", ActionScope::OsHw, "Memory Pressure", 4, "Close memory-heavy apps or add physical RAM to stop disk paging."),
+        "win32_ctx_sw_lock_storm" => ("Win32 Scheduler / Lock Contention (No-PMU)", ActionScope::CodeOs, "Scheduler & Locks", 6, "Reduce oversubscribed worker threads or shard contended locks."),
+        "win32_composed_flip" => ("Win32 DWM Composed Flip Overhead (No-PMU)", ActionScope::OsTui, "Display Presentation", 6, "Switch to Flip Model / Independent Flip and disable hooking overlays."),
+        "win32_jit_4k_itlb_residual" => ("Win32 4K JIT iTLB Residual (No-PMU)", ActionScope::CodeOs, "JIT / iTLB", 3, "Enable large-page JIT code-cache support in the runtime."),
+        "win32_disk_io_stall" => ("Win32 Storage I/O Stall (No-PMU)", ActionScope::OsHw, "Storage I/O", 4, "Move assets/pagefile to fast NVMe SSD and warm caches."),
+        "win32_frametime_spikes" => ("Win32 Frametime Spike Contention (No-PMU)", ActionScope::OsTui, "Frame Pacing", 6, "Resolve correlated OS/storage/display spikes and re-verify 1% lows."),
+        "win32_os_bottleneck" => ("Win32 OS Bottleneck (No-PMU)", ActionScope::OsTui, "Win32 OS", 5, "Inspect top Win32 OS bottleneck findings."),
         "win32_only_clear" => ("Win32 OS Diagnostics Clear (No-PMU)", ActionScope::OsTui, "Win32 OS", 5, "No Win32 OS bottleneck detected."),
         _ => ("Insufficient Data", ActionScope::OsTui, "Evidence Gate", 5, "Wait for >= 10 active samples."),
     }
@@ -481,6 +513,42 @@ fn resolve_verdict(
         );
     }
     if input.no_pmu {
+        if let Some(top) = findings
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Hi | Severity::Md))
+            .min_by(|a, b| {
+                b.is_primary_anchor
+                    .cmp(&a.is_primary_anchor)
+                    .then_with(|| a.severity.cmp(&b.severity))
+                    .then_with(|| b.impact.total_cmp(&a.impact))
+            })
+        {
+            let id = win32_verdict_id(&top.rule_id);
+            let label = if id == "win32_os_bottleneck" && !top.category.trim().is_empty() {
+                format!("Win32 OS Bottleneck: {} (No-PMU)", top.category.trim())
+            } else {
+                verdict_meta(id).0.into()
+            };
+            let stall = if !top.key_metric.trim().is_empty() {
+                format!("{} ({})", top.title, top.key_metric)
+            } else if !top.title.trim().is_empty() {
+                top.title.clone()
+            } else {
+                label.clone()
+            };
+            let reason = if !top.why.trim().is_empty() {
+                top.why.trim().trim_end_matches('.')
+            } else if !top.title.trim().is_empty() {
+                top.title.trim()
+            } else {
+                label.as_str()
+            };
+            let proof = format!(
+                "{reason} | Avg C0 {:.1}% | Sys {:.1}% (No-PMU)",
+                input.avg_c0_pct, input.cpu_sys_pct
+            );
+            return (id.into(), label, stall, proof);
+        }
         return (
             "win32_only_clear".into(),
             verdict_meta("win32_only_clear").0.into(),
@@ -577,5 +645,42 @@ fn build_primary_anchor(
         jump_tab,
         observed_metrics: vec![("IPC".into(), format!("{:.2}", input.ipc)), ("Actual CPI".into(), format!("{:.2}", input.actual_cpi))],
         profiler_note: input.top_on_cpu_fn.clone(),
+    }
+}
+
+fn attach_profiler_notes(input: &DiagnosticInput, findings: &mut [Finding]) {
+    let on_cpu = input
+        .top_on_cpu_fn
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let off_cpu = input
+        .top_off_cpu_wait
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if on_cpu.is_none() && off_cpu.is_none() {
+        return;
+    }
+    for f in findings {
+        if f.profiler_note.is_some() {
+            continue;
+        }
+        let note = match f.rule_id.as_str() {
+            "win32.ctx_sw_lock_storm" | "win32.hard_page_faults" => off_cpu,
+            "win32.disk_io_stall" | "win32.frametime_spike_correlator" => off_cpu.or(on_cpu),
+            id if id == "win32.jit_4k_itlb_residual"
+                || id.starts_with("pmu.")
+                || id.starts_with("uarch.")
+                || id.starts_with("anchor.")
+                || id.starts_with("exclusion.") =>
+            {
+                on_cpu
+            }
+            _ => None,
+        };
+        if let Some(text) = note {
+            f.profiler_note = Some(text.to_string());
+        }
     }
 }

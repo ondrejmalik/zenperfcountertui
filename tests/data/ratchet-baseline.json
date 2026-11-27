@@ -1,7 +1,7 @@
 {
   "version": 1,
   "min_metrics": {
-    "test_functions": 41
+    "test_functions": 64
   },
   "max_metrics": {
     "core_cli_unsafe_blocks": 0,
